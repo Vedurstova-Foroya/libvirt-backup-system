@@ -1,0 +1,31 @@
+services:
+  qnap:
+    build:
+      context: ./qnap
+    volumes:
+      - sshkeys:/sshkeys
+      - qnapdata:/backup
+    ports:
+      - "2222"
+    healthcheck:
+      test: ["CMD", "test", "-f", "/run/sshd.pid"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/runner/Dockerfile
+    depends_on:
+      qnap:
+        condition: service_healthy
+    environment:
+      PATH: /src/tests/e2e/fakes:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PYTHONPATH: /src
+    volumes:
+      - sshkeys:/sshkeys
+
+volumes:
+  sshkeys:
+  qnapdata:

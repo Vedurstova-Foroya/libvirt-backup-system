@@ -1,0 +1,10 @@
+#!/bin/sh
+if [ "${LBS_FAKE_LOW_SPACE:-}" = "1" ]; then
+  avail=1
+else
+  avail=104857600
+fi
+cat <<EOF
+Filesystem 1024-blocks Used Available Capacity Mounted on
+fakefs 104857600 1 $avail 1% /
+EOF

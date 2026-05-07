@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "qemu-img fake"

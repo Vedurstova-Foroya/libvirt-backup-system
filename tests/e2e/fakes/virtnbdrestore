@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+source = pathlib.Path(args[args.index("-i") + 1]) if "-i" in args else pathlib.Path(".")
+mode = args[args.index("-o") + 1] if "-o" in args else "verify"
+if mode == "verify":
+    if not source.exists():
+        print("source missing", file=sys.stderr)
+        raise SystemExit(2)
+    print("verify ok")
+elif mode == "restore":
+    target = pathlib.Path(args[args.index("-D") + 1])
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "restored.txt").write_text(str(source) + "\n", encoding="utf-8")
+    print("restore ok")
