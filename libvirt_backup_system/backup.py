@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 import shutil
 from pathlib import Path
 
@@ -62,7 +61,7 @@ def sync_vm(config: Config, vm_name: str) -> bool:
     local_vm_dir = config.path_value("LOCAL_ROOT") / vm_name
     remote_dir = f"{config.get('REMOTE_DIR').rstrip('/')}/{config.get('HOST_ID')}/{vm_name}/"
     try:
-        run(config.ssh_base + [config.remote_target, f"mkdir -p {sh_quote(remote_dir)}"])
+        run([*config.ssh_base, config.remote_target, f"mkdir -p {sh_quote(remote_dir)}"])
         cmd = [
             "rsync",
             "-a",
@@ -109,21 +108,23 @@ def cleanup(config: Config) -> int:
         keep_remote = int_value(config.values, "REMOTE_RETENTION_MONTHS")
         script = (
             f"set -eu; root={sh_quote(remote_root)}; keep={keep_remote}; "
-            "test -d \"$root\" || exit 0; "
-            "for vm in \"$root\"/*; do "
-            "test -d \"$vm\" || continue; "
+            'test -d "$root" || exit 0; '
+            'for vm in "$root"/*; do '
+            'test -d "$vm" || continue; '
             "ls -1 \"$vm\" | grep -E '^[0-9]{4}-[0-9]{2}$' | sort | "
-            "head -n \"$(($(ls -1 \"$vm\" | grep -E '^[0-9]{4}-[0-9]{2}$' | wc -l)-keep))\" | "
-            "while read m; do rm -rf \"$vm/$m\"; done; "
+            'head -n "$(($(ls -1 "$vm" | grep -E \'^[0-9]{4}-[0-9]{2}$\' | wc -l)-keep))" | '
+            'while read m; do rm -rf "$vm/$m"; done; '
             "done"
         )
-        run(config.ssh_base + [config.remote_target, script], check=False)
+        run([*config.ssh_base, config.remote_target, script], check=False)
     event("info", "cleanup completed", removed_local_months=removed)
     return 0
 
 
 def verify(config: Config, vm_name: str | None = None) -> int:
-    roots = [config.path_value("LOCAL_ROOT") / vm_name] if vm_name else sorted(config.path_value("LOCAL_ROOT").glob("*"))
+    roots = (
+        [config.path_value("LOCAL_ROOT") / vm_name] if vm_name else sorted(config.path_value("LOCAL_ROOT").glob("*"))
+    )
     ok = True
     for vm_root in roots:
         if not vm_root.is_dir():

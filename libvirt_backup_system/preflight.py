@@ -9,7 +9,6 @@ from .logging_json import event
 from .shell import CommandError, run
 from .vms import list_vms
 
-
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 
 
@@ -24,7 +23,7 @@ def _df_available_kb(path: Path) -> int:
 
 
 def _remote_df_available_kb(config: Config) -> int:
-    result = run(config.ssh_base + [config.remote_target, f"df -Pk {sh_quote(config.get('REMOTE_DIR'))}"])
+    result = run([*config.ssh_base, config.remote_target, f"df -Pk {sh_quote(config.get('REMOTE_DIR'))}"])
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     if len(lines) < 2:
         raise RuntimeError("remote df output did not include a data row")
@@ -72,7 +71,7 @@ def check(config: Config) -> int:
                 failures.append(f"{key} is required when REMOTE_ENABLED=true")
         if config.get("REMOTE_HOST") and config.get("REMOTE_DIR"):
             try:
-                run(config.ssh_base + [config.remote_target, f"mkdir -p {sh_quote(config.get('REMOTE_DIR'))}"])
+                run([*config.ssh_base, config.remote_target, f"mkdir -p {sh_quote(config.get('REMOTE_DIR'))}"])
                 available = _remote_df_available_kb(config)
                 if available < required_kb:
                     failures.append(f"insufficient remote space: available_kb={available} required_kb={required_kb}")

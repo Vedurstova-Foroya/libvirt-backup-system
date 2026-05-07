@@ -7,7 +7,6 @@ import subprocess
 import time
 from pathlib import Path
 
-
 PREFIX = Path("/tmp/lbs-root")
 BIN = PREFIX / "usr/local/bin/libvirt-backup-system"
 CONFIG = PREFIX / "etc/libvirt-backup-system/libvirt-backup.env"
@@ -19,11 +18,9 @@ def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = Non
     merged = os.environ.copy()
     if env:
         merged.update(env)
-    proc = subprocess.run(args, text=True, capture_output=True, env=merged)
+    proc = subprocess.run(args, text=True, capture_output=True, env=merged, check=False)
     if check and proc.returncode != 0:
-        raise AssertionError(
-            f"command failed: {' '.join(args)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
+        raise AssertionError(f"command failed: {' '.join(args)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
     return proc
 
 

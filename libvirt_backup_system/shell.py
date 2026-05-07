@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 
 @dataclass
@@ -20,7 +20,7 @@ class CommandError(RuntimeError):
 
 
 def run(args: list[str], *, check: bool = True, env: Mapping[str, str] | None = None) -> CommandResult:
-    proc = subprocess.run(args, text=True, capture_output=True, env=env)
+    proc = subprocess.run(args, text=True, capture_output=True, env=env, check=False)
     result = CommandResult(args=args, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
     if check and proc.returncode != 0:
         raise CommandError(result)

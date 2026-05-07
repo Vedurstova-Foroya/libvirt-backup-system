@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 import shlex
 import socket
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
-
 
 CONFIG_KEYS = {
     "LIBVIRT_URI",
@@ -57,7 +56,7 @@ DEFAULTS = {
 
 
 def root_prefix(value: str | None = None) -> Path:
-    raw = value or os.environ.get("LIBVIRT_BACKUP_ROOT_PREFIX", "/")
+    raw = value if value is not None else os.environ.get("LIBVIRT_BACKUP_ROOT_PREFIX", "/")
     return Path(raw).resolve()
 
 
@@ -112,9 +111,10 @@ class Config:
     prefix: Path
 
     @classmethod
-    def load(cls, config_path: str | None = None, prefix: str | None = None) -> "Config":
+    def load(cls, config_path: str | None = None, prefix: str | None = None) -> Config:
         root = root_prefix(prefix)
-        path = Path(config_path) if config_path else Path(os.environ.get("LIBVIRT_BACKUP_CONFIG", default_config_path(root)))
+        raw_path = config_path or os.environ.get("LIBVIRT_BACKUP_CONFIG") or str(default_config_path(root))
+        path = Path(raw_path)
         values = dict(DEFAULTS)
         values.update(parse_env_file(path))
         for key in CONFIG_KEYS:

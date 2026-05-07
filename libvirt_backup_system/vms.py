@@ -19,7 +19,7 @@ class VM:
 def list_vms(config: Config, *, include_blacklisted: bool = False) -> list[VM]:
     result = run(["virsh", "-c", config.get("LIBVIRT_URI"), "list", "--all", "--name"])
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    selected = []
+    selected: list[VM] = []
     for name in names:
         if not include_blacklisted and name in config.blacklist:
             continue

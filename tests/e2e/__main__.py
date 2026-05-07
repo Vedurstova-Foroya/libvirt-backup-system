@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import platform
 import shutil
 import subprocess
 import sys
-import argparse
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "tests" / "e2e" / "docker-compose.yml"
@@ -33,7 +32,8 @@ def run_mac_safe() -> int:
     if not docker_available():
         print("Docker is required for the Mac-safe e2e path.", file=sys.stderr)
         return 1
-    cmd = compose_args() + [
+    cmd = [
+        *compose_args(),
         "-f",
         str(COMPOSE),
         "up",
@@ -46,7 +46,7 @@ def run_mac_safe() -> int:
         run_cmd(cmd)
         return 0
     finally:
-        run_cmd(compose_args() + ["-f", str(COMPOSE), "down", "-v"], check=False)
+        run_cmd([*compose_args(), "-f", str(COMPOSE), "down", "-v"], check=False)
 
 
 def kvm_skip_reason() -> str | None:
@@ -70,7 +70,9 @@ def run_real_kvm_if_available() -> int:
     if reason:
         print(f"SKIP real KVM e2e: {reason}")
         return 0
-    print("Real KVM e2e capability detected. The real KVM scenario is scaffolded but not enabled in this portable suite.")
+    print(
+        "Real KVM e2e capability detected. The real KVM scenario is scaffolded but not enabled in this portable suite."
+    )
     return 0
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import stat
 import sys
@@ -9,7 +8,6 @@ from pathlib import Path
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
-
 
 UNIT_SERVICE = """[Unit]
 Description=Libvirt VM backup orchestrator

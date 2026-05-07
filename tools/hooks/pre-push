@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+uv run --locked --extra dev python -m tools.gates

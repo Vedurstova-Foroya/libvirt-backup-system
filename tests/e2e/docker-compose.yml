@@ -23,6 +23,7 @@ services:
     environment:
       PATH: /src/tests/e2e/fakes:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       PYTHONPATH: /src
+      PYTHONWARNINGS: error
     volumes:
       - sshkeys:/sshkeys
 

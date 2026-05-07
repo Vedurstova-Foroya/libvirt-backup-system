@@ -7,12 +7,83 @@ name = "libvirt-backup-system"
 version = "0.1.0"
 description = "Systemd-driven libvirt VM backup orchestrator using virtnbdbackup and rsync."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{name = "Vedurstovan"}]
 dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "coverage[toml]==7.6.9",
+    "mypy==1.14.1",
+    "pyright==1.1.390",
+    "pytest==8.3.4",
+    "ruff==0.8.6",
+]
 
 [project.scripts]
 libvirt-backup-system = "libvirt_backup_system.cli:main"
 
 [tool.setuptools]
 packages = ["libvirt_backup_system"]
+
+[tool.setuptools.package-data]
+libvirt_backup_system = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN",
+    "BLE001",
+    "C901",
+    "COM812",
+    "D",
+    "EM",
+    "ISC001",
+    "PERF203",
+    "PERF401",
+    "PLC0206",
+    "PLR0911",
+    "PLR0912",
+    "PLR2004",
+    "S603",
+    "S607",
+    "T201",
+    "TC",
+    "TRY003",
+    "TRY300",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ARG001", "ARG005", "FBT001", "PT017", "S101", "S108", "SLF001"]
+"tests/e2e/**/*.py" = ["TRY003"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+
+[tool.pyright]
+include = ["libvirt_backup_system", "tools"]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers -W error"
+testpaths = ["tests/unit"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["libvirt_backup_system", "tools"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
+precision = 2
