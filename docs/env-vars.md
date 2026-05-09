@@ -39,9 +39,6 @@ BACKUP_PATH=
 # Extra free-space margin added to preflight's backup size estimate.
 # SPACE_MARGIN_PERCENT=20
 
-# Reserved for future concurrency support. Current backups run sequentially.
-# MAX_PARALLEL_VMS=1
-
 # Stopped VMs are copied once per month by default.
 # Set true to copy stopped VMs on every run.
 # INACTIVE_COPY_EVERY_RUN=false

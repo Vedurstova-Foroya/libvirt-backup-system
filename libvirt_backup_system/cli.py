@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import traceback
@@ -43,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser = sub.add_parser("restore-to-dir")
     restore_parser.add_argument("source")
     restore_parser.add_argument("target")
+    restore_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Restore into a non-empty target directory (refuses symlinks unconditionally).",
+    )
     return parser
 
 
@@ -62,12 +68,16 @@ def main(argv: list[str] | None = None) -> int:
                 purge_backups=args.purge_backups,
             )
 
-        config = Config.load(config_path=args.config, prefix=args.prefix)
+        if args.command == "list-vms" and args.json:
+            with contextlib.redirect_stdout(sys.stderr):
+                config = Config.load(config_path=args.config, prefix=args.prefix)
+        else:
+            config = Config.load(config_path=args.config, prefix=args.prefix)
         if args.command == "restore-to-dir":
             config_code = validate_config(config)
             if config_code != 0:
                 return config_code
-            return restore_to_dir(args.source, args.target)
+            return restore_to_dir(args.source, args.target, force=args.force)
         if args.command in {"check", "preflight"}:
             return check(config)
         if args.command == "run":
@@ -76,7 +86,9 @@ def main(argv: list[str] | None = None) -> int:
                 return preflight_code
             try:
                 with acquire_run_lock(config):
-                    return run_backups(config)
+                    backup_code = run_backups(config)
+                    cleanup_code = cleanup(config)
+                    return backup_code if backup_code != 0 else cleanup_code
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))
                 return 1

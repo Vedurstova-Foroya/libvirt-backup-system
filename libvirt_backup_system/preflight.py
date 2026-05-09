@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from pathlib import Path
 
 from .backup import backup_root
 from .config import CONFIG_KEYS, Config, float_value, int_value
+from .disks import vm_disk_paths
 from .logging_json import event
 from .shell import CommandError, run
 from .storage import subpath_is_safe
@@ -14,7 +16,7 @@ from .vms import VM, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 BOOLEAN_KEYS = {"BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT"}
-INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "MAX_PARALLEL_VMS", "SPACE_MARGIN_PERCENT"}
+INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "SPACE_MARGIN_PERCENT"}
 FLOAT_KEYS = {"BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"}
 ALLOWED_LIBVIRT_URI_PREFIXES = (
     "qemu:///",
@@ -40,17 +42,6 @@ def _df_available_kb(path: Path) -> int:
     return int(parts[3])
 
 
-def _vm_disk_paths(uri: str, vm_name: str) -> list[str]:
-    result = run(["virsh", "-c", uri, "domblklist", "--details", "--inactive", "--", vm_name])
-    paths: list[str] = []
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        # virsh output: Type Device Target Source
-        if len(parts) >= 4 and parts[0] == "file" and parts[1] == "disk":
-            paths.append(parts[3])
-    return paths
-
-
 def _disk_virtual_size_bytes(path: str) -> int:
     result = run(["qemu-img", "info", "--output=json", "--", path])
     info = json.loads(result.stdout)
@@ -59,7 +50,7 @@ def _disk_virtual_size_bytes(path: str) -> int:
 
 def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
     try:
-        disks = _vm_disk_paths(uri, vm.name)
+        disks = vm_disk_paths(uri, vm.name)
     except (CommandError, OSError) as exc:
         event("warning", "disk list failed for VM", vm=vm.name, error=str(exc))
         return fallback_bytes
@@ -75,11 +66,14 @@ def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
 
 def _estimate_required_kb(config: Config, vms: list[VM]) -> int:
     try:
-        fallback_per_vm_bytes = int(float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM") * 1024 * 1024 * 1024)
+        fallback_per_vm_gb = float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM")
         multiplier = float_value(config.values, "BACKUP_INCREMENTAL_MULTIPLIER")
         margin = 1 + int_value(config.values, "SPACE_MARGIN_PERCENT") / 100
     except ValueError:
         return 0
+    if not math.isfinite(fallback_per_vm_gb) or not math.isfinite(multiplier):
+        return 0
+    fallback_per_vm_bytes = int(fallback_per_vm_gb * 1024 * 1024 * 1024)
     uri = config.get("LIBVIRT_URI")
     total_bytes = 0
     for vm in vms:
@@ -113,8 +107,6 @@ def _validate_integers(config: Config) -> list[str]:
                 failures.append("BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer")
         elif int_config_value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
-        if key == "MAX_PARALLEL_VMS" and int_config_value < 1:
-            failures.append("MAX_PARALLEL_VMS must be greater than or equal to 1")
     return failures
 
 
@@ -125,6 +117,9 @@ def _validate_floats(config: Config) -> list[str]:
             float_config_value = float_value(config.values, key)
         except ValueError:
             failures.append(f"{key} must be a number")
+            continue
+        if not math.isfinite(float_config_value):
+            failures.append(f"{key} must be a finite number")
             continue
         if float_config_value < 0:
             failures.append(f"{key} must be greater than or equal to 0")

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import signal
+import subprocess
 
 import pytest
 
+from libvirt_backup_system import shell
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.logging_json import event
 from libvirt_backup_system.shell import CommandError, CommandResult, run, run_streamed
@@ -96,6 +99,136 @@ def test_list_vms_filters_blacklist(monkeypatch) -> None:
 def test_command_error_accepts_result() -> None:
     result = CommandResult(["cmd"], 1, "", "err")
     assert CommandError(result).result is result
+
+
+class _FakeStream:
+    def readline(self) -> str:
+        return ""
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeProc:
+    def __init__(self, *, wait_raises: BaseException | None = None, poll_alive: bool = True) -> None:
+        self.pid = 12345
+        self.stdout = _FakeStream()
+        self.stderr = _FakeStream()
+        self._wait_raises = wait_raises
+        self._wait_called = False
+        self._terminated = False
+        self._poll_alive = poll_alive
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+        if self._wait_raises is not None and not self._wait_called:
+            self._wait_called = True
+            raise self._wait_raises
+        return 0
+
+    def poll(self) -> int | None:
+        if self._terminated or not self._poll_alive:
+            return 0
+        return None
+
+
+def test_run_streamed_kills_process_group_on_exception(monkeypatch) -> None:
+    killed: list[tuple[int, int]] = []
+    proc = _FakeProc(wait_raises=RuntimeError("simulated"))
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+        proc._terminated = True
+
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", fake_killpg)
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        run_streamed(["dummy"])
+
+    assert killed == [(proc.pid, signal.SIGTERM)]
+
+
+def test_run_streamed_escalates_to_sigkill_after_timeout(monkeypatch) -> None:
+    killed: list[int] = []
+
+    class StubbornProc(_FakeProc):
+        def __init__(self) -> None:
+            super().__init__(wait_raises=KeyboardInterrupt())
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self._wait_called:
+                self._wait_called = True
+                raise KeyboardInterrupt
+            if signal.SIGKILL not in killed and timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="dummy", timeout=timeout)
+            return 0
+
+    proc = StubbornProc()
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", lambda pgid, sig: killed.append(sig))
+
+    with pytest.raises(KeyboardInterrupt):
+        run_streamed(["dummy"])
+
+    assert killed == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_run_streamed_skips_kill_when_process_already_exited(monkeypatch) -> None:
+    proc = _FakeProc(wait_raises=RuntimeError("after-exit"), poll_alive=False)
+    killed: list[int] = []
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", lambda pgid, sig: killed.append(sig))
+
+    with pytest.raises(RuntimeError, match="after-exit"):
+        run_streamed(["dummy"])
+
+    assert killed == []
+
+
+def test_run_streamed_falls_through_when_sigkill_also_times_out(monkeypatch) -> None:
+    killed: list[int] = []
+
+    class ZombieProc(_FakeProc):
+        def __init__(self) -> None:
+            super().__init__(wait_raises=RuntimeError("ignored"))
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self._wait_called:
+                self._wait_called = True
+                raise RuntimeError("trigger")
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="dummy", timeout=timeout)
+            return 0
+
+    proc = ZombieProc()
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", lambda pgid, sig: killed.append(sig))
+
+    with pytest.raises(RuntimeError, match="trigger"):
+        run_streamed(["dummy"])
+
+    assert killed == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_run_streamed_swallows_killpg_oserror(monkeypatch) -> None:
+    proc = _FakeProc(wait_raises=RuntimeError("escape"))
+
+    def raise_oserror(pgid: int, sig: int) -> None:
+        raise OSError("no such process group")
+
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.getpgid", lambda pid: (_ for _ in ()).throw(OSError("nope")))
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", raise_oserror)
+
+    with pytest.raises(RuntimeError, match="escape"):
+        run_streamed(["dummy"])
+
+
+def test_kill_process_group_module_constants() -> None:
+    assert shell.TERMINATE_GRACE_SECONDS > 0
 
 
 def test_list_vms_rejects_vm_name_starting_with_dash(monkeypatch) -> None:

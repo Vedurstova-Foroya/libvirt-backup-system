@@ -6,7 +6,7 @@ import stat
 import sys
 from pathlib import Path
 
-from .backup import backup_root
+from .backup import backup_root, backup_subpath_is_safe
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
@@ -70,7 +70,7 @@ def _print_install_next_steps(config_path: Path, bin_path: Path) -> None:
                 "Next steps:",
                 f"  sudoedit {config_path}",
                 "",
-                "Set the required backup path:",
+                "Set the required backup path, then re-run install so the systemd mount dependency matches it:",
                 "  BACKUP_PATH=/mnt/qnap-backups",
                 "",
                 "NFS/QNAP mounts are required by default. For an intentionally local backup directory, uncomment:",
@@ -120,6 +120,27 @@ def install(prefix: str | None = None) -> int:
         config_path.write_text(cfg.render_env(), encoding="utf-8")
         config_path.chmod(0o600)
 
+    _print_install_next_steps(config_path, bin_path)
+    if not cfg.get("BACKUP_PATH").strip():
+        for path in [
+            systemd_dir / "libvirt-backup-system.service",
+            systemd_dir / "libvirt-backup-system.timer",
+        ]:
+            try:
+                path.unlink()
+                event("info", "removed stale systemd unit", path=str(path))
+            except FileNotFoundError:
+                pass
+            except (PermissionError, OSError) as exc:
+                event("error", "failed to remove stale systemd unit", path=str(path), error=str(exc))
+        event(
+            "warning",
+            "systemd unit installation skipped because BACKUP_PATH is not configured",
+            config_path=str(config_path),
+        )
+        _run_systemctl(root, [["systemctl", "daemon-reload"]])
+        return 0
+
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / "libvirt-backup-system.service").write_text(
         _render_unit_service(cfg.get("BACKUP_PATH")), encoding="utf-8"
@@ -128,7 +149,6 @@ def install(prefix: str | None = None) -> int:
         UNIT_TIMER.format(calendar=cfg.get("SYSTEMD_ON_CALENDAR")), encoding="utf-8"
     )
     event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(config_path))
-    _print_install_next_steps(config_path, bin_path)
 
     if not _systemctl_available(root):
         event("info", "systemd activation skipped", root_prefix=str(root))
@@ -192,7 +212,11 @@ def uninstall(
         purge_paths.append(prefixed("/var/log/libvirt-backup-system", root))
     if purge_backups:
         if cfg.get("BACKUP_PATH").strip():
-            purge_paths.append(backup_root(cfg))
+            root_path = backup_root(cfg)
+            if backup_subpath_is_safe(cfg, root_path):
+                purge_paths.append(root_path)
+            else:
+                event("error", "backup purge skipped because backup path is unsafe", path=str(root_path))
         else:
             event("warning", "backup purge skipped because BACKUP_PATH is not configured")
 

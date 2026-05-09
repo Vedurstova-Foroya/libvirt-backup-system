@@ -5,7 +5,6 @@ from pathlib import Path
 from libvirt_backup_system.preflight import (
     _disk_virtual_size_bytes,
     _estimate_required_kb,
-    _vm_disk_paths,
     _vm_estimated_bytes,
     check,
     validate_libvirt_uri,
@@ -14,22 +13,6 @@ from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
 
 from .test_preflight import _preflight_config, patch_valid_preflight
-
-
-def test_vm_disk_paths_parses_virsh_output(monkeypatch) -> None:
-    output = (
-        " Target   Source\n"
-        "------------------------\n"
-        " file     disk     vda      /var/lib/libvirt/images/a.qcow2\n"
-        " block    disk     vdb      /dev/sdb\n"
-        " file     cdrom    sda      /iso/install.iso\n"
-    )
-
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        return CommandResult(args, 0, output, "")
-
-    monkeypatch.setattr("libvirt_backup_system.preflight.run", fake_run)
-    assert _vm_disk_paths("qemu:///system", "alpha") == ["/var/lib/libvirt/images/a.qcow2"]
 
 
 def test_disk_virtual_size_bytes_parses_qemu_img_json(monkeypatch) -> None:
@@ -42,7 +25,7 @@ def test_disk_virtual_size_bytes_parses_qemu_img_json(monkeypatch) -> None:
 
 def test_vm_estimated_bytes_uses_fallback_when_virsh_fails(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "libvirt_backup_system.preflight._vm_disk_paths",
+        "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: (_ for _ in ()).throw(CommandError(CommandResult([], 1, "", "no virsh"))),
     )
     assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 5) == 5
@@ -51,7 +34,7 @@ def test_vm_estimated_bytes_uses_fallback_when_virsh_fails(monkeypatch, capsys) 
 
 def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        "libvirt_backup_system.preflight._vm_disk_paths",
+        "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: ["/disk.qcow2"],
     )
     monkeypatch.setattr(
@@ -64,7 +47,7 @@ def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(monkeypatch, capsy
 
 def test_vm_estimated_bytes_sums_disks(monkeypatch) -> None:
     monkeypatch.setattr(
-        "libvirt_backup_system.preflight._vm_disk_paths",
+        "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: ["/disk1.qcow2", "/disk2.qcow2"],
     )
     sizes = iter([1000, 2500])
@@ -77,7 +60,7 @@ def test_vm_estimated_bytes_sums_disks(monkeypatch) -> None:
 
 def test_vm_estimated_bytes_empty_disk_list_falls_back(monkeypatch) -> None:
     monkeypatch.setattr(
-        "libvirt_backup_system.preflight._vm_disk_paths",
+        "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: [],
     )
     assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 42) == 42
@@ -86,6 +69,16 @@ def test_vm_estimated_bytes_empty_disk_list_falls_back(monkeypatch) -> None:
 def test_estimate_required_kb_handles_bad_floats(backup_config) -> None:
     cfg = backup_config
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "bad"
+    assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
+
+
+def test_estimate_required_kb_handles_non_finite_floats(backup_config) -> None:
+    cfg = backup_config
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "nan"
+    assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
+
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "1"
+    cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = "inf"
     assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
 
 

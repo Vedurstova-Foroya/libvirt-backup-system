@@ -190,8 +190,21 @@ uv run --locked --extra dev python -m tests.e2e --skip-kvm
 
 ## Run the Full Local Gate
 
-The repository pre-push hook is the sole local quality gate (there is no
-GitHub Actions CI configured) and runs:
+The repository ships with two complementary gates:
+
+- A GitHub Actions workflow (`.github/workflows/ci.yml`) that runs
+  `python -m tools.gates` on every push and pull request. This is the
+  authoritative gate for shared branches.
+- A local pre-push hook that runs the same command against the working
+  tree before a push leaves the developer's machine.
+
+Install the pre-push hook into a fresh clone with:
+
+```bash
+uv run --locked --extra dev python -m tools.install_hooks
+```
+
+The hook simply runs the gate:
 
 ```bash
 uv run --locked --extra dev python -m tools.gates

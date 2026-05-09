@@ -51,7 +51,7 @@ def test_cleanup_skips_symlinked_backup_subpaths_without_pruning_targets(
     outside_data.parent.mkdir(parents=True)
     outside_data.write_text("keep me", encoding="utf-8")
 
-    assert cleanup(cfg) == 0
+    assert cleanup(cfg) == 1
     assert outside_data.read_text(encoding="utf-8") == "keep me"
     assert "unsafe" in capsys.readouterr().err
 
@@ -70,7 +70,7 @@ def test_cleanup_skips_symlinked_backup_month_without_pruning_target(
     backup_vm.mkdir(parents=True)
     (backup_vm / "2026-01").symlink_to(outside_data.parent, target_is_directory=True)
 
-    assert cleanup(cfg) == 0
+    assert cleanup(cfg) == 1
     assert outside_data.read_text(encoding="utf-8") == "keep me"
     assert "cleanup skipped because backup tree contains unsafe symlink" in capsys.readouterr().err
 
@@ -99,12 +99,36 @@ def test_cleanup_missing_root_and_unsafe_descendants(
     month_dir.mkdir(parents=True)
     checks = iter([True, False, True, True, False])
     monkeypatch.setattr("libvirt_backup_system.backup.subpath_is_safe", lambda root, path: next(checks))
-    assert cleanup(cfg) == 0
+    assert cleanup(cfg) == 1
     assert month_dir.exists()
     assert "VM cleanup skipped because backup path is unsafe" in capsys.readouterr().err
 
     cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
     checks = iter([True, True, False])
-    assert cleanup(cfg) == 0
+    assert cleanup(cfg) == 1
     assert month_dir.exists()
     assert "month cleanup skipped because backup path is unsafe" in capsys.readouterr().err
+
+
+def test_cleanup_returns_nonzero_when_root_path_unsafe(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _with_retention(backup_config)
+    (tmp_path / "backups/host").mkdir(parents=True)
+    monkeypatch.setattr("libvirt_backup_system.backup.subpath_is_safe", lambda root, path: False)
+
+    assert cleanup(cfg) == 1
+    assert "cleanup skipped because backup path is unsafe" in capsys.readouterr().err
+
+
+def test_cleanup_returns_nonzero_when_rmtree_fails(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _with_retention(backup_config)
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
+    month_dir = tmp_path / "backups/host/alpha/2026-01"
+    month_dir.mkdir(parents=True)
+
+    def fake_rmtree(path: Path) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("libvirt_backup_system.backup.shutil.rmtree", fake_rmtree)
+    assert cleanup(cfg) == 1
+    assert month_dir.exists()
+    assert "month cleanup failed" in capsys.readouterr().err

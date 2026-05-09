@@ -35,7 +35,6 @@ def write_config() -> None:
                 "BACKUP_REQUIRE_NFS_MOUNT=true",
                 "BACKUP_RETENTION_MONTHS=1",
                 "SPACE_MARGIN_PERCENT=20",
-                "MAX_PARALLEL_VMS=1",
                 "INACTIVE_COPY_EVERY_RUN=false",
                 "BACKUP_ESTIMATE_GB_PER_VM=0.001",
                 "REQUIRE_ROOT=true",

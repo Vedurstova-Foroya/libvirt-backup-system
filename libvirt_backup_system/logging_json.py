@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
-import time
 from typing import Any
 
 
 def event(level: str, message: str, **fields: Any) -> None:
     record = {
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "level": level,
         "message": message,
     }

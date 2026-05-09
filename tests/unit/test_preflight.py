@@ -21,7 +21,6 @@ def _preflight_config(cfg: Config) -> Config:
             "BACKUP_ESTIMATE_GB_PER_VM": "1",
             "SPACE_MARGIN_PERCENT": "20",
             "BACKUP_RETENTION_MONTHS": "12",
-            "MAX_PARALLEL_VMS": "1",
         }
     )
     return cfg
@@ -73,7 +72,6 @@ def test_check_reports_common_failures(monkeypatch, capsys, backup_config) -> No
     cfg.values["BACKUP_PATH"] = ""
     cfg.values["BACKUP_COMPRESS"] = "maybe"
     cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
-    cfg.values["MAX_PARALLEL_VMS"] = "0"
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "bad"
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: None)
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 99)
@@ -85,7 +83,6 @@ def test_check_reports_common_failures(monkeypatch, capsys, backup_config) -> No
     assert "BACKUP_PATH must not be empty" in err
     assert "BACKUP_COMPRESS must be a boolean value" in err
     assert "BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer" in err
-    assert "MAX_PARALLEL_VMS must be greater than or equal to 1" in err
     assert "BACKUP_ESTIMATE_GB_PER_VM must be a number" in err
     assert "missing binary" in err
     assert "must run as root" in err
@@ -121,6 +118,15 @@ def test_validate_config_reports_numeric_and_path_edge_cases(
     monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: next(checks))
     assert validate_config(cfg) == 1
     assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_validate_config_rejects_non_finite_float_values(value: str, backup_config, capsys) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = value
+
+    assert validate_config(cfg) == 1
+    assert "BACKUP_ESTIMATE_GB_PER_VM must be a finite number" in capsys.readouterr().err
 
 
 def test_validate_config_reports_write_probe_failure(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from collections import deque
 from collections.abc import Mapping
@@ -10,6 +12,7 @@ from typing import IO
 from .logging_json import event
 
 STREAMED_TAIL_LINES = 256
+TERMINATE_GRACE_SECONDS = 5.0
 
 
 @dataclass
@@ -47,6 +50,25 @@ def _tee_stream(
     stream.close()
 
 
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (OSError, ProcessLookupError):
+            return
+        try:
+            proc.wait(timeout=TERMINATE_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def run_streamed(
     args: list[str],
     *,
@@ -57,28 +79,42 @@ def run_streamed(
     command = args[0] if args else ""
     stdout_buf: deque[str] = deque(maxlen=tail_lines)
     stderr_buf: deque[str] = deque(maxlen=tail_lines)
-    with subprocess.Popen(
+    # start_new_session puts the child into its own process group so we can kill
+    # the whole tree on a parent-side exception (e.g. KeyboardInterrupt) and not
+    # leave virtnbdbackup or similar tools running with stale checkpoint state.
+    proc = subprocess.Popen(
         args,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
         bufsize=1,
-    ) as proc:
-        stdout_stream = proc.stdout
-        stderr_stream = proc.stderr
-        # Defensive: Popen always opens both streams when PIPE is requested.
-        if stdout_stream is None or stderr_stream is None:  # pragma: no cover
-            raise RuntimeError("subprocess did not open both stdout and stderr")
-        threads = [
-            Thread(target=_tee_stream, args=(stdout_stream, "info", command, stdout_buf), daemon=True),
-            Thread(target=_tee_stream, args=(stderr_stream, "error", command, stderr_buf), daemon=True),
-        ]
+        start_new_session=True,
+    )
+    stdout_stream = proc.stdout
+    stderr_stream = proc.stderr
+    # Defensive: Popen always opens both streams when PIPE is requested.
+    if stdout_stream is None or stderr_stream is None:  # pragma: no cover
+        _kill_process_group(proc)
+        raise RuntimeError("subprocess did not open both stdout and stderr")
+    threads: list[Thread] = [
+        Thread(target=_tee_stream, args=(stdout_stream, "info", command, stdout_buf), daemon=True),
+        Thread(target=_tee_stream, args=(stderr_stream, "error", command, stderr_buf), daemon=True),
+    ]
+    try:
         for thread in threads:
             thread.start()
         returncode = proc.wait()
         for thread in threads:
             thread.join()
+    except BaseException:
+        _kill_process_group(proc)
+        for thread in threads:
+            thread.join(timeout=TERMINATE_GRACE_SECONDS)
+        raise
+    finally:
+        for stream in (stdout_stream, stderr_stream):
+            stream.close()
     result = CommandResult(
         args=args,
         returncode=returncode,
