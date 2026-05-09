@@ -21,9 +21,10 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     assert bin_path.exists()
     assert config_path.exists()
-    assert "ExecStart=/usr/local/bin/libvirt-backup-system run" in (
-        tmp_path / "etc/systemd/system/libvirt-backup-system.service"
-    ).read_text(encoding="utf-8")
+    assert "BACKUP_PATH=\n" in config_path.read_text(encoding="utf-8")
+    service_text = (tmp_path / "etc/systemd/system/libvirt-backup-system.service").read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/bin/libvirt-backup-system run" in service_text
+    assert "RequiresMountsFor=" not in service_text
     assert "OnCalendar=" in (tmp_path / "etc/systemd/system/libvirt-backup-system.timer").read_text(encoding="utf-8")
 
     (tmp_path / "var/lib/libvirt-backup-system").mkdir(parents=True)
@@ -34,12 +35,14 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
 
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "LOCAL_ROOT=/var/backups/libvirt",
-            f"LOCAL_ROOT={tmp_path / 'backups'}",
+            "BACKUP_PATH=",
+            f"BACKUP_PATH={tmp_path / 'backups'}",
         ),
         encoding="utf-8",
     )
     assert install(str(tmp_path)) == 0
+    service_text = (tmp_path / "etc/systemd/system/libvirt-backup-system.service").read_text(encoding="utf-8")
+    assert f"RequiresMountsFor={tmp_path / 'backups'}" in service_text
     assert uninstall(str(tmp_path), purge_config=True, purge_state=True, purge_logs=True, purge_backups=True) == 0
     assert not config_path.exists()
 
@@ -71,6 +74,37 @@ def test_install_replaces_existing_package_and_systemd_activation(tmp_path: Path
     (package / "old.py").write_text("old\n", encoding="utf-8")
     assert install(None) == 0
     assert calls == [["systemctl", "daemon-reload"], ["systemctl", "enable", "--now", "libvirt-backup-system.timer"]]
+
+
+def test_install_systemctl_failure_emits_error_and_returns_nonzero(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    original_exists = Path.exists
+
+    def fake_config(prefix: str | None = None) -> Config:
+        return Config(values=dict(DEFAULTS), path=tmp_path / "etc/config.env", prefix=tmp_path)
+
+    def fake_exists(self: Path) -> bool:
+        return True if str(self) == "/run/systemd/system" else original_exists(self)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
+    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.default_config_path", lambda root=None: tmp_path / "etc/config.env"
+    )
+    monkeypatch.setattr("libvirt_backup_system.installer.Config.load", fake_config)
+    monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.run",
+        lambda args, check=True, env=None: CommandResult(args, 1, "", "boom"),
+    )
+    assert install(None) == 1
+    err = capsys.readouterr().err
+    assert "systemctl daemon-reload failed" in err
+    assert "boom" in err
 
 
 def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypatch) -> None:
@@ -105,6 +139,34 @@ def test_uninstall_purges_file_path(tmp_path: Path) -> None:
     assert not state_file.exists()
 
 
+def test_uninstall_skips_backup_purge_when_path_unset(tmp_path: Path, capsys) -> None:
+    assert uninstall(str(tmp_path), purge_backups=True) == 0
+    assert "backup purge skipped" in capsys.readouterr().err
+
+
+def test_uninstall_continues_when_unlink_raises_permission_error(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bin_path = tmp_path / "usr/local/bin/libvirt-backup-system"
+    bin_path.parent.mkdir(parents=True)
+    bin_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    original_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == bin_path:
+            raise PermissionError("no perms")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.unlink", fake_unlink)
+    assert uninstall(str(tmp_path)) == 0
+    err = capsys.readouterr().err
+    assert "failed to remove file" in err
+    assert bin_path.exists()
+
+
 def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.install", lambda prefix: 11)
     assert main(["--prefix", str(tmp_path), "install"]) == 11
@@ -114,8 +176,17 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: "cfg")
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+    assert main(["check"]) == 0
     assert main(["preflight"]) == 0
 
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_lock(config: object):
+        yield Path("/tmp/fake.lock")
+
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 0)
     assert main(["run"]) == 0
 
@@ -126,6 +197,12 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
         "libvirt_backup_system.cli.list_vms",
         lambda config, include_blacklisted=False: [VM("alpha", "running")],
     )
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 3)
+    assert main(["list-vms"]) == 3
+    assert main(["verify"]) == 3
+    assert main(["cleanup"]) == 3
+
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     assert main(["list-vms", "--json"]) == 0
     assert '"alpha"' in capsys.readouterr().out
     assert main(["list-vms", "--include-blacklisted"]) == 0
@@ -139,6 +216,33 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.restore_to_dir", lambda source, target: 0)
     assert main(["restore-to-dir", "source", "target"]) == 0
+
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 4)
+    assert main(["restore-to-dir", "source", "target"]) == 4
+
+
+def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
+    import contextlib
+
+    from libvirt_backup_system.lock import LockBusyError
+
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: "cfg")
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+
+    @contextlib.contextmanager
+    def busy(config: object):
+        raise LockBusyError(tmp_path / "run.lock")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", busy)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.run_backups",
+        lambda config: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    assert main(["run"]) == 1
+    err = capsys.readouterr().err
+    assert "another run in progress" in err
+    assert "run.lock" in err
 
 
 def test_cli_exceptions(monkeypatch, capsys) -> None:

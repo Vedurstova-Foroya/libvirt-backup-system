@@ -14,4 +14,4 @@ def event(level: str, message: str, **fields: Any) -> None:
     }
     record.update(fields)
     stream = sys.stderr if level in {"error", "warning"} else sys.stdout
-    print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=stream, flush=True)
+    print(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str), file=stream, flush=True)

@@ -1,6 +1,6 @@
 # libvirt-backup-system
 
-Python CLI for backing up libvirt VMs with `virtnbdbackup`, staging local monthly backup trees, and syncing them to an SSH/rsync target such as a QNAP.
+Python CLI for backing up libvirt VMs with `virtnbdbackup` into a configured monthly backup tree such as a mounted QNAP NFS export.
 
 ## Install
 
@@ -10,10 +10,12 @@ From a checkout on a Debian/Ubuntu-style KVM host:
 sudo python3 -m libvirt_backup_system install
 ```
 
-Edit `/etc/libvirt-backup-system/libvirt-backup.env`, then run:
+Edit `/etc/libvirt-backup-system/libvirt-backup.env` and set `BACKUP_PATH`.
+It is intentionally blank after install, so `check` and `run` fail until
+you choose the backup destination.
 
 ```sh
-sudo libvirt-backup-system preflight
+sudo libvirt-backup-system check
 sudo libvirt-backup-system run
 ```
 
@@ -39,6 +41,7 @@ Uninstall removes installed program files and systemd units. Config, state, logs
 
 - `install`
 - `uninstall`
+- `check`
 - `preflight`
 - `run`
 - `list-vms`

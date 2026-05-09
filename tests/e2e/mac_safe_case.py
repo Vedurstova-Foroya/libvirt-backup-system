@@ -4,14 +4,12 @@ import json
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 PREFIX = Path("/tmp/lbs-root")
 BIN = PREFIX / "usr/local/bin/libvirt-backup-system"
 CONFIG = PREFIX / "etc/libvirt-backup-system/libvirt-backup.env"
-LOCAL_ROOT = Path("/tmp/local-backups")
-SSH_KEY = Path("/sshkeys/id_ed25519")
+BACKUP_PATH = Path("/mnt/qnap-backups")
 
 
 def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -24,49 +22,18 @@ def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = Non
     return proc
 
 
-def wait_for_ssh() -> None:
-    SSH_KEY.parent.mkdir(parents=True, exist_ok=True)
-    if not SSH_KEY.exists():
-        run(["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(SSH_KEY)])
-    for _ in range(40):
-        proc = run(
-            [
-                "ssh",
-                "-i",
-                str(SSH_KEY),
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "backup@qnap",
-                "true",
-            ],
-            check=False,
-        )
-        if proc.returncode == 0:
-            return
-        time.sleep(1)
-    raise AssertionError("qnap ssh did not become reachable")
-
-
 def write_config() -> None:
+    BACKUP_PATH.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(
         "\n".join(
             [
                 "LIBVIRT_URI=test:///default",
-                f"LOCAL_ROOT={LOCAL_ROOT}",
+                f"BACKUP_PATH={BACKUP_PATH}",
                 "HOST_ID=e2e-host",
                 "VM_BLACKLIST=ignore-me",
                 "BACKUP_COMPRESS=true",
-                "REMOTE_ENABLED=true",
-                "REMOTE_HOST=qnap",
-                "REMOTE_USER=backup",
-                "REMOTE_DIR=/backup",
-                f"SSH_KEY={SSH_KEY}",
-                "SSH_PORT=22",
-                "SSH_OPTIONS=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-                "LOCAL_RETENTION_MONTHS=1",
-                "REMOTE_RETENTION_MONTHS=1",
+                "BACKUP_REQUIRE_NFS_MOUNT=true",
+                "BACKUP_RETENTION_MONTHS=1",
                 "SPACE_MARGIN_PERCENT=20",
                 "MAX_PARALLEL_VMS=1",
                 "INACTIVE_COPY_EVERY_RUN=false",
@@ -87,8 +54,7 @@ def assert_json_lines(output: str) -> None:
 
 def main() -> int:
     shutil.rmtree(PREFIX, ignore_errors=True)
-    shutil.rmtree(LOCAL_ROOT, ignore_errors=True)
-    wait_for_ssh()
+    shutil.rmtree(BACKUP_PATH / "e2e-host", ignore_errors=True)
 
     run(["python3", "-m", "libvirt_backup_system", "--prefix", str(PREFIX), "install"])
     assert BIN.exists(), "installed CLI wrapper is missing"
@@ -104,33 +70,21 @@ def main() -> int:
 
     low_space = run([str(BIN), "preflight"], check=False, env={"LBS_FAKE_LOW_SPACE": "1"})
     assert low_space.returncode != 0, "low-space preflight should fail"
-    assert "insufficient local space" in low_space.stderr
+    assert "insufficient backup space" in low_space.stderr
 
     backup = run([str(BIN), "run"])
     assert_json_lines(backup.stdout)
-    month_dirs = list((LOCAL_ROOT / "alpha").glob("????-??"))
+    month_dirs = list((BACKUP_PATH / "e2e-host/alpha").glob("????-??"))
     assert month_dirs, "running VM backup month missing"
-    assert list((LOCAL_ROOT / "beta").glob("????-??")), "inactive VM backup month missing"
+    assert list((BACKUP_PATH / "e2e-host/beta").glob("????-??")), "inactive VM backup month missing"
     month = month_dirs[0].name
 
-    run(
-        [
-            "ssh",
-            "-i",
-            str(SSH_KEY),
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "backup@qnap",
-            f"test -d /backup/e2e-host/alpha/{month}",
-        ]
-    )
+    assert (BACKUP_PATH / "e2e-host/alpha" / month).is_dir(), "backup month missing"
 
-    old = LOCAL_ROOT / "alpha" / "1999-01"
+    old = BACKUP_PATH / "e2e-host/alpha" / "1999-01"
     old.mkdir(parents=True)
     run([str(BIN), "cleanup"])
-    assert not old.exists(), "old local backup month was not cleaned"
+    assert not old.exists(), "old backup month was not cleaned"
 
     run([str(BIN), "verify"])
 

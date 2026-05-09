@@ -106,9 +106,7 @@ sudo apt install -y \
   docker-compose-v2 \
   qemu-kvm \
   libvirt-daemon-system \
-  libvirt-clients \
-  rsync \
-  openssh-client
+  libvirt-clients
 ```
 
 On older distributions, the Compose package may be named
@@ -168,9 +166,9 @@ uv run --locked --extra dev python -m tests.e2e
 ```
 
 The runner always executes the Docker Compose orchestration scenario. That path
-uses a runner container, a QNAP-like SSH/rsync container, and fake libvirt tools
-to test install/uninstall behavior, preflight checks, backup orchestration,
-retention, structured logging, SSH, rsync, and failure handling.
+uses a runner container, a mounted backup volume, and fake libvirt tools to test
+install/uninstall behavior, preflight checks, backup orchestration, retention,
+structured logging, and failure handling.
 
 On Linux hosts with `/dev/kvm`, the runner also probes whether a privileged
 container can access KVM. The current portable suite reports the detected KVM
@@ -192,7 +190,8 @@ uv run --locked --extra dev python -m tests.e2e --skip-kvm
 
 ## Run the Full Local Gate
 
-The repository pre-push hook runs the same gate as CI:
+The repository pre-push hook is the sole local quality gate (there is no
+GitHub Actions CI configured) and runs:
 
 ```bash
 uv run --locked --extra dev python -m tools.gates

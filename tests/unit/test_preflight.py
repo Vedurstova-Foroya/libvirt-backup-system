@@ -1,34 +1,45 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.preflight import _df_available_kb, _remote_df_available_kb, check, sh_quote
-from libvirt_backup_system.shell import CommandError, CommandResult
+from libvirt_backup_system.preflight import (
+    _df_available_kb,
+    check,
+    validate_config,
+)
+from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
 
 
-def config(tmp_path: Path) -> Config:
-    cfg = Config.load(prefix=str(tmp_path))
+def _preflight_config(cfg: Config) -> Config:
     cfg.values.update(
         {
-            "LOCAL_ROOT": str(tmp_path / "backups"),
-            "REMOTE_ENABLED": "true",
-            "REMOTE_HOST": "qnap",
-            "REMOTE_USER": "backup",
-            "REMOTE_DIR": "/backup",
             "REQUIRE_ROOT": "true",
             "BACKUP_ESTIMATE_GB_PER_VM": "1",
             "SPACE_MARGIN_PERCENT": "20",
+            "BACKUP_RETENTION_MONTHS": "12",
+            "MAX_PARALLEL_VMS": "1",
         }
     )
     return cfg
 
 
-def test_sh_quote() -> None:
-    assert sh_quote("simple") == "'simple'"
-    assert sh_quote("it's") == "'it'\"'\"'s'"
+def patch_valid_preflight(
+    monkeypatch,
+    *,
+    available_kb: int = 2_000_000,
+    selected_vms: list[VM] | None = None,
+) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.list_vms",
+        lambda config: [VM("alpha", "running")] if selected_vms is None else selected_vms,
+    )
+    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
 
 
 def test_df_helpers(tmp_path: Path, monkeypatch) -> None:
@@ -36,9 +47,7 @@ def test_df_helpers(tmp_path: Path, monkeypatch) -> None:
         return CommandResult(args, 0, "Filesystem 1024-blocks Used Available Capacity Mounted on\nfs 9 1 7 1% /\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.preflight.run", fake_run)
-    cfg = config(tmp_path)
-    assert _df_available_kb(tmp_path / "new") == 7
-    assert _remote_df_available_kb(cfg) == 7
+    assert _df_available_kb(tmp_path) == 7
 
 
 def test_df_helpers_bad_output(tmp_path: Path, monkeypatch) -> None:
@@ -46,73 +55,104 @@ def test_df_helpers_bad_output(tmp_path: Path, monkeypatch) -> None:
         return CommandResult(args, 0, "header-only\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.preflight.run", fake_run)
-    cfg = config(tmp_path)
-    for func in [_df_available_kb, lambda path: _remote_df_available_kb(cfg)]:
-        try:
-            func(tmp_path)
-        except RuntimeError as exc:
-            assert "data row" in str(exc)
+    with pytest.raises(RuntimeError, match="data row"):
+        _df_available_kb(tmp_path)
 
 
-def test_check_passes(tmp_path: Path, monkeypatch, capsys) -> None:
-    cfg = config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 2_000_000)
-    monkeypatch.setattr("libvirt_backup_system.preflight._remote_df_available_kb", lambda config: 2_000_000)
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight.run",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
-    )
+def test_check_passes(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    patch_valid_preflight(monkeypatch)
     assert check(cfg) == 0
     assert "preflight passed" in capsys.readouterr().out
+    assert validate_config(cfg) == 0
 
 
-def test_check_passes_with_remote_disabled(tmp_path: Path, monkeypatch) -> None:
-    cfg = config(tmp_path)
-    cfg.values["REMOTE_ENABLED"] = "false"
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 2_000_000)
-    assert check(cfg) == 0
-
-
-def test_check_reports_failures(tmp_path: Path, monkeypatch, capsys) -> None:
-    cfg = config(tmp_path)
-    cfg.values["REMOTE_DIR"] = ""
+def test_check_reports_common_failures(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.values["BACKUP_PATH"] = ""
+    cfg.values["BACKUP_COMPRESS"] = "maybe"
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
+    cfg.values["MAX_PARALLEL_VMS"] = "0"
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "bad"
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: None)
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 99)
     monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [])
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 1)
+
     assert check(cfg) == 1
     err = capsys.readouterr().err
+    assert "BACKUP_PATH must not be empty" in err
+    assert "BACKUP_COMPRESS must be a boolean value" in err
+    assert "BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer" in err
+    assert "MAX_PARALLEL_VMS must be greater than or equal to 1" in err
+    assert "BACKUP_ESTIMATE_GB_PER_VM must be a number" in err
     assert "missing binary" in err
     assert "must run as root" in err
     assert "no VMs selected" in err
-    assert "REMOTE_DIR is required" in err
 
 
-def test_check_reports_local_and_remote_low_space(tmp_path: Path, monkeypatch, capsys) -> None:
-    cfg = config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 1)
-    monkeypatch.setattr("libvirt_backup_system.preflight._remote_df_available_kb", lambda config: 1)
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight.run",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
-    )
-    assert check(cfg) == 1
+def test_validate_config_reports_numeric_and_path_edge_cases(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "bad"
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "-1"
+    cfg.values["BACKUP_PATH"] = str(tmp_path / "missing")
+    assert validate_config(cfg) == 1
     err = capsys.readouterr().err
-    assert "insufficient local space" in err
-    assert "insufficient remote space" in err
+    assert "BACKUP_RETENTION_MONTHS must be an integer" in err
+    assert "BACKUP_ESTIMATE_GB_PER_VM must be greater than or equal to 0" in err
+    assert "BACKUP_PATH must exist" in err
+
+    backup_path = tmp_path / "backup"
+    backup_path.mkdir()
+    cfg.values.update(
+        {
+            "BACKUP_RETENTION_MONTHS": "12",
+            "BACKUP_ESTIMATE_GB_PER_VM": "1",
+            "BACKUP_PATH": str(backup_path),
+        }
+    )
+    checks = iter([True, False])
+    monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: next(checks))
+    assert validate_config(cfg) == 1
+    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
 
 
-def test_check_handles_discovery_and_remote_errors(tmp_path: Path, monkeypatch, capsys) -> None:
-    cfg = config(tmp_path)
+def test_validate_config_reports_write_probe_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _preflight_config(backup_config)
+    backup_path = tmp_path / "backup"
+    backup_path.mkdir()
+    cfg.values["BACKUP_PATH"] = str(backup_path)
+
+    def fail_write(self: Path, data: str, encoding: str | None = None) -> int:
+        raise OSError("readonly")
+
+    monkeypatch.setattr("libvirt_backup_system.preflight.Path.write_text", fail_write)
+    assert validate_config(cfg) == 1
+    assert "BACKUP_PATH must be writable" in capsys.readouterr().err
+
+
+def test_check_reports_low_backup_space(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    patch_valid_preflight(monkeypatch, available_kb=1)
+    assert check(cfg) == 1
+    assert "insufficient backup space" in capsys.readouterr().err
+
+
+def test_check_handles_discovery_and_backup_space_errors(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
     monkeypatch.setattr(
@@ -123,34 +163,84 @@ def test_check_handles_discovery_and_remote_errors(tmp_path: Path, monkeypatch, 
         lambda path: (_ for _ in ()).throw(RuntimeError("bad df")),
     )
 
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        raise CommandError(CommandResult(args, 2, "stdout", "stderr"))
-
-    monkeypatch.setattr("libvirt_backup_system.preflight.run", fake_run)
     assert check(cfg) == 1
     err = capsys.readouterr().err
     assert "libvirt VM discovery failed" in err
-    assert "local space check failed" in err
-    assert "remote SSH check failed" in err
+    assert "backup space check failed" in err
 
 
-def test_check_handles_remote_space_error(tmp_path: Path, monkeypatch, capsys) -> None:
-    cfg = config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 2_000_000)
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight._remote_df_available_kb",
-        lambda config: (_ for _ in ()).throw(RuntimeError("bad remote df")),
-    )
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight.run",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
-    )
+def test_check_reports_backup_path_failures(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    backup_file = tmp_path / "backup-file"
+    backup_file.write_text("not a directory", encoding="utf-8")
+    cfg.values["BACKUP_PATH"] = str(backup_file)
+    patch_valid_preflight(monkeypatch)
     assert check(cfg) == 1
-    assert "remote space check failed" in capsys.readouterr().err
+    assert "BACKUP_PATH must be a directory" in capsys.readouterr().err
+
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    cfg.values["BACKUP_PATH"] = str(backup_dir)
+    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
+    monkeypatch.setattr("libvirt_backup_system.preflight.Path.is_mount", lambda self: False)
+    assert check(cfg) == 1
+    assert "BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true" in capsys.readouterr().err
 
 
-def test_os_import_used() -> None:
-    assert hasattr(os, "getcwd")
+def test_check_rejects_unsafe_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    cfg.values["HOST_ID"] = "../outside"
+    patch_valid_preflight(monkeypatch)
+
+    assert check(cfg) == 1
+    assert not (tmp_path / "outside").exists()
+    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+
+
+def test_check_rejects_absolute_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    outside = tmp_path / "outside"
+    cfg.values["HOST_ID"] = str(outside)
+    patch_valid_preflight(monkeypatch)
+
+    assert check(cfg) == 1
+    assert not outside.exists()
+    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+
+
+def test_negative_space_margin_percent_rejected(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    cfg.values["SPACE_MARGIN_PERCENT"] = "-5"
+    patch_valid_preflight(monkeypatch)
+    assert check(cfg) == 1
+    assert "SPACE_MARGIN_PERCENT must be greater than or equal to 0" in capsys.readouterr().err
+
+
+def test_retention_minus_one_is_accepted_and_minus_two_rejected(monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.path_value("BACKUP_PATH").mkdir()
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "-1"
+    patch_valid_preflight(monkeypatch)
+    assert check(cfg) == 0
+
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "-2"
+    assert check(cfg) == 1
+    assert "BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer" in capsys.readouterr().err
+
+
+def test_check_rejects_symlinked_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _preflight_config(backup_config)
+    backup_path = cfg.path_value("BACKUP_PATH")
+    backup_path.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (backup_path / "link").symlink_to(outside, target_is_directory=True)
+    cfg.values["HOST_ID"] = "link/host"
+    patch_valid_preflight(monkeypatch)
+
+    assert check(cfg) == 1
+    assert not (outside / "host").exists()
+    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "libvirt-backup-system"
 version = "0.1.0"
-description = "Systemd-driven libvirt VM backup orchestrator using virtnbdbackup and rsync."
+description = "Systemd-driven libvirt VM backup orchestrator using virtnbdbackup and a configured backup path."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Vedurstovan"}]
@@ -76,7 +76,6 @@ reportMissingTypeStubs = false
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers -W error"
 testpaths = ["tests/unit"]
-filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true

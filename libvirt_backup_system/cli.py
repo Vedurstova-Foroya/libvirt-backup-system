@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 
 from .backup import cleanup, restore_to_dir, run_backups, verify
 from .config import Config
 from .installer import install, uninstall
+from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
-from .preflight import check
+from .preflight import check, validate_config
 from .vms import list_vms
 
 
@@ -26,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--purge-logs", action="store_true")
     uninstall_parser.add_argument("--purge-backups", action="store_true")
 
-    sub.add_parser("preflight")
+    sub.add_parser("check", aliases=["preflight"])
     sub.add_parser("run")
 
     list_parser = sub.add_parser("list-vms")
@@ -61,14 +63,27 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         config = Config.load(config_path=args.config, prefix=args.prefix)
-        if args.command == "preflight":
+        if args.command == "restore-to-dir":
+            config_code = validate_config(config)
+            if config_code != 0:
+                return config_code
+            return restore_to_dir(args.source, args.target)
+        if args.command in {"check", "preflight"}:
             return check(config)
         if args.command == "run":
             preflight_code = check(config)
             if preflight_code != 0:
                 return preflight_code
-            return run_backups(config)
+            try:
+                with acquire_run_lock(config):
+                    return run_backups(config)
+            except LockBusyError as exc:
+                event("error", "another run in progress", lock_path=str(exc.path))
+                return 1
         if args.command == "list-vms":
+            config_code = validate_config(config)
+            if config_code != 0:
+                return config_code
             vms = list_vms(config, include_blacklisted=args.include_blacklisted)
             if args.json:
                 print(json.dumps([{"name": vm.name, "state": vm.state, "running": vm.running} for vm in vms]))
@@ -77,16 +92,20 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{vm.name}\t{vm.state}")
             return 0
         if args.command == "verify":
+            config_code = validate_config(config)
+            if config_code != 0:
+                return config_code
             return verify(config, vm_name=args.vm)
         if args.command == "cleanup":
+            config_code = validate_config(config)
+            if config_code != 0:
+                return config_code
             return cleanup(config)
-        if args.command == "restore-to-dir":
-            return restore_to_dir(args.source, args.target)
     except KeyboardInterrupt:
         event("error", "interrupted")
         return 130
     except Exception as exc:
-        event("error", "fatal error", error=str(exc))
+        event("error", "fatal error", error=str(exc), traceback=traceback.format_exc())
         return 1
 
     parser.print_help(sys.stderr)
