@@ -16,4 +16,18 @@ if "domstate" in args:
     else:
         raise SystemExit(1)
     raise SystemExit(0)
+if "dumpxml" in args:
+    name = args[-1]
+    if name not in {"alpha", "beta", "ignore-me"}:
+        raise SystemExit(1)
+    print(
+        f"<domain>"
+        f"<devices>"
+        f"<disk type='file' device='disk'>"
+        f"<source file='/var/lib/libvirt/images/{name}.qcow2'/>"
+        f"</disk>"
+        f"</devices>"
+        f"</domain>"
+    )
+    raise SystemExit(0)
 raise SystemExit(0)

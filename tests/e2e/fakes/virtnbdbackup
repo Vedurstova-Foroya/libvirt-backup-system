@@ -1,14 +1,58 @@
 #!/usr/bin/env python3
+"""Fake virtnbdbackup that emits enough metadata/checkpoint info to be verified."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
 import os
 import pathlib
+import secrets
 import sys
 
-args = sys.argv[1:]
-vm = args[args.index("-d") + 1] if "-d" in args else "unknown"
-if os.environ.get("FAIL_BACKUP_FOR") == vm:
-    print(f"simulated backup failure for {vm}", file=sys.stderr)
+parser = argparse.ArgumentParser()
+parser.add_argument("-U", required=True)
+parser.add_argument("-d", required=True)
+parser.add_argument("-l", required=True, choices=["full", "auto", "copy", "inc"])
+parser.add_argument("-o", required=True)
+parser.add_argument("--compress", action="store_true")
+args, _ = parser.parse_known_args()
+
+if not args.U.startswith(("qemu:", "test:")):
+    print(f"unsupported libvirt URI: {args.U}", file=sys.stderr)
+    raise SystemExit(2)
+
+if not args.d or args.d.startswith("-") or "/" in args.d or args.d in {".", ".."}:
+    print(f"unsafe VM name: {args.d!r}", file=sys.stderr)
+    raise SystemExit(2)
+
+if os.environ.get("FAIL_BACKUP_FOR") == args.d:
+    print(f"simulated backup failure for {args.d}", file=sys.stderr)
     raise SystemExit(7)
-dest = pathlib.Path(args[args.index("-o") + 1])
+
+dest = pathlib.Path(args.o)
 dest.mkdir(parents=True, exist_ok=True)
-(dest / f"{vm}.backup").write_text("backup artifact\n", encoding="utf-8")
-print(f"backed up {vm} to {dest}")
+
+disk_payload = f"disk-data:{args.d}:{args.l}:{secrets.token_hex(4)}".encode()
+disk_file = dest / f"{args.d}.sda.qcow2.data"
+disk_file.write_bytes(disk_payload)
+
+checkpoint_name = f"virtnbdbackup.{args.d}.{secrets.token_hex(4)}"
+metadata = {
+    "domain": args.d,
+    "level": args.l,
+    "compressed": args.compress,
+    "checkpoint": checkpoint_name,
+    "disks": [
+        {
+            "target": "sda",
+            "file": disk_file.name,
+            "size": len(disk_payload),
+            "sha256": hashlib.sha256(disk_payload).hexdigest(),
+        }
+    ],
+}
+(dest / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+(dest / f"{checkpoint_name}.checkpoint").write_text(args.d + "\n", encoding="utf-8")
+print(f"backed up {args.d} level={args.l} to {dest}")

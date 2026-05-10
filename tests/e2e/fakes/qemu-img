@@ -1,2 +1,11 @@
-#!/bin/sh
-echo "qemu-img fake"
+#!/usr/bin/env python3
+import json
+import sys
+
+args = sys.argv[1:]
+if "info" in args and "--output=json" in args:
+    # Fixed 1 MiB so preflight space estimates stay well below the fake df
+    # free-space figure even with the multiplier and margin applied.
+    print(json.dumps({"virtual-size": 1048576, "format": "qcow2"}))
+    raise SystemExit(0)
+raise SystemExit(0)

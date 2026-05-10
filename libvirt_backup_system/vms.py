@@ -15,10 +15,21 @@ class VM:
     def running(self) -> bool:
         return self.state.strip().lower() == "running"
 
+    @property
+    def inactive(self) -> bool:
+        # Only fully shut-off VMs use the copy-level + monthly marker path.
+        # Paused, in-shutdown, crashed, pmsuspended, etc. still have live state
+        # and must not be misclassified as a cold offline backup.
+        return self.state.strip().lower() == "shut off"
+
+
+def is_safe_vm_name(name: str) -> bool:
+    return bool(name) and name not in {".", ".."} and not name.startswith("-") and "/" not in name and "\\" not in name
+
 
 def _assert_safe_vm_name(name: str) -> None:
-    if name.startswith("-"):
-        raise ValueError(f"refusing VM name that begins with a dash: {name!r}")
+    if not is_safe_vm_name(name):
+        raise ValueError(f"refusing unsafe VM name: {name!r}")
 
 
 def list_vms(config: Config, *, include_blacklisted: bool = False) -> list[VM]:

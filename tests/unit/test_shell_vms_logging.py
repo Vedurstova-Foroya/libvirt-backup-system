@@ -74,6 +74,13 @@ def test_vm_running_property() -> None:
     assert not VM("beta", "shut off").running
 
 
+def test_vm_inactive_only_for_shut_off() -> None:
+    assert VM("beta", " shut off ").inactive
+    assert not VM("alpha", "running").inactive
+    for transitional in ("paused", "in shutdown", "crashed", "pmsuspended", "blocked"):
+        assert not VM("gamma", transitional).inactive, transitional
+
+
 def test_list_vms_filters_blacklist(monkeypatch) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
@@ -231,13 +238,15 @@ def test_kill_process_group_module_constants() -> None:
     assert shell.TERMINATE_GRACE_SECONDS > 0
 
 
-def test_list_vms_rejects_vm_name_starting_with_dash(monkeypatch) -> None:
+def test_list_vms_rejects_unsafe_vm_name(monkeypatch) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
 
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        return CommandResult(args, 0, "-evil\n", "")
+    for unsafe in ("-evil", "..", "a/b"):
 
-    monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
-    with pytest.raises(ValueError, match="begins with a dash"):
-        list_vms(cfg)
+        def fake_run(args: list[str], *, check: bool = True, env: object = None, _value: str = unsafe) -> CommandResult:
+            return CommandResult(args, 0, f"{_value}\n", "")
+
+        monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
+        with pytest.raises(ValueError, match="unsafe VM name"):
+            list_vms(cfg)

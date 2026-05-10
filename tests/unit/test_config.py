@@ -88,6 +88,14 @@ def test_parse_env_file_handles_malformed_quotes(tmp_path: Path) -> None:
     assert values["BAD"] == 'a"b'
 
 
+def test_load_ignores_env_overrides_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "libvirt-backup.env"
+    env_file.write_text("BACKUP_PATH=/from/file\n", encoding="utf-8")
+    monkeypatch.setenv("BACKUP_PATH", "/from/env")
+    cfg = Config.load(config_path=str(env_file), prefix=str(tmp_path), apply_env_overrides=False)
+    assert cfg.get("BACKUP_PATH") == "/from/file"
+
+
 def test_env_override_logs_only_when_value_differs(tmp_path: Path, monkeypatch, capsys) -> None:
     env_file = tmp_path / "libvirt-backup.env"
     env_file.write_text("HOST_ID=match-host\nBACKUP_PATH=/file/path\n", encoding="utf-8")

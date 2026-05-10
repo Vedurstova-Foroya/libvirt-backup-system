@@ -237,6 +237,13 @@ def test_retention_minus_one_is_accepted_and_minus_two_rejected(monkeypatch, cap
     assert "BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer" in capsys.readouterr().err
 
 
+def test_validate_config_rejects_relative_backup_path(backup_config, capsys) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.values["BACKUP_PATH"] = "relative/backups"
+    assert validate_config(cfg) == 1
+    assert "BACKUP_PATH must be an absolute path" in capsys.readouterr().err
+
+
 def test_check_rejects_symlinked_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _preflight_config(backup_config)
     backup_path = cfg.path_value("BACKUP_PATH")

@@ -18,15 +18,20 @@ After=network-online.target libvirtd.service
 {requires_mounts_for}
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/libvirt-backup-system/libvirt-backup.env
-ExecStart=/usr/local/bin/libvirt-backup-system run
+TimeoutStartSec=infinity
+EnvironmentFile={config_path}
+ExecStart={bin_path} --config {config_path} run
 """
 
 
-def _render_unit_service(backup_path: str) -> str:
+def _render_unit_service(backup_path: str, bin_path: Path, config_path: Path) -> str:
     backup_path = backup_path.strip()
     requires = f"RequiresMountsFor={backup_path}\n" if backup_path else ""
-    return UNIT_SERVICE.format(requires_mounts_for=requires)
+    return UNIT_SERVICE.format(
+        requires_mounts_for=requires,
+        bin_path=str(bin_path),
+        config_path=str(config_path),
+    )
 
 
 UNIT_TIMER = """[Unit]
@@ -86,14 +91,21 @@ def _print_install_next_steps(config_path: Path, bin_path: Path) -> None:
     )
 
 
-def install(prefix: str | None = None) -> int:
+def install(prefix: str | None = None, *, config_path: str | None = None) -> int:
     root = root_prefix(prefix)
-    cfg = Config.load(prefix=str(root))
+    resolved_config = Path(config_path) if config_path else default_config_path(root)
+    # First install accepts env overrides so the documented one-shot
+    # `BACKUP_PATH=... install` flow works. Once the env file exists it becomes
+    # the source of truth; otherwise the systemd unit can desync from it.
+    cfg = Config.load(
+        config_path=str(resolved_config),
+        prefix=str(root),
+        apply_env_overrides=not resolved_config.exists(),
+    )
     package_src = Path(__file__).resolve().parent
     opt_dir = prefixed("/opt/libvirt-backup-system", root)
     package_dst = opt_dir / "libvirt_backup_system"
     bin_path = prefixed("/usr/local/bin/libvirt-backup-system", root)
-    config_path = default_config_path(root)
     systemd_dir = prefixed("/etc/systemd/system", root)
 
     if package_dst.exists():
@@ -115,12 +127,12 @@ def install(prefix: str | None = None) -> int:
     bin_path.write_text(wrapper, encoding="utf-8")
     bin_path.chmod(bin_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    if not config_path.exists():
-        config_path.write_text(cfg.render_env(), encoding="utf-8")
-        config_path.chmod(0o600)
+    resolved_config.parent.mkdir(parents=True, exist_ok=True)
+    if not resolved_config.exists():
+        resolved_config.write_text(cfg.render_env(), encoding="utf-8")
+        resolved_config.chmod(0o600)
 
-    _print_install_next_steps(config_path, bin_path)
+    _print_install_next_steps(resolved_config, bin_path)
     if not cfg.get("BACKUP_PATH").strip():
         for path in [
             systemd_dir / "libvirt-backup-system.service",
@@ -136,19 +148,19 @@ def install(prefix: str | None = None) -> int:
         event(
             "warning",
             "systemd unit installation skipped because BACKUP_PATH is not configured",
-            config_path=str(config_path),
+            config_path=str(resolved_config),
         )
         _run_systemctl(root, [["systemctl", "daemon-reload"]])
         return 0
 
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / "libvirt-backup-system.service").write_text(
-        _render_unit_service(cfg.get("BACKUP_PATH")), encoding="utf-8"
+        _render_unit_service(cfg.get("BACKUP_PATH"), bin_path, resolved_config), encoding="utf-8"
     )
     (systemd_dir / "libvirt-backup-system.timer").write_text(
         UNIT_TIMER.format(calendar=cfg.get("SYSTEMD_ON_CALENDAR")), encoding="utf-8"
     )
-    event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(config_path))
+    event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(resolved_config))
 
     if not _systemctl_available(root):
         event("info", "systemd activation skipped", root_prefix=str(root))
@@ -166,25 +178,8 @@ def install(prefix: str | None = None) -> int:
     )
 
 
-def uninstall(
-    prefix: str | None = None,
-    *,
-    purge_config: bool = False,
-    purge_state: bool = False,
-    purge_logs: bool = False,
-    purge_backups: bool = False,
-) -> int:
-    root = root_prefix(prefix)
-    cfg = Config.load(prefix=str(root))
-
-    _run_systemctl(
-        root,
-        [
-            ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
-            ["systemctl", "stop", "libvirt-backup-system.service"],
-        ],
-    )
-
+def _remove_installed_files(root: Path) -> bool:
+    ok = True
     for path in [
         prefixed("/usr/local/bin/libvirt-backup-system", root),
         prefixed("/etc/systemd/system/libvirt-backup-system.service", root),
@@ -197,36 +192,85 @@ def uninstall(
             pass
         except (PermissionError, OSError) as exc:
             event("error", "failed to remove file", path=str(path), error=str(exc))
-
+            ok = False
     opt_dir = prefixed("/opt/libvirt-backup-system", root)
     if opt_dir.exists():
-        shutil.rmtree(opt_dir)
-        event("info", "removed directory", path=str(opt_dir))
+        try:
+            shutil.rmtree(opt_dir)
+            event("info", "removed directory", path=str(opt_dir))
+        except OSError as exc:
+            event("error", "failed to remove directory", path=str(opt_dir), error=str(exc))
+            ok = False
+    return ok
 
-    purge_paths: list[Path] = []
-    if purge_config:
-        purge_paths.append(prefixed("/etc/libvirt-backup-system", root))
-    if purge_state:
-        purge_paths.append(prefixed("/var/lib/libvirt-backup-system", root))
-    if purge_logs:
-        purge_paths.append(prefixed("/var/log/libvirt-backup-system", root))
-    if purge_backups:
+
+def _resolve_purge_paths(
+    root: Path,
+    cfg: Config,
+    flags: dict[str, bool],
+) -> tuple[list[Path], bool]:
+    paths: list[Path] = []
+    ok = True
+    if flags["config"]:
+        paths.append(prefixed("/etc/libvirt-backup-system", root))
+    if flags["state"]:
+        paths.append(prefixed("/var/lib/libvirt-backup-system", root))
+    if flags["logs"]:
+        paths.append(prefixed("/var/log/libvirt-backup-system", root))
+    if flags["backups"]:
         if cfg.get("BACKUP_PATH").strip():
             root_path = backup_root(cfg)
             if backup_subpath_is_safe(cfg, root_path):
-                purge_paths.append(root_path)
+                paths.append(root_path)
             else:
                 event("error", "backup purge skipped because backup path is unsafe", path=str(root_path))
+                ok = False
         else:
             event("warning", "backup purge skipped because BACKUP_PATH is not configured")
+    return paths, ok
 
-    for path in purge_paths:
-        if path.exists():
+
+def _purge_paths(paths: list[Path]) -> bool:
+    ok = True
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
             if path.is_dir():
                 shutil.rmtree(path)
             else:
                 path.unlink()
             event("info", "purged", path=str(path))
+        except OSError as exc:
+            event("error", "purge failed", path=str(path), error=str(exc))
+            ok = False
+    return ok
 
-    _run_systemctl(root, [["systemctl", "daemon-reload"]])
-    return 0
+
+def uninstall(  # noqa: PLR0913
+    prefix: str | None = None,
+    *,
+    config_path: str | None = None,
+    purge_config: bool = False,
+    purge_state: bool = False,
+    purge_logs: bool = False,
+    purge_backups: bool = False,
+) -> int:
+    root = root_prefix(prefix)
+    cfg = Config.load(config_path=config_path, prefix=str(root))
+    ok = _run_systemctl(
+        root,
+        [
+            ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
+            ["systemctl", "stop", "libvirt-backup-system.service"],
+        ],
+    )
+    ok = _remove_installed_files(root) and ok
+    purge_paths, purge_ok = _resolve_purge_paths(
+        root,
+        cfg,
+        {"config": purge_config, "state": purge_state, "logs": purge_logs, "backups": purge_backups},
+    )
+    ok = _purge_paths(purge_paths) and purge_ok and ok
+    ok = _run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
+    return 0 if ok else 1

@@ -172,9 +172,9 @@ structured logging, and failure handling.
 
 On Linux hosts with `/dev/kvm`, the runner also probes whether a privileged
 container can access KVM. The current portable suite reports the detected KVM
-capability, but the real nested-VM backup/restore scenario is still scaffolded
-and not enabled. If KVM capability is missing, that path is skipped with a clear
-reason instead of failing the suite.
+capability, but the real nested-VM backup validation scenario is still
+scaffolded and not enabled. If KVM capability is missing, that path is skipped
+with a clear reason instead of failing the suite.
 
 To run only the KVM capability probe path:
 

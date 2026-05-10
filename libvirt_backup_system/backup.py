@@ -9,7 +9,7 @@ from .disks import inactive_marker_is_fresh
 from .logging_json import event
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe, unsafe_symlink_descendants
-from .vms import VM, list_vms
+from .vms import VM, is_safe_vm_name, list_vms
 
 
 def current_month(now: dt.datetime | None = None) -> str:
@@ -18,8 +18,10 @@ def current_month(now: dt.datetime | None = None) -> str:
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
+    # Microsecond precision avoids collisions on rapid back-to-back runs.
+    # An existence check in backup_vm still guards against clock jumps.
     now = now or dt.datetime.now(dt.timezone.utc)
-    return now.strftime("%Y%m%dT%H%M%SZ")
+    return now.strftime("%Y%m%dT%H%M%S_%fZ")
 
 
 def backup_root(config: Config) -> Path:
@@ -37,10 +39,6 @@ def _ensure_backup_subpath_safe(config: Config, path: Path, message: str) -> boo
         return True
     event("error", message, path=str(path), backup_path=config.get("BACKUP_PATH"))
     return False
-
-
-def _is_safe_vm_name(name: str) -> bool:
-    return bool(name) and name not in {".", ".."} and not name.startswith("-") and "/" not in name and "\\" not in name
 
 
 def _remove_partial_destination(dest: Path, vm_name: str) -> None:
@@ -62,28 +60,34 @@ def _remove_partial_destination(dest: Path, vm_name: str) -> None:
 
 
 def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
-    if vm.name.startswith("-"):
-        raise ValueError(f"refusing VM name that begins with a dash: {vm.name!r}")
+    if not is_safe_vm_name(vm.name):
+        raise ValueError(f"refusing unsafe VM name: {vm.name!r}")
     month_dir = backup_root(config) / vm.name / month
     dest = month_dir / stamp
     if not _ensure_backup_subpath_safe(config, month_dir, "backup skipped because destination is unsafe"):
         return False
 
     inactive_marker = month_dir / ".inactive-copy-complete"
-    if not vm.running and inactive_marker.exists() and not config.enabled("INACTIVE_COPY_EVERY_RUN"):
+    if vm.inactive and inactive_marker.exists() and not config.enabled("INACTIVE_COPY_EVERY_RUN"):
         if inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, inactive_marker):
             event("info", "inactive VM already copied this month", vm=vm.name, month=month)
             return True
         event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
 
+    if dest.exists():
+        # Refuse to overwrite or clean up an existing backup directory: a
+        # rapid retry or backward clock jump must never delete prior data.
+        event("error", "backup destination already exists", vm=vm.name, destination=str(dest))
+        return False
+
     month_dir.mkdir(parents=True, exist_ok=True)
     if not _ensure_backup_subpath_safe(config, month_dir, "backup skipped because destination became unsafe"):
         return False
 
-    if vm.running and inactive_marker.exists():
+    if not vm.inactive and inactive_marker.exists():
         inactive_marker.unlink(missing_ok=True)
 
-    level = "auto" if vm.running else "copy"
+    level = "copy" if vm.inactive else "auto"
     cmd = ["virtnbdbackup", "-U", config.get("LIBVIRT_URI"), "-d", vm.name, "-l", level, "-o", str(dest)]
     if config.enabled("BACKUP_COMPRESS"):
         cmd.append("--compress")
@@ -111,7 +115,7 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         )
         return False
 
-    if not vm.running:
+    if vm.inactive:
         inactive_marker.write_text(stamp + "\n", encoding="utf-8")
     event("info", "backup completed", vm=vm.name, destination=str(dest))
     return True
@@ -187,7 +191,7 @@ def cleanup(config: Config) -> int:
 
 def _iter_verify_targets(root: Path, vm_name: str | None) -> tuple[list[Path], bool]:
     if vm_name is not None:
-        if not _is_safe_vm_name(vm_name):
+        if not is_safe_vm_name(vm_name):
             event("error", "verify target name is invalid", vm=vm_name)
             return [], False
         return [root / vm_name], True
@@ -237,21 +241,3 @@ def verify(config: Config, vm_name: str | None = None) -> int:
         event("error", "verify found no backups", vm=vm_name or None, root=str(root))
         ok = False
     return 0 if ok else 1
-
-
-def restore_to_dir(source: str, target: str, *, force: bool = False) -> int:
-    target_path = Path(target)
-    if target_path.is_symlink():
-        event("error", "restore target is a symlink", target=str(target_path))
-        return 1
-    if target_path.exists():
-        if not target_path.is_dir():
-            event("error", "restore target is not a directory", target=str(target_path))
-            return 1
-        if any(target_path.iterdir()) and not force:
-            event("error", "restore target is not empty (pass --force to override)", target=str(target_path))
-            return 1
-    target_path.mkdir(parents=True, exist_ok=True)
-    run_streamed(["virtnbdrestore", "-i", source, "-o", "restore", "-D", str(target_path)])
-    event("info", "restore completed", source=source, target=str(target_path))
-    return 0

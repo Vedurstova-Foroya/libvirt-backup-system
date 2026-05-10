@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.disks import (
     disks_modified_after,
     inactive_marker_is_fresh,
@@ -28,9 +30,6 @@ def test_vm_disk_paths_parses_dumpxml(monkeypatch) -> None:
         <disk type='file' device='cdrom'>
           <source file='/iso/install.iso'/>
         </disk>
-        <disk type='network' device='disk'>
-          <source protocol='nbd'/>
-        </disk>
         <disk type='file' device='disk'>
         </disk>
       </devices>
@@ -44,9 +43,40 @@ def test_vm_disk_paths_parses_dumpxml(monkeypatch) -> None:
     ]
 
 
-def test_vm_disk_paths_returns_empty_on_parse_error(monkeypatch) -> None:
+def test_vm_disk_paths_raises_on_unsupported_disk_type(monkeypatch) -> None:
+    xml = """
+    <domain>
+      <devices>
+        <disk type='network' device='disk'>
+          <source protocol='nbd'/>
+        </disk>
+      </devices>
+    </domain>
+    """
+    monkeypatch.setattr("libvirt_backup_system.disks.run", lambda args: _xml_result(xml))
+    with pytest.raises(ValueError, match="unsupported disk type 'network'"):
+        vm_disk_paths("qemu:///system", "alpha")
+
+
+def test_inactive_marker_is_fresh_treats_unsupported_disk_as_stale(tmp_path: Path, monkeypatch) -> None:
+    marker = tmp_path / "marker"
+    marker.write_text("ok\n", encoding="utf-8")
+    xml = "<domain><devices><disk type='volume' device='disk'><source pool='p' volume='v'/></disk></devices></domain>"
+    monkeypatch.setattr("libvirt_backup_system.disks.run", lambda args: _xml_result(xml))
+    assert not inactive_marker_is_fresh("qemu:///system", "alpha", marker)
+
+
+def test_vm_disk_paths_raises_on_parse_error(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.disks.run", lambda args: _xml_result("not xml"))
-    assert vm_disk_paths("qemu:///system", "alpha") == []
+    with pytest.raises(ValueError, match="unparseable XML"):
+        vm_disk_paths("qemu:///system", "alpha")
+
+
+def test_inactive_marker_is_fresh_treats_parse_error_as_stale(tmp_path: Path, monkeypatch) -> None:
+    marker = tmp_path / "marker"
+    marker.write_text("ok\n", encoding="utf-8")
+    monkeypatch.setattr("libvirt_backup_system.disks.run", lambda args: _xml_result("not xml"))
+    assert not inactive_marker_is_fresh("qemu:///system", "alpha", marker)
 
 
 def test_vm_disk_paths_skips_empty_source_value(monkeypatch) -> None:

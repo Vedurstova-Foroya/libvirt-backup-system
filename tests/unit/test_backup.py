@@ -28,9 +28,9 @@ def _backup_config(cfg: Config) -> Config:
 
 
 def test_time_helpers() -> None:
-    now = dt.datetime(2026, 5, 7, 10, 11, 12, tzinfo=dt.timezone.utc)
+    now = dt.datetime(2026, 5, 7, 10, 11, 12, 345678, tzinfo=dt.timezone.utc)
     assert current_month(now) == "2026-05"
-    assert timestamp(now) == "20260507T101112Z"
+    assert timestamp(now) == "20260507T101112_345678Z"
     assert len(current_month()) == 7
     assert timestamp().endswith("Z")
 
@@ -280,12 +280,13 @@ def test_cleanup_zero_retention(tmp_path: Path, backup_config) -> None:
     assert not (tmp_path / "backups/host/alpha/2026-01").exists()
 
 
-def test_backup_vm_rejects_vm_name_starting_with_dash(backup_config) -> None:
+def test_backup_vm_rejects_unsafe_vm_name(backup_config) -> None:
     cfg = _backup_config(backup_config)
     import pytest
 
-    with pytest.raises(ValueError, match="begins with a dash"):
-        backup_vm(cfg, VM("-evil", "running"), "2026-05", "stamp")
+    for unsafe in ("-evil", "..", "a/b", "back\\slash", ""):
+        with pytest.raises(ValueError, match="unsafe VM name"):
+            backup_vm(cfg, VM(unsafe, "running"), "2026-05", "stamp")
 
 
 def test_module_import() -> None:

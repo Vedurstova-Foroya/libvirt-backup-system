@@ -80,6 +80,17 @@ def main() -> int:
 
     assert (BACKUP_PATH / "e2e-host/alpha" / month).is_dir(), "backup month missing"
 
+    for vm_name in ("alpha", "beta"):
+        timestamps = sorted((BACKUP_PATH / "e2e-host" / vm_name / month).glob("*T*Z"))
+        assert timestamps, f"no timestamped backup directory for {vm_name}"
+        metadata_path = timestamps[-1] / "metadata.json"
+        assert metadata_path.is_file(), f"metadata.json missing for {vm_name}"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert metadata["domain"] == vm_name, metadata
+        assert metadata["disks"], f"no disks recorded for {vm_name}"
+        checkpoint = metadata["checkpoint"]
+        assert (timestamps[-1] / f"{checkpoint}.checkpoint").is_file(), "checkpoint missing"
+
     old = BACKUP_PATH / "e2e-host/alpha" / "1999-01"
     old.mkdir(parents=True)
     run([str(BIN), "cleanup"])
@@ -87,9 +98,13 @@ def main() -> int:
 
     run([str(BIN), "verify"])
 
+    old.mkdir(parents=True)
     failed = run([str(BIN), "run"], check=False, env={"FAIL_BACKUP_FOR": "alpha"})
     assert failed.returncode != 0, "backup failure should produce non-zero exit"
     assert "backup failed" in failed.stderr
+    assert "cleanup skipped because backups failed" in failed.stderr
+    assert old.exists(), "cleanup should not prune retention after a failed backup"
+    old.rmdir()
 
     run(["python3", "-m", "libvirt_backup_system", "--prefix", str(PREFIX), "uninstall"])
     assert not BIN.exists(), "CLI wrapper should be removed by uninstall"

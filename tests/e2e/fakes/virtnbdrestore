@@ -1,17 +1,56 @@
 #!/usr/bin/env python3
+"""Fake virtnbdrestore that verifies metadata + checksums produced by the fake virtnbdbackup."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
 import pathlib
 import sys
 
-args = sys.argv[1:]
-source = pathlib.Path(args[args.index("-i") + 1]) if "-i" in args else pathlib.Path(".")
-mode = args[args.index("-o") + 1] if "-o" in args else "verify"
-if mode == "verify":
-    if not source.exists():
-        print("source missing", file=sys.stderr)
-        raise SystemExit(2)
-    print("verify ok")
-elif mode == "restore":
-    target = pathlib.Path(args[args.index("-D") + 1])
-    target.mkdir(parents=True, exist_ok=True)
-    (target / "restored.txt").write_text(str(source) + "\n", encoding="utf-8")
-    print("restore ok")
+parser = argparse.ArgumentParser()
+parser.add_argument("-i", required=True)
+parser.add_argument("-o", required=True)
+args, _ = parser.parse_known_args()
+
+source = pathlib.Path(args.i)
+if not source.exists():
+    print(f"source missing: {source}", file=sys.stderr)
+    raise SystemExit(2)
+
+if args.o != "verify":
+    print(f"unsupported restore mode: {args.o}", file=sys.stderr)
+    raise SystemExit(2)
+
+metadata_path = source / "metadata.json"
+if not metadata_path.exists():
+    print(f"missing metadata.json in {source}", file=sys.stderr)
+    raise SystemExit(3)
+
+try:
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    print(f"metadata.json is not valid JSON: {exc}", file=sys.stderr)
+    raise SystemExit(3) from exc
+
+checkpoint = metadata.get("checkpoint", "")
+if not checkpoint or not (source / f"{checkpoint}.checkpoint").exists():
+    print(f"checkpoint file missing for {checkpoint!r}", file=sys.stderr)
+    raise SystemExit(4)
+
+for disk in metadata.get("disks", []):
+    disk_path = source / disk["file"]
+    if not disk_path.exists():
+        print(f"missing disk file {disk_path}", file=sys.stderr)
+        raise SystemExit(5)
+    payload = disk_path.read_bytes()
+    if len(payload) != disk["size"]:
+        print(f"size mismatch for {disk_path}", file=sys.stderr)
+        raise SystemExit(6)
+    actual = hashlib.sha256(payload).hexdigest()
+    if actual != disk["sha256"]:
+        print(f"checksum mismatch for {disk_path}: expected {disk['sha256']}, got {actual}", file=sys.stderr)
+        raise SystemExit(7)
+
+print(f"verify ok ({len(metadata.get('disks', []))} disks, level={metadata.get('level')})")

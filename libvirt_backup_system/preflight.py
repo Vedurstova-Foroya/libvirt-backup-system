@@ -51,7 +51,7 @@ def _disk_virtual_size_bytes(path: str) -> int:
 def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
     try:
         disks = vm_disk_paths(uri, vm.name)
-    except (CommandError, OSError) as exc:
+    except (CommandError, OSError, ValueError) as exc:
         event("warning", "disk list failed for VM", vm=vm.name, error=str(exc))
         return fallback_bytes
     total = 0
@@ -130,6 +130,8 @@ def _validate_backup_path(config: Config) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
     backup_path = config.path_value("BACKUP_PATH")
+    if not backup_path.is_absolute():
+        return ["BACKUP_PATH must be an absolute path"]
     if not backup_path.exists():
         return ["BACKUP_PATH must exist"]
     if not backup_path.is_dir():

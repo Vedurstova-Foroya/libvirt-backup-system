@@ -75,6 +75,10 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "#   BACKUP_PATH/<host-id>/<vm-name>/<yyyy-mm>/<timestamp>/",
     "BACKUP_PATH",
     None,
+    "# Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.",
+    "# Set false when backing up to an intentionally local directory.",
+    "BACKUP_REQUIRE_NFS_MOUNT",
+    None,
     '# Backup host folder name. Empty means "use this machine\'s short hostname".',
     "# Keep this stable: renaming HOST_ID orphans existing retention history",
     "# and inactive-copy markers under the previous folder, and cleanup will",
@@ -90,10 +94,6 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# systemd OnCalendar value used when the timer unit is installed.",
     "# Re-run install or edit/reload the timer if this changes after install.",
     "SYSTEMD_ON_CALENDAR",
-    None,
-    "# Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.",
-    "# Set false when backing up to an intentionally local directory.",
-    "BACKUP_REQUIRE_NFS_MOUNT",
     None,
     "# Number of monthly backup directories to keep per VM.",
     "# Set to -1 to keep all months (cleanup never prunes).",
@@ -179,18 +179,25 @@ class Config:
     prefix: Path
 
     @classmethod
-    def load(cls, config_path: str | None = None, prefix: str | None = None) -> Config:
+    def load(
+        cls,
+        config_path: str | None = None,
+        prefix: str | None = None,
+        *,
+        apply_env_overrides: bool = True,
+    ) -> Config:
         root = root_prefix(prefix)
         raw_path = config_path or os.environ.get("LIBVIRT_BACKUP_CONFIG") or str(default_config_path(root))
         path = Path(raw_path)
         values = dict(DEFAULTS)
         values.update(parse_env_file(path))
-        for key in CONFIG_KEYS:
-            if key in os.environ:
-                env_value = os.environ[key]
-                if values.get(key) != env_value:
-                    event("info", "env override", key=key, source="environ")
-                values[key] = env_value
+        if apply_env_overrides:
+            for key in CONFIG_KEYS:
+                if key in os.environ:
+                    env_value = os.environ[key]
+                    if values.get(key) != env_value:
+                        event("info", "env override", key=key, source="environ")
+                    values[key] = env_value
         if not values.get("HOST_ID"):
             values["HOST_ID"] = socket.gethostname().split(".")[0]
         return cls(values=values, path=path, prefix=root)
@@ -225,7 +232,14 @@ def month_key(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def _is_month_dir_name(name: str) -> bool:
+    if len(name) != 7 or name[4] != "-":
+        return False
+    year, month = name[:4], name[5:]
+    return year.isdigit() and month.isdigit() and 1 <= int(month) <= 12
+
+
 def iter_month_dirs(root: Path) -> Iterable[Path]:
     if not root.exists():
         return []
-    return sorted(path for path in root.iterdir() if path.is_dir() and len(path.name) == 7 and path.name[4] == "-")
+    return sorted(path for path in root.iterdir() if path.is_dir() and _is_month_dir_name(path.name))

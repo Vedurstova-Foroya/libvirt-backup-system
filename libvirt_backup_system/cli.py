@@ -6,7 +6,7 @@ import json
 import sys
 import traceback
 
-from .backup import cleanup, restore_to_dir, run_backups, verify
+from .backup import cleanup, run_backups, verify
 from .config import Config
 from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
@@ -41,14 +41,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("cleanup")
 
-    restore_parser = sub.add_parser("restore-to-dir")
-    restore_parser.add_argument("source")
-    restore_parser.add_argument("target")
-    restore_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Restore into a non-empty target directory (refuses symlinks unconditionally).",
-    )
     return parser
 
 
@@ -58,10 +50,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "install":
-            return install(args.prefix)
+            return install(args.prefix, config_path=args.config)
         if args.command == "uninstall":
             return uninstall(
                 args.prefix,
+                config_path=args.config,
                 purge_config=args.purge_config,
                 purge_state=args.purge_state,
                 purge_logs=args.purge_logs,
@@ -73,11 +66,6 @@ def main(argv: list[str] | None = None) -> int:
                 config = Config.load(config_path=args.config, prefix=args.prefix)
         else:
             config = Config.load(config_path=args.config, prefix=args.prefix)
-        if args.command == "restore-to-dir":
-            config_code = validate_config(config)
-            if config_code != 0:
-                return config_code
-            return restore_to_dir(args.source, args.target, force=args.force)
         if args.command in {"check", "preflight"}:
             return check(config)
         if args.command == "run":
@@ -87,8 +75,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 with acquire_run_lock(config):
                     backup_code = run_backups(config)
-                    cleanup_code = cleanup(config)
-                    return backup_code if backup_code != 0 else cleanup_code
+                    if backup_code != 0:
+                        event("warning", "cleanup skipped because backups failed")
+                        return backup_code
+                    return cleanup(config)
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))
                 return 1
