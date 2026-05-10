@@ -20,6 +20,15 @@ def backup_config(tmp_path: Path) -> Config:
     return cfg
 
 
+@pytest.fixture(autouse=True)
+def _stub_domain_xml_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Inactive backups call domain_xml_fingerprint, which would otherwise shell
+    # out to virsh and explode in unit tests. Default to a stable stub so each
+    # test only needs to override when it wants to assert the fingerprint code
+    # path directly.
+    monkeypatch.setattr("libvirt_backup_system.backup.domain_xml_fingerprint", lambda uri, name: "fp-stub")
+
+
 def symlink_backup_vm_path(tmp_path: Path, symlink_case: str) -> Path:
     if symlink_case == "host":
         outside_host = tmp_path / "outside/host"

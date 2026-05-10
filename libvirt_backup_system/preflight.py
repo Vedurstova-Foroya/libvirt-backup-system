@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 from pathlib import Path
 
 from .backup import backup_root
 from .config import CONFIG_KEYS, Config, float_value, int_value
-from .disks import vm_disk_paths
+from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
 from .shell import CommandError, run
 from .storage import subpath_is_safe
@@ -16,8 +17,9 @@ from .vms import VM, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 BOOLEAN_KEYS = {"BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT"}
-INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "SPACE_MARGIN_PERCENT"}
+INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT"}
 FLOAT_KEYS = {"BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"}
+SUPPORTED_VIRTNBDBACKUP_MAJOR = 2
 ALLOWED_LIBVIRT_URI_PREFIXES = (
     "qemu:///",
     "qemu+ssh://",
@@ -27,6 +29,7 @@ ALLOWED_LIBVIRT_URI_PREFIXES = (
     "test://",
     "test:///",
 )
+WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
 
 
 def validate_libvirt_uri(uri: str) -> bool:
@@ -48,7 +51,30 @@ def _disk_virtual_size_bytes(path: str) -> int:
     return int(info["virtual-size"])
 
 
+def _write_probe(path: Path) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    created = False
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        if os.write(fd, b"ok\n") != 3:
+            raise OSError("write probe was incomplete")
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if created:
+            path.unlink(missing_ok=True)
+
+
 def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
+    # qemu-img runs on the orchestrator host. Disk paths discovered for remote
+    # libvirt URIs live on the hypervisor, so probing them locally either fails
+    # outright or — worse — reads an unrelated file with the same path. Fall
+    # back to the per-VM estimate instead of producing a fake disk-sized total.
+    if libvirt_uri_uses_remote_transport(uri):
+        event("warning", "skipping local disk introspection for remote URI", vm=vm.name, uri=uri)
+        return fallback_bytes
     try:
         disks = vm_disk_paths(uri, vm.name)
     except (CommandError, OSError, ValueError) as exc:
@@ -60,7 +86,7 @@ def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
             total += _disk_virtual_size_bytes(disk)
         except (CommandError, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
             event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc))
-            return fallback_bytes
+            return max(total, fallback_bytes)
     return total or fallback_bytes
 
 
@@ -105,6 +131,9 @@ def _validate_integers(config: Config) -> list[str]:
         if key == "BACKUP_RETENTION_MONTHS":
             if int_config_value == 0 or int_config_value < -1:
                 failures.append("BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer")
+        elif key == "COMMAND_TIMEOUT_SECONDS":
+            if int_config_value <= 0:
+                failures.append("COMMAND_TIMEOUT_SECONDS must be greater than 0")
         elif int_config_value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
@@ -121,9 +150,42 @@ def _validate_floats(config: Config) -> list[str]:
         if not math.isfinite(float_config_value):
             failures.append(f"{key} must be a finite number")
             continue
-        if float_config_value < 0:
+        if key == "BACKUP_INCREMENTAL_MULTIPLIER":
+            # A zero multiplier collapses the required-space estimate to zero
+            # and effectively disables the preflight space check.
+            if float_config_value <= 0:
+                failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")
+        elif float_config_value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
+
+
+def _parse_major_version(text: str) -> int | None:
+    match = re.search(r"(\d+)(?:\.(\d+))?", text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _virtnbdbackup_version_failures() -> list[str]:
+    if not shutil.which("virtnbdbackup"):
+        return []  # already reported by the missing-binary check
+    try:
+        result = run(["virtnbdbackup", "--version"], check=False)
+    except OSError as exc:
+        return [f"virtnbdbackup version probe failed: {exc}"]
+    if result.returncode != 0:
+        return [f"virtnbdbackup --version failed: rc={result.returncode}"]
+    text = (result.stdout or result.stderr).strip()
+    major = _parse_major_version(text)
+    if major is None:
+        return [f"virtnbdbackup --version unparseable: {text!r}"]
+    if major != SUPPORTED_VIRTNBDBACKUP_MAJOR:
+        return [
+            f"virtnbdbackup major version {major} is unsupported "
+            f"(need {SUPPORTED_VIRTNBDBACKUP_MAJOR}.x); reported: {text!r}"
+        ]
+    return []
 
 
 def _validate_backup_path(config: Config) -> list[str]:
@@ -145,11 +207,7 @@ def _validate_backup_path(config: Config) -> list[str]:
         host_root.mkdir(parents=True, exist_ok=True)
         if not subpath_is_safe(backup_path, host_root):
             return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
-        probe = host_root / ".libvirt-backup-system-write-test"
-        try:
-            probe.write_text("ok\n", encoding="utf-8")
-        finally:
-            probe.unlink(missing_ok=True)
+        _write_probe(host_root / WRITE_PROBE_NAME)
     except OSError as exc:
         return [f"BACKUP_PATH must be writable: {exc}"]
     return []
@@ -182,6 +240,7 @@ def check(config: Config) -> int:
     for binary in REQUIRED_BINARIES:
         if not shutil.which(binary):
             failures.append(f"missing binary: {binary}")
+    failures.extend(_virtnbdbackup_version_failures())
 
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")

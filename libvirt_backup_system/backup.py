@@ -4,12 +4,31 @@ import datetime as dt
 import shutil
 from pathlib import Path
 
-from .config import Config, int_value, iter_month_dirs
-from .disks import inactive_marker_is_fresh
+from .cleanup import backup_root, cleanup, runtime_backup_path_ok
+from .config import Config, iter_month_dirs
+from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
+from .inactive_markers import (
+    marked_backup_dir,
+    marker_is_regular,
+    remove_fingerprint,
+    remove_marker,
+    write_marker,
+)
 from .logging_json import event
 from .shell import CommandError, run_streamed
-from .storage import subpath_is_safe, unsafe_symlink_descendants
+from .storage import subpath_is_safe
 from .vms import VM, is_safe_vm_name, list_vms
+
+__all__ = [
+    "backup_root",
+    "backup_subpath_is_safe",
+    "backup_vm",
+    "cleanup",
+    "current_month",
+    "run_backups",
+    "timestamp",
+    "verify",
+]
 
 
 def current_month(now: dt.datetime | None = None) -> str:
@@ -22,10 +41,6 @@ def timestamp(now: dt.datetime | None = None) -> str:
     # An existence check in backup_vm still guards against clock jumps.
     now = now or dt.datetime.now(dt.timezone.utc)
     return now.strftime("%Y%m%dT%H%M%S_%fZ")
-
-
-def backup_root(config: Config) -> Path:
-    return config.path_value("BACKUP_PATH") / config.get("HOST_ID")
 
 
 def backup_subpath_is_safe(config: Config, path: Path) -> bool:
@@ -59,20 +74,103 @@ def _remove_partial_destination(dest: Path, vm_name: str) -> None:
         event("info", "removed partial backup", vm=vm_name, destination=str(dest))
 
 
+def _confirm_inactive_marker_still_fresh(backup_dir: Path, vm: VM, month: str) -> bool:
+    # Re-check the backup directory exists immediately before returning, so a
+    # concurrent cleanup that pruned it between marked_backup_dir() and here
+    # forces a recopy rather than a false "already fresh" claim.
+    try:
+        if not backup_dir.is_dir():
+            event(
+                "info",
+                "inactive marker backup directory disappeared, recopying",
+                vm=vm.name,
+                path=str(backup_dir),
+            )
+            return False
+    except OSError as exc:
+        event(
+            "error",
+            "inactive marker backup directory recheck failed",
+            vm=vm.name,
+            path=str(backup_dir),
+            error=str(exc),
+        )
+        return False
+    event("info", "inactive VM already copied this month", vm=vm.name, month=month)
+    return True
+
+
+def _finalize_inactive_marker(  # noqa: PLR0913
+    config: Config,
+    inactive_marker: Path,
+    month_dir: Path,
+    vm: VM,
+    pre_fingerprint: str,
+    stamp: str,
+    dest: Path,
+) -> bool:
+    if not runtime_backup_path_ok(config):
+        return False
+    if not _ensure_backup_subpath_safe(
+        config,
+        month_dir,
+        "inactive marker skipped because destination became unsafe",
+    ):
+        return False
+    post_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
+    if post_fingerprint is None:
+        event("error", "inactive fingerprint computation failed", vm=vm.name)
+        return False
+    if post_fingerprint != pre_fingerprint:
+        # Domain XML changed during the backup, so the just-written copy does
+        # not match the current config. Skip the marker so the next run redoes
+        # the copy rather than treating a stale snapshot as fresh.
+        event("warning", "domain XML changed during inactive backup; not marking fresh", vm=vm.name)
+        event("info", "backup completed", vm=vm.name, destination=str(dest))
+        return True
+    if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
+        return False
+    remove_fingerprint(inactive_marker, vm.name)
+    event("info", "backup completed", vm=vm.name, destination=str(dest))
+    return True
+
+
+def _maybe_reuse_inactive_backup(config: Config, vm: VM, month: str, month_dir: Path, inactive_marker: Path) -> bool:
+    if not vm.inactive or config.enabled("INACTIVE_COPY_EVERY_RUN") or not marker_is_regular(inactive_marker):
+        return False
+    backup_dir = marked_backup_dir(config, month_dir, inactive_marker, vm.name)
+    if backup_dir and inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, inactive_marker):
+        return _confirm_inactive_marker_still_fresh(backup_dir, vm, month)
+    if backup_dir:
+        event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
+    return False
+
+
+def _attempt_partial_cleanup(config: Config, dest: Path, vm_name: str) -> None:
+    if backup_subpath_is_safe(config, dest) and runtime_backup_path_ok(config):
+        _remove_partial_destination(dest, vm_name)
+    else:
+        event(
+            "error",
+            "partial backup removal skipped because destination is unsafe",
+            vm=vm_name,
+            path=str(dest),
+        )
+
+
 def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
     if not is_safe_vm_name(vm.name):
         raise ValueError(f"refusing unsafe VM name: {vm.name!r}")
+    if not runtime_backup_path_ok(config):
+        return False
     month_dir = backup_root(config) / vm.name / month
     dest = month_dir / stamp
     if not _ensure_backup_subpath_safe(config, month_dir, "backup skipped because destination is unsafe"):
         return False
 
     inactive_marker = month_dir / ".inactive-copy-complete"
-    if vm.inactive and inactive_marker.exists() and not config.enabled("INACTIVE_COPY_EVERY_RUN"):
-        if inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, inactive_marker):
-            event("info", "inactive VM already copied this month", vm=vm.name, month=month)
-            return True
-        event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
+    if _maybe_reuse_inactive_backup(config, vm, month, month_dir, inactive_marker):
+        return True
 
     if dest.exists():
         # Refuse to overwrite or clean up an existing backup directory: a
@@ -80,12 +178,22 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         event("error", "backup destination already exists", vm=vm.name, destination=str(dest))
         return False
 
+    pre_fingerprint: str | None = None
+    if vm.inactive:
+        pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
+        if pre_fingerprint is None:
+            event("error", "inactive fingerprint computation failed", vm=vm.name)
+            return False
+
+    if not runtime_backup_path_ok(config):
+        return False
     month_dir.mkdir(parents=True, exist_ok=True)
     if not _ensure_backup_subpath_safe(config, month_dir, "backup skipped because destination became unsafe"):
         return False
 
-    if not vm.inactive and inactive_marker.exists():
-        inactive_marker.unlink(missing_ok=True)
+    if not vm.inactive:
+        remove_marker(inactive_marker, vm.name)
+        remove_fingerprint(inactive_marker, vm.name)
 
     level = "copy" if vm.inactive else "auto"
     cmd = ["virtnbdbackup", "-U", config.get("LIBVIRT_URI"), "-d", vm.name, "-l", level, "-o", str(dest)]
@@ -97,15 +205,7 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         run_streamed(cmd)
     except CommandError as exc:
         if dest.exists():
-            if backup_subpath_is_safe(config, dest):
-                _remove_partial_destination(dest, vm.name)
-            else:
-                event(
-                    "error",
-                    "partial backup removal skipped because destination is unsafe",
-                    vm=vm.name,
-                    path=str(dest),
-                )
+            _attempt_partial_cleanup(config, dest, vm.name)
         event(
             "error",
             "backup failed",
@@ -115,59 +215,10 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         )
         return False
 
-    if vm.inactive:
-        inactive_marker.write_text(stamp + "\n", encoding="utf-8")
+    if vm.inactive and pre_fingerprint is not None:
+        return _finalize_inactive_marker(config, inactive_marker, month_dir, vm, pre_fingerprint, stamp, dest)
     event("info", "backup completed", vm=vm.name, destination=str(dest))
     return True
-
-
-def _prune_vm_dir(vm_dir: Path, keep: int, backup_path: Path) -> tuple[int, int]:
-    removed = 0
-    skipped = 0
-    month_dirs = list(iter_month_dirs(vm_dir))
-    prunable = month_dirs if keep == 0 else month_dirs[:-keep]
-    for month_dir in prunable:
-        if not subpath_is_safe(backup_path, month_dir):
-            event("error", "month cleanup skipped because backup path is unsafe", path=str(month_dir))
-            skipped += 1
-            continue
-        try:
-            shutil.rmtree(month_dir)
-        except OSError as exc:
-            event("error", "month cleanup failed", path=str(month_dir), error=str(exc))
-            skipped += 1
-            continue
-        removed += 1
-        event("info", "removed backup month", path=str(month_dir))
-    return removed, skipped
-
-
-def _prune_month_dirs(root: Path, keep: int, backup_path: Path) -> tuple[int, int]:
-    removed = 0
-    skipped = 0
-    if keep < 0:
-        return removed, skipped
-    if not subpath_is_safe(backup_path, root):
-        event("error", "cleanup skipped because backup path is unsafe", path=str(root))
-        return removed, skipped + 1
-    if not root.exists():
-        return removed, skipped
-    for path in unsafe_symlink_descendants(backup_path, root):
-        # Fail closed across the whole tree: a single unsafe symlink could redirect rmtree
-        # outside the backup root, so abort cleanup for every VM rather than partially prune.
-        event("error", "cleanup skipped because backup tree contains unsafe symlink", path=str(path))
-        return removed, skipped + 1
-    for vm_dir in sorted(root.iterdir()):
-        if not vm_dir.is_dir():
-            continue
-        if not subpath_is_safe(backup_path, vm_dir):
-            event("error", "VM cleanup skipped because backup path is unsafe", path=str(vm_dir))
-            skipped += 1
-            continue
-        vm_removed, vm_skipped = _prune_vm_dir(vm_dir, keep, backup_path)
-        removed += vm_removed
-        skipped += vm_skipped
-    return removed, skipped
 
 
 def run_backups(config: Config) -> int:
@@ -179,14 +230,6 @@ def run_backups(config: Config) -> int:
         if not backup_vm(config, vm, month, stamp):
             ok = False
     return 0 if ok else 1
-
-
-def cleanup(config: Config) -> int:
-    path = config.path_value("BACKUP_PATH")
-    keep = int_value(config.values, "BACKUP_RETENTION_MONTHS")
-    removed, skipped = _prune_month_dirs(backup_root(config), keep, path)
-    event("info", "cleanup completed", removed_backup_months=removed, skipped=skipped)
-    return 0 if skipped == 0 else 1
 
 
 def _iter_verify_targets(root: Path, vm_name: str | None) -> tuple[list[Path], bool]:

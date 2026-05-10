@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.preflight import (
     _disk_virtual_size_bytes,
     _estimate_required_kb,
+    _parse_major_version,
+    _virtnbdbackup_version_failures,
     _vm_estimated_bytes,
     check,
+    validate_config,
     validate_libvirt_uri,
 )
 from libvirt_backup_system.shell import CommandError, CommandResult
@@ -21,6 +26,19 @@ def test_disk_virtual_size_bytes_parses_qemu_img_json(monkeypatch) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.preflight.run", fake_run)
     assert _disk_virtual_size_bytes("/x.qcow2") == 4294967296
+
+
+def test_vm_estimated_bytes_falls_back_for_remote_uri_without_local_probe(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.vm_disk_paths",
+        lambda uri, name: pytest.fail("remote disk list must not be queried locally"),
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight._disk_virtual_size_bytes",
+        lambda path: pytest.fail("qemu-img must not run on remote disk paths"),
+    )
+    assert _vm_estimated_bytes("qemu+ssh://host/system", VM("alpha", "running"), 11) == 11
+    assert "skipping local disk introspection for remote URI" in capsys.readouterr().err
 
 
 def test_vm_estimated_bytes_uses_fallback_when_virsh_fails(monkeypatch, capsys) -> None:
@@ -42,6 +60,22 @@ def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(monkeypatch, capsy
         lambda path: (_ for _ in ()).throw(ValueError("bad json")),
     )
     assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 7
+    assert "qemu-img info failed for disk" in capsys.readouterr().err
+
+
+def test_vm_estimated_bytes_keeps_larger_known_total_when_later_disk_fails(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.vm_disk_paths",
+        lambda uri, name: ["/disk1.qcow2", "/disk2.qcow2"],
+    )
+
+    def fake_disk_size(path: str) -> int:
+        if path == "/disk2.qcow2":
+            raise ValueError("bad json")
+        return 100
+
+    monkeypatch.setattr("libvirt_backup_system.preflight._disk_virtual_size_bytes", fake_disk_size)
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 100
     assert "qemu-img info failed for disk" in capsys.readouterr().err
 
 
@@ -105,3 +139,73 @@ def test_check_rejects_unknown_libvirt_uri_scheme(tmp_path: Path, monkeypatch, c
     assert check(cfg) == 1
     err = capsys.readouterr().err
     assert "LIBVIRT_URI must use one of these schemes" in err
+
+
+def test_parse_major_version_handles_various_strings() -> None:
+    assert _parse_major_version("virtnbdbackup 2.46") == 2
+    assert _parse_major_version("3") == 3
+    assert _parse_major_version("none") is None
+
+
+def test_validate_config_rejects_zero_incremental_multiplier(backup_config, capsys) -> None:
+    cfg = _preflight_config(backup_config)
+    cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = "0"
+    assert validate_config(cfg) == 1
+    assert "BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0" in capsys.readouterr().err
+
+
+def test_virtnbdbackup_version_returns_no_failures_when_missing(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: None)
+    assert _virtnbdbackup_version_failures() == []
+
+
+def test_virtnbdbackup_version_reports_probe_oserror(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
+
+    def fail_run(args, *, check=True, env=None):
+        raise OSError("spawn denied")
+
+    monkeypatch.setattr("libvirt_backup_system.preflight.run", fail_run)
+    failures = _virtnbdbackup_version_failures()
+    assert failures == ["virtnbdbackup version probe failed: spawn denied"]
+
+
+def test_virtnbdbackup_version_reports_non_zero_return_code(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.run",
+        lambda args, *, check=True, env=None: CommandResult(args, 2, "", "boom"),
+    )
+    failures = _virtnbdbackup_version_failures()
+    assert failures == ["virtnbdbackup --version failed: rc=2"]
+
+
+def test_virtnbdbackup_version_reports_unparseable(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.run",
+        lambda args, *, check=True, env=None: CommandResult(args, 0, "unintelligible", ""),
+    )
+    failures = _virtnbdbackup_version_failures()
+    assert failures
+    assert "unparseable" in failures[0]
+
+
+def test_virtnbdbackup_version_rejects_unsupported_major(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.run",
+        lambda args, *, check=True, env=None: CommandResult(args, 0, "virtnbdbackup 3.0", ""),
+    )
+    failures = _virtnbdbackup_version_failures()
+    assert failures
+    assert "unsupported" in failures[0]
+
+
+def test_virtnbdbackup_version_accepts_supported_major(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.run",
+        lambda args, *, check=True, env=None: CommandResult(args, 0, "", "virtnbdbackup 2.46"),
+    )
+    assert _virtnbdbackup_version_failures() == []

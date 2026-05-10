@@ -17,40 +17,42 @@ def test_uninstall_ignores_missing_purge_path(tmp_path: Path) -> None:
     assert uninstall(str(tmp_path), purge_logs=True) == 0
 
 
-def test_uninstall_skips_backup_purge_when_path_unset(tmp_path: Path, capsys) -> None:
-    assert uninstall(str(tmp_path), purge_backups=True) == 0
-    assert "backup purge skipped" in capsys.readouterr().err
-
-
-def test_uninstall_skips_unsafe_backup_purge(tmp_path: Path, capsys) -> None:
+def test_uninstall_reports_invalid_command_timeout(tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        f"BACKUP_PATH={tmp_path / 'backups'}\nHOST_ID=../outside\n",
-        encoding="utf-8",
-    )
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "keep").write_text("keep\n", encoding="utf-8")
-
-    assert uninstall(str(tmp_path), purge_backups=True) == 1
-    assert (outside / "keep").exists()
-    assert "backup purge skipped because backup path is unsafe" in capsys.readouterr().err
+    config_path.write_text("COMMAND_TIMEOUT_SECONDS=0\n", encoding="utf-8")
+    assert uninstall(str(tmp_path)) == 1
+    assert "invalid command timeout" in capsys.readouterr().err
 
 
-def test_uninstall_purges_safe_backup_path(tmp_path: Path) -> None:
-    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text(
-        f"BACKUP_PATH={tmp_path / 'backups'}\nHOST_ID=host\n",
-        encoding="utf-8",
-    )
-    backup_root = tmp_path / "backups/host"
-    backup_root.mkdir(parents=True)
-    (backup_root / "backup").write_text("backup\n", encoding="utf-8")
+def test_uninstall_purge_config_removes_custom_config_path(tmp_path: Path) -> None:
+    default_config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    default_config.parent.mkdir(parents=True)
+    default_config.write_text("BACKUP_PATH=\n", encoding="utf-8")
+    custom_config = tmp_path / "custom/libvirt-backup.env"
+    custom_config.parent.mkdir(parents=True)
+    custom_config.write_text("BACKUP_PATH=\n", encoding="utf-8")
 
-    assert uninstall(str(tmp_path), purge_backups=True) == 0
-    assert not backup_root.exists()
+    assert uninstall(str(tmp_path), config_path=str(custom_config), purge_config=True) == 0
+    assert not custom_config.exists()
+    assert custom_config.parent.exists()
+    assert default_config.exists()
+
+
+def test_uninstall_purge_config_keeps_sibling_files_under_default_dir(tmp_path: Path) -> None:
+    default_config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    default_config.parent.mkdir(parents=True)
+    default_config.write_text("BACKUP_PATH=\n", encoding="utf-8")
+    sibling_file = default_config.parent / "operator-notes.txt"
+    sibling_file.write_text("kept across reinstalls\n", encoding="utf-8")
+    sibling_dir = default_config.parent / "drop-ins"
+    sibling_dir.mkdir()
+    (sibling_dir / "00-extra.conf").write_text("EXTRA=1\n", encoding="utf-8")
+
+    assert uninstall(str(tmp_path), purge_config=True) == 0
+    assert not default_config.exists()
+    assert sibling_file.read_text(encoding="utf-8") == "kept across reinstalls\n"
+    assert (sibling_dir / "00-extra.conf").read_text(encoding="utf-8") == "EXTRA=1\n"
 
 
 def test_uninstall_returns_nonzero_when_opt_rmtree_fails(tmp_path: Path, monkeypatch, capsys) -> None:

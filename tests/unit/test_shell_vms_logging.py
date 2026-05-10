@@ -30,7 +30,10 @@ def test_run_streamed_success_tees_lines_and_returns_tail(capsys) -> None:
     out = capsys.readouterr()
     assert '"line":"a"' in out.out
     assert '"line":"b"' in out.out
-    assert '"line":"err1"' in out.err
+    assert '"level":"error"' not in out.out
+    assert '"line":"err1"' in out.out
+    assert '"stream":"stderr"' in out.out
+    assert out.err == ""
 
 
 def test_run_streamed_check_failure_includes_tail(capsys) -> None:
@@ -47,6 +50,29 @@ def test_run_streamed_check_failure_includes_tail(capsys) -> None:
     assert exc.value.result.returncode == 7
     assert exc.value.result.stdout.splitlines() == ["2", "3", "4"]
     assert '"line":"0"' in captured.out
+    assert '"level":"error"' in captured.err
+    assert '"message":"command failed"' in captured.err
+
+
+def test_run_streamed_check_failure_logs_stderr_tail_as_error(capsys) -> None:
+    with pytest.raises(CommandError) as exc:
+        run_streamed(
+            [
+                "python3",
+                "-c",
+                "import sys\nsys.stderr.write('warn\\nboom\\n')\nsys.exit(9)",
+            ],
+            tail_lines=1,
+        )
+    captured = capsys.readouterr()
+
+    assert exc.value.result.stderr.splitlines() == ["boom"]
+    assert '"line":"warn"' in captured.out
+    assert '"line":"boom"' in captured.out
+    assert '"level":"error"' not in captured.out
+    assert '"level":"error"' in captured.err
+    assert '"message":"command failed"' in captured.err
+    assert '"stderr":"boom"' in captured.err
 
 
 def test_run_streamed_non_check_returns_result() -> None:
@@ -101,6 +127,27 @@ def test_list_vms_filters_blacklist(monkeypatch) -> None:
     assert domstate_calls, "expected at least one domstate call"
     for call in domstate_calls:
         assert call[-2:-1] == ["--"]
+
+
+def test_list_vms_raises_when_state_lookup_fails(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("LIBVIRT_URI", raising=False)
+    cfg = Config.load(prefix="/tmp")
+
+    def fake_run(
+        args: list[str], *, check: bool = True, env: object = None, timeout: float | None = None
+    ) -> CommandResult:
+        if "list" in args:
+            return CommandResult(args, 0, "alpha\nbeta\n", "")
+        if args[-1] == "beta":
+            raise CommandError(CommandResult(args, 1, "", "gone"))
+        return CommandResult(args, 0, "running\n", "")
+
+    monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
+    with pytest.raises(CommandError):
+        list_vms(cfg)
+    err = capsys.readouterr().err
+    assert "VM state discovery failed" in err
+    assert "beta" in err
 
 
 def test_command_error_accepts_result() -> None:

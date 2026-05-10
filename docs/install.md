@@ -65,6 +65,9 @@ The installer creates:
 - `/opt/libvirt-backup-system`
 - `/usr/local/bin/libvirt-backup-system`
 - `/etc/libvirt-backup-system/libvirt-backup.env`
+
+When `BACKUP_PATH` is configured, it also creates:
+
 - `/etc/systemd/system/libvirt-backup-system.service`
 - `/etc/systemd/system/libvirt-backup-system.timer`
 

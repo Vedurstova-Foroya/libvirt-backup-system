@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from libvirt_backup_system.backup import backup_vm
+from libvirt_backup_system.config import Config
+from libvirt_backup_system.shell import CommandResult
+from libvirt_backup_system.vms import VM
+
+
+def _backup_config(cfg: Config) -> Config:
+    cfg.values.update(
+        {
+            "BACKUP_COMPRESS": "true",
+            "INACTIVE_COPY_EVERY_RUN": "false",
+            "BACKUP_RETENTION_MONTHS": "1",
+        }
+    )
+    return cfg
+
+
+def test_backup_vm_replaces_symlinked_inactive_marker_without_touching_target(
+    tmp_path: Path,
+    monkeypatch,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker.parent.mkdir(parents=True)
+    target = tmp_path / "outside-target"
+    target.write_text("keep\n", encoding="utf-8")
+    marker.symlink_to(target)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.inactive_marker_is_fresh",
+        lambda uri, name, m: (_ for _ in ()).throw(AssertionError("symlink marker must not be checked")),
+    )
+
+    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert calls
+    assert target.read_text(encoding="utf-8") == "keep\n"
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
+
+
+def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("old\n", encoding="utf-8")
+    original_lstat = Path.lstat
+    calls: list[list[str]] = []
+
+    def fake_lstat(self: Path) -> os.stat_result:
+        if self == marker:
+            raise OSError("lstat denied")
+        return original_lstat(self)
+
+    monkeypatch.setattr("libvirt_backup_system.backup.Path.lstat", fake_lstat)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+    )
+
+    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert calls
+    assert "inactive marker check failed" in capsys.readouterr().err
+
+
+def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+    )
+    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
+
+    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+
+    assert calls
+    assert marker.read_text(encoding="utf-8") == "newstamp\nfp-stub\n"
+    out = capsys.readouterr().out
+    assert "inactive marker backup directory is missing" in out
+    assert "inactive VM already copied" not in out
+
+
+def test_backup_vm_logs_inactive_fingerprint_removal_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    marker_dir = tmp_path / "backups/host/alpha/2026-05"
+    marker_dir.mkdir(parents=True)
+    fingerprint = marker_dir / ".inactive-copy-fingerprint"
+    fingerprint.write_text("old\n", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == fingerprint:
+            raise OSError("unlink denied")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.unlink", fake_unlink)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+    )
+
+    assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
+    assert "inactive fingerprint removal failed" in capsys.readouterr().err
+
+
+def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _backup_config(backup_config)
+    marker = tmp_path / "backups/host/alpha/2026-05/.inactive-copy-complete"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("old\n", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == marker:
+            raise OSError("unlink denied")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr("libvirt_backup_system.backup.Path.unlink", fake_unlink)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+    )
+
+    assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
+    assert "inactive marker removal failed" in capsys.readouterr().err
+
+
+def test_backup_vm_fails_when_marker_path_becomes_unsafe(monkeypatch, capsys, backup_config) -> None:
+    cfg = _backup_config(backup_config)
+    checks = iter([True, True, False])
+    monkeypatch.setattr("libvirt_backup_system.backup.backup_subpath_is_safe", lambda config, path: next(checks))
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+    )
+
+    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert "inactive marker skipped because destination became unsafe" in capsys.readouterr().err
+
+
+def test_backup_vm_fails_and_cleans_up_when_marker_write_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    parent = tmp_path / "backups/host/beta/2026-05"
+
+    def fail_open(path: Path) -> int:
+        raise OSError("open denied")
+
+    monkeypatch.setattr("libvirt_backup_system.inactive_markers._open_excl_nofollow", fail_open)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+    )
+
+    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    # No leftover temp files for the marker; failure surfaces in the log stream.
+    leftover_temps = [p for p in parent.iterdir() if p.name.startswith(".") and p.suffix == ".tmp"]
+    assert leftover_temps == []
+    assert "inactive marker write failed" in capsys.readouterr().err

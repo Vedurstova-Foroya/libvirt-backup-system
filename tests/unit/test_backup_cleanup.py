@@ -98,7 +98,7 @@ def test_cleanup_missing_root_and_unsafe_descendants(
     month_dir = vm_dir / "2026-01"
     month_dir.mkdir(parents=True)
     checks = iter([True, False, True, True, False])
-    monkeypatch.setattr("libvirt_backup_system.backup.subpath_is_safe", lambda root, path: next(checks))
+    monkeypatch.setattr("libvirt_backup_system.cleanup.subpath_is_safe", lambda root, path: next(checks))
     assert cleanup(cfg) == 1
     assert month_dir.exists()
     assert "VM cleanup skipped because backup path is unsafe" in capsys.readouterr().err
@@ -113,7 +113,7 @@ def test_cleanup_missing_root_and_unsafe_descendants(
 def test_cleanup_returns_nonzero_when_root_path_unsafe(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _with_retention(backup_config)
     (tmp_path / "backups/host").mkdir(parents=True)
-    monkeypatch.setattr("libvirt_backup_system.backup.subpath_is_safe", lambda root, path: False)
+    monkeypatch.setattr("libvirt_backup_system.cleanup.subpath_is_safe", lambda root, path: False)
 
     assert cleanup(cfg) == 1
     assert "cleanup skipped because backup path is unsafe" in capsys.readouterr().err
@@ -128,7 +128,29 @@ def test_cleanup_returns_nonzero_when_rmtree_fails(tmp_path: Path, monkeypatch, 
     def fake_rmtree(path: Path) -> None:
         raise OSError("permission denied")
 
-    monkeypatch.setattr("libvirt_backup_system.backup.shutil.rmtree", fake_rmtree)
+    monkeypatch.setattr("libvirt_backup_system.cleanup.shutil.rmtree", fake_rmtree)
     assert cleanup(cfg) == 1
     assert month_dir.exists()
     assert "month cleanup failed" in capsys.readouterr().err
+
+
+def test_cleanup_skips_pruning_when_mount_disappears_between_initial_check_and_rmtree(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _with_retention(backup_config)
+    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
+    month_dir = tmp_path / "backups/host/alpha/2026-01"
+    month_dir.mkdir(parents=True)
+    # First is_mount call gates cleanup entry (must be True); the per-month
+    # recheck inside _prune_vm_dir flips to False so rmtree is skipped.
+    states = iter([True, False])
+    monkeypatch.setattr("libvirt_backup_system.cleanup.Path.is_mount", lambda self: next(states, False))
+
+    assert cleanup(cfg) == 1
+    assert month_dir.exists()
+    err = capsys.readouterr().err
+    assert "month cleanup skipped because BACKUP_PATH is no longer a mount point" in err

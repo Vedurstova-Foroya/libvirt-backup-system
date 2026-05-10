@@ -17,8 +17,6 @@ sudo libvirt-backup-system uninstall
 sudo libvirt-backup-system uninstall --purge-config --purge-state --purge-logs
 ```
 
-`--purge-backups` removes the configured host backup tree after safety checks.
-
 ## `check` / `preflight`
 
 Validates config, required binaries, root execution policy, VM discovery, backup path writability, and estimated free space.

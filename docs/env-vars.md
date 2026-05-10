@@ -53,3 +53,6 @@ BACKUP_PATH=
 
 # Require preflight and run commands to execute as root.
 # REQUIRE_ROOT=true
+
+# Timeout for external commands, in seconds.
+# COMMAND_TIMEOUT_SECONDS=86400

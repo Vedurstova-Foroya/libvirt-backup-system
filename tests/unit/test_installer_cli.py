@@ -9,8 +9,13 @@ import pytest
 
 from libvirt_backup_system import __version__
 from libvirt_backup_system.cli import build_parser, main
+from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import UNIT_SERVICE, UNIT_TIMER
 from libvirt_backup_system.vms import VM
+
+
+def _fake_config(tmp_path: Path) -> Config:
+    return Config(values=dict(DEFAULTS), path=tmp_path / "config.env", prefix=tmp_path)
 
 
 def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -20,7 +25,9 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.uninstall", lambda prefix, **kwargs: 12)
     assert main(["--prefix", str(tmp_path), "uninstall", "--purge-config"]) == 12
 
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: "cfg")
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     assert main(["check"]) == 0
@@ -74,6 +81,14 @@ def test_cli_list_vms_json_keeps_env_override_logs_off_stdout(tmp_path: Path, mo
     assert "env override" in captured.err
 
 
+def test_cli_reports_invalid_command_timeout(tmp_path: Path, monkeypatch, capsys) -> None:
+    cfg = _fake_config(tmp_path)
+    cfg.values["COMMAND_TIMEOUT_SECONDS"] = "0"
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    assert main(["check"]) == 1
+    assert "command timeout must be greater than 0" in capsys.readouterr().err
+
+
 def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -90,15 +105,17 @@ def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypat
     custom = str(tmp_path / "custom.env")
     assert main(["--config", custom, "--prefix", str(tmp_path), "install"]) == 0
     assert captured["install"] == (str(tmp_path), custom)
-    assert main(["--config", custom, "--prefix", str(tmp_path), "uninstall", "--purge-backups"]) == 0
+    assert main(["--config", custom, "--prefix", str(tmp_path), "uninstall", "--purge-logs"]) == 0
     prefix, kwargs = captured["uninstall"]  # type: ignore[misc]
     assert prefix == str(tmp_path)
     assert kwargs["config_path"] == custom
-    assert kwargs["purge_backups"] is True
+    assert kwargs["purge_logs"] is True
 
 
 def test_cli_run_skips_cleanup_when_backups_fail(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: "cfg")
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
 
     @contextlib.contextmanager
@@ -118,7 +135,9 @@ def test_cli_run_skips_cleanup_when_backups_fail(tmp_path: Path, monkeypatch, ca
 def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
     from libvirt_backup_system.lock import LockBusyError
 
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: "cfg")
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
 
     @contextlib.contextmanager

@@ -12,6 +12,7 @@ from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .preflight import check, validate_config
+from .shell import configure_default_timeout
 from .vms import list_vms
 
 
@@ -27,7 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--purge-config", action="store_true")
     uninstall_parser.add_argument("--purge-state", action="store_true")
     uninstall_parser.add_argument("--purge-logs", action="store_true")
-    uninstall_parser.add_argument("--purge-backups", action="store_true")
 
     sub.add_parser("check", aliases=["preflight"])
     sub.add_parser("run")
@@ -58,7 +58,6 @@ def main(argv: list[str] | None = None) -> int:
                 purge_config=args.purge_config,
                 purge_state=args.purge_state,
                 purge_logs=args.purge_logs,
-                purge_backups=args.purge_backups,
             )
 
         if args.command == "list-vms" and args.json:
@@ -66,6 +65,11 @@ def main(argv: list[str] | None = None) -> int:
                 config = Config.load(config_path=args.config, prefix=args.prefix)
         else:
             config = Config.load(config_path=args.config, prefix=args.prefix)
+        try:
+            configure_default_timeout(config.get("COMMAND_TIMEOUT_SECONDS"))
+        except ValueError as exc:
+            event("error", "config validation failed", reason=str(exc))
+            return 1
         if args.command in {"check", "preflight"}:
             return check(config)
         if args.command == "run":
@@ -78,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
                     if backup_code != 0:
                         event("warning", "cleanup skipped because backups failed")
                         return backup_code
+                    # Cleanup runs under the same lock so a second invocation
+                    # cannot prune mid-transfer of the first. ``return`` inside
+                    # the ``with`` releases only after cleanup returns.
                     return cleanup(config)
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))

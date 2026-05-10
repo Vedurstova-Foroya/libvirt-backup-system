@@ -82,7 +82,13 @@ def test_backup_vm_inactive_marker_and_failure(tmp_path: Path, monkeypatch, caps
     monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, marker: True)
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
-    assert marker.read_text(encoding="utf-8") == "stamp\n"
+    legacy_fingerprint = marker.parent / ".inactive-copy-fingerprint"
+    # The stub for run_streamed does not create the destination directory; the
+    # marked-fresh path needs it to exist on disk before a second run can reuse.
+    (marker.parent / "stamp").mkdir()
+    # Stamp and fingerprint are stored together in one atomic marker file.
+    assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
+    assert not legacy_fingerprint.exists()
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "new")
     assert "inactive VM already copied" in capsys.readouterr().out
 
@@ -100,7 +106,8 @@ def test_backup_vm_redoes_inactive_when_marker_is_stale(tmp_path: Path, monkeypa
     cfg = _backup_config(backup_config)
     marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
-    marker.write_text("old\n", encoding="utf-8")
+    (marker.parent / "old").mkdir()
+    marker.write_text("old\nold-fp\n", encoding="utf-8")
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
@@ -112,14 +119,16 @@ def test_backup_vm_redoes_inactive_when_marker_is_stale(tmp_path: Path, monkeypa
     assert calls
     assert calls[0][:1] == ["virtnbdbackup"]
     assert "inactive marker is stale" in capsys.readouterr().out
-    assert marker.read_text(encoding="utf-8") == "stamp\n"
+    assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
 
 
 def test_backup_vm_clears_marker_when_vm_running(tmp_path: Path, monkeypatch, backup_config) -> None:
     cfg = _backup_config(backup_config)
     marker = tmp_path / "backups/host/alpha/2026-05/.inactive-copy-complete"
+    fingerprint = marker.parent / ".inactive-copy-fingerprint"
     marker.parent.mkdir(parents=True)
     marker.write_text("old\n", encoding="utf-8")
+    fingerprint.write_text("oldfp\n", encoding="utf-8")
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
         lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
@@ -127,6 +136,7 @@ def test_backup_vm_clears_marker_when_vm_running(tmp_path: Path, monkeypatch, ba
 
     assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
     assert not marker.exists()
+    assert not fingerprint.exists()
 
 
 def test_backup_vm_removes_partial_destination_on_failure(
@@ -287,7 +297,4 @@ def test_backup_vm_rejects_unsafe_vm_name(backup_config) -> None:
     for unsafe in ("-evil", "..", "a/b", "back\\slash", ""):
         with pytest.raises(ValueError, match="unsafe VM name"):
             backup_vm(cfg, VM(unsafe, "running"), "2026-05", "stamp")
-
-
-def test_module_import() -> None:
     assert backup.current_month(dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)) == "2026-01"

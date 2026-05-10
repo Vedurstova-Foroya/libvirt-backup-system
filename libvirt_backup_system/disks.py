@@ -1,9 +1,38 @@
 from __future__ import annotations
 
+import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from .inactive_markers import read_fingerprint
 from .shell import CommandError, run
+
+REMOTE_LIBVIRT_URI_PREFIXES = ("qemu+ssh://", "qemu+tcp://", "qemu+tls://")
+
+
+def libvirt_uri_uses_remote_transport(uri: str) -> bool:
+    return uri.startswith(REMOTE_LIBVIRT_URI_PREFIXES)
+
+
+def _dump_domain_xml(uri: str, vm_name: str) -> str:
+    return run(["virsh", "-c", uri, "dumpxml", "--inactive", "--", vm_name]).stdout
+
+
+def domain_xml_fingerprint(uri: str, vm_name: str) -> str | None:
+    """Return a SHA256 over the inactive dumpxml for ``vm_name``, or ``None``.
+
+    Stored next to the inactive marker so disk attach/detach, device topology
+    changes, or any other domain XML edit invalidates the monthly copy even
+    when the underlying disk files have mtimes older than the marker.
+    """
+    try:
+        xml_text = _dump_domain_xml(uri, vm_name)
+    except (CommandError, OSError):
+        # OSError covers virsh missing/unspawnable; treat that the same as a
+        # CommandError so callers fail closed (stale marker) instead of crashing
+        # backup orchestration mid-run.
+        return None
+    return hashlib.sha256(xml_text.encode("utf-8")).hexdigest()
 
 
 def vm_disk_paths(uri: str, vm_name: str) -> list[str]:
@@ -19,11 +48,14 @@ def vm_disk_paths(uri: str, vm_name: str) -> list[str]:
     a silently-truncated list would let the inactive-marker freshness check
     decide the VM is up-to-date and skip the monthly copy.
     """
-    result = run(["virsh", "-c", uri, "dumpxml", "--inactive", "--", vm_name])
+    return _parse_disk_paths(_dump_domain_xml(uri, vm_name), vm_name)
+
+
+def _parse_disk_paths(xml_text: str, vm_name: str) -> list[str]:
     try:
         # ``virsh dumpxml`` output comes from a local libvirtd we already shell
         # out to elsewhere — there is no untrusted XML source here.
-        domain = ET.fromstring(result.stdout)  # noqa: S314
+        domain = ET.fromstring(xml_text)  # noqa: S314
     except ET.ParseError as exc:
         # An empty list cannot be distinguished from "no disks", which makes
         # the inactive-marker freshness check fall through to "fresh" and skip
@@ -41,11 +73,10 @@ def vm_disk_paths(uri: str, vm_name: str) -> list[str]:
                 "cannot verify freshness against non-file/block sources"
             )
         source = disk.find("source")
-        if source is None:
-            continue
-        value = source.get(attr)
-        if value:
-            paths.append(value)
+        value = source.get(attr) if source is not None else None
+        if not value:
+            raise ValueError(f"missing disk source for {vm_name!r}; cannot verify inactive backup freshness")
+        paths.append(value)
     return paths
 
 
@@ -73,6 +104,19 @@ def inactive_marker_is_fresh(uri: str, vm_name: str, marker: Path) -> bool:
     try:
         marker_mtime = marker.stat().st_mtime
     except OSError:
+        return False
+    # Remote dumpxml paths belong to the hypervisor host, so local stat cannot
+    # prove the inactive copy is fresh. Recopy instead of silently skipping.
+    if libvirt_uri_uses_remote_transport(uri):
+        return False
+    fingerprint = domain_xml_fingerprint(uri, vm_name)
+    if fingerprint is None:
+        return False
+    # An XML fingerprint mismatch catches domain edits — added disks, swapped
+    # device files, CPU/memory changes — that a disk-mtime check alone would
+    # miss. It also forces diskless VMs to recopy whenever their config moves
+    # rather than being permanently treated as up-to-date.
+    if read_fingerprint(marker) != fingerprint:
         return False
     try:
         disks = vm_disk_paths(uri, vm_name)

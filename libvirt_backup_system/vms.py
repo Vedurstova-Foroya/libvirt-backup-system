@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import Config
-from .shell import run
+from .logging_json import event
+from .shell import CommandError, run
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,19 @@ def list_vms(config: Config, *, include_blacklisted: bool = False) -> list[VM]:
         if not include_blacklisted and name in config.blacklist:
             continue
         _assert_safe_vm_name(name)
-        state = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", name]).stdout.strip()
+        try:
+            state = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", name]).stdout.strip()
+        except CommandError as exc:
+            # Propagate instead of skipping: returning a partial list lets a
+            # subsequent run_backups+cleanup pair prune retention history for
+            # a VM that was never actually backed up this run.
+            event(
+                "error",
+                "VM state discovery failed",
+                vm=name,
+                returncode=exc.result.returncode,
+                stderr=exc.result.stderr.strip(),
+            )
+            raise
         selected.append(VM(name=name, state=state))
     return selected

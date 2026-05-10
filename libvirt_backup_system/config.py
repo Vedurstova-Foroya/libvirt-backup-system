@@ -23,6 +23,7 @@ CONFIG_KEYS = {
     "BACKUP_ESTIMATE_GB_PER_VM",
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
+    "COMMAND_TIMEOUT_SECONDS",
 }
 
 
@@ -40,6 +41,7 @@ DEFAULTS = {
     "BACKUP_ESTIMATE_GB_PER_VM": "1",
     "BACKUP_INCREMENTAL_MULTIPLIER": "1.2",
     "REQUIRE_ROOT": "true",
+    "COMMAND_TIMEOUT_SECONDS": "86400",
 }
 
 
@@ -56,6 +58,7 @@ COMMENTED_ENV_KEYS = {
     "BACKUP_ESTIMATE_GB_PER_VM",
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
+    "COMMAND_TIMEOUT_SECONDS",
 }
 
 
@@ -117,6 +120,9 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     None,
     "# Require preflight and run commands to execute as root.",
     "REQUIRE_ROOT",
+    None,
+    "# Timeout for external commands, in seconds.",
+    "COMMAND_TIMEOUT_SECONDS",
 )
 
 
