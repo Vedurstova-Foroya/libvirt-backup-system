@@ -37,10 +37,13 @@ def test_backup_vm_refuses_existing_destination(tmp_path: Path, monkeypatch, cap
 def test_backup_vm_uses_copy_only_for_shut_off(tmp_path: Path, monkeypatch, backup_config) -> None:
     cfg = _backup_config(backup_config)
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
-    )
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        calls.append(args)
+        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
 
     assert backup_vm(cfg, VM("alpha", "paused"), "2026-05", "s1")
     assert "auto" in calls[-1]

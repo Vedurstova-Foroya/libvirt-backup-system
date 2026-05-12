@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import datetime as dt
 import shutil
 from pathlib import Path
 
 from .config import Config, int_value, iter_month_dirs
 from .logging_json import event
 from .storage import subpath_is_safe, unsafe_symlink_descendants
+
+
+def _current_month_name(now: dt.datetime | None = None) -> str:
+    now = now or dt.datetime.now(dt.timezone.utc)
+    return f"{now.year:04d}-{now.month:02d}"
 
 
 def _mount_still_ok(backup_path: Path, where: str, log_path: Path, *, mount_required: bool) -> bool:
@@ -20,11 +26,19 @@ def _mount_still_ok(backup_path: Path, where: str, log_path: Path, *, mount_requ
     return False
 
 
-def _prune_vm_dir(vm_dir: Path, keep: int, backup_path: Path, *, mount_required: bool) -> tuple[int, int]:
+def _prune_vm_dir(
+    vm_dir: Path, keep: int, backup_path: Path, *, mount_required: bool, current_month: str
+) -> tuple[int, int]:
     removed = 0
     skipped = 0
     month_dirs = list(iter_month_dirs(vm_dir))
     prunable = month_dirs if keep == 0 else month_dirs[:-keep]
+    # Never prune the directory for the current month even if it sorts below
+    # other (future-dated) month directories. Clock skew, manual operator
+    # mkdir, or a stray ``2099-01/`` directory must not be allowed to push the
+    # just-written month out of the keep window — cleanup runs immediately
+    # after run_backups and would otherwise delete the data the run just made.
+    prunable = [month_dir for month_dir in prunable if month_dir.name != current_month]
     for month_dir in prunable:
         if not subpath_is_safe(backup_path, month_dir):
             event("error", "month cleanup skipped because backup path is unsafe", path=str(month_dir))
@@ -44,7 +58,9 @@ def _prune_vm_dir(vm_dir: Path, keep: int, backup_path: Path, *, mount_required:
     return removed, skipped
 
 
-def _prune_month_dirs(root: Path, keep: int, backup_path: Path, *, mount_required: bool) -> tuple[int, int]:
+def _prune_month_dirs(
+    root: Path, keep: int, backup_path: Path, *, mount_required: bool, current_month: str
+) -> tuple[int, int]:
     removed = 0
     skipped = 0
     if keep < 0:
@@ -66,7 +82,9 @@ def _prune_month_dirs(root: Path, keep: int, backup_path: Path, *, mount_require
             event("error", "VM cleanup skipped because backup path is unsafe", path=str(vm_dir))
             skipped += 1
             continue
-        vm_removed, vm_skipped = _prune_vm_dir(vm_dir, keep, backup_path, mount_required=mount_required)
+        vm_removed, vm_skipped = _prune_vm_dir(
+            vm_dir, keep, backup_path, mount_required=mount_required, current_month=current_month
+        )
         removed += vm_removed
         skipped += vm_skipped
     return removed, skipped
@@ -89,16 +107,21 @@ def backup_root(config: Config) -> Path:
     return config.path_value("BACKUP_PATH") / config.get("HOST_ID")
 
 
-def cleanup(config: Config) -> int:
+def cleanup(config: Config, *, current_month: str | None = None) -> int:
     if not runtime_backup_path_ok(config):
         return 1
     path = config.path_value("BACKUP_PATH")
     keep = int_value(config.values, "BACKUP_RETENTION_MONTHS")
+    # ``current_month`` is the month-name to protect from pruning. The ``run``
+    # CLI captures it before run_backups so a month boundary crossed mid-run
+    # cannot let a future-dated directory push the just-written month into the
+    # prunable set. Standalone ``cleanup`` invocations fall back to "now".
     removed, skipped = _prune_month_dirs(
         backup_root(config),
         keep,
         path,
         mount_required=config.enabled("BACKUP_REQUIRE_NFS_MOUNT"),
+        current_month=current_month or _current_month_name(),
     )
     event("info", "cleanup completed", removed_backup_months=removed, skipped=skipped)
     return 0 if skipped == 0 else 1

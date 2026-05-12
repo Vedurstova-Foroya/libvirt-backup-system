@@ -83,7 +83,64 @@ def test_install_hooks(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("tools.install_hooks.HOOK_SOURCE", source)
     monkeypatch.setattr("tools.install_hooks.HOOK_TARGET", target)
 
-    assert install_hooks.main() == 0
+    assert install_hooks.main([]) == 0
     assert target.read_text(encoding="utf-8") == "#!/bin/sh\n"
     assert target.stat().st_mode & stat.S_IXUSR
     assert "installed .git/hooks/pre-push" in capsys.readouterr().out
+
+
+def test_install_hooks_overwrites_identical_target_silently(tmp_path: Path, monkeypatch, capsys) -> None:
+    # An identical existing hook is the steady state on a developer machine
+    # that has already run install_hooks once. Re-running must succeed without
+    # printing "refusing" or writing a backup.
+    source = tmp_path / "source/pre-push"
+    source.parent.mkdir()
+    source.write_text("#!/bin/sh\n", encoding="utf-8")
+    target = tmp_path / ".git/hooks/pre-push"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr("tools.install_hooks.ROOT", tmp_path)
+    monkeypatch.setattr("tools.install_hooks.HOOK_SOURCE", source)
+    monkeypatch.setattr("tools.install_hooks.HOOK_TARGET", target)
+
+    assert install_hooks.main([]) == 0
+    out = capsys.readouterr().out
+    assert "refusing" not in out
+    assert not list(target.parent.glob("pre-push.bak.*"))
+
+
+def test_install_hooks_refuses_existing_divergent_hook(tmp_path: Path, monkeypatch, capsys) -> None:
+    source = tmp_path / "source/pre-push"
+    source.parent.mkdir()
+    source.write_text("#!/bin/sh\nrepo-gate\n", encoding="utf-8")
+    target = tmp_path / ".git/hooks/pre-push"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\nmy-own-hook\n", encoding="utf-8")
+    monkeypatch.setattr("tools.install_hooks.ROOT", tmp_path)
+    monkeypatch.setattr("tools.install_hooks.HOOK_SOURCE", source)
+    monkeypatch.setattr("tools.install_hooks.HOOK_TARGET", target)
+
+    assert install_hooks.main([]) == 1
+    err = capsys.readouterr().err
+    assert "refusing to overwrite" in err
+    assert target.read_text(encoding="utf-8") == "#!/bin/sh\nmy-own-hook\n"
+
+
+def test_install_hooks_force_backs_up_then_overwrites(tmp_path: Path, monkeypatch, capsys) -> None:
+    source = tmp_path / "source/pre-push"
+    source.parent.mkdir()
+    source.write_text("#!/bin/sh\nrepo-gate\n", encoding="utf-8")
+    target = tmp_path / ".git/hooks/pre-push"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\nmy-own-hook\n", encoding="utf-8")
+    monkeypatch.setattr("tools.install_hooks.ROOT", tmp_path)
+    monkeypatch.setattr("tools.install_hooks.HOOK_SOURCE", source)
+    monkeypatch.setattr("tools.install_hooks.HOOK_TARGET", target)
+
+    assert install_hooks.main(["--force"]) == 0
+    assert target.read_text(encoding="utf-8") == "#!/bin/sh\nrepo-gate\n"
+    backups = sorted(target.parent.glob("pre-push.bak.*"))
+    assert backups, "force install must leave a backup of the displaced hook"
+    assert backups[-1].read_text(encoding="utf-8") == "#!/bin/sh\nmy-own-hook\n"
+    out = capsys.readouterr().out
+    assert "backed up existing hook" in out

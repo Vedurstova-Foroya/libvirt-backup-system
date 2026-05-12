@@ -8,6 +8,12 @@ Installs the package copy, wrapper script, config file, and systemd units when `
 sudo libvirt-backup-system install
 ```
 
+When run via the installed wrapper the package files at `/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute would delete the source being copied). The wrapper, env file, and systemd units are still re-rendered, so this form is the right one for changing `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR`. To pick up new package code, run `install` from a source checkout instead:
+
+```sh
+sudo python3 -m libvirt_backup_system install
+```
+
 ## `uninstall`
 
 Removes installed program files and systemd units. Config, state, logs, and backups are preserved unless purge flags are passed.

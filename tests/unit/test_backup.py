@@ -14,6 +14,7 @@ from libvirt_backup_system.backup import (
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -41,6 +42,7 @@ def test_backup_vm_running_success(tmp_path: Path, monkeypatch, backup_config) -
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
+        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
@@ -65,27 +67,23 @@ def test_backup_vm_without_compression(tmp_path: Path, monkeypatch, backup_confi
     cfg = _backup_config(backup_config)
     cfg.values["BACKUP_COMPRESS"] = "false"
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
-    )
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        calls.append(args)
+        return virtnbdbackup_fake_success(args, check=check, env=env)
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
     assert "--compress" not in calls[0]
 
 
 def test_backup_vm_inactive_marker_and_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
-    )
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
     monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, marker: True)
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
     legacy_fingerprint = marker.parent / ".inactive-copy-fingerprint"
-    # The stub for run_streamed does not create the destination directory; the
-    # marked-fresh path needs it to exist on disk before a second run can reuse.
-    (marker.parent / "stamp").mkdir()
     # Stamp and fingerprint are stored together in one atomic marker file.
     assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
     assert not legacy_fingerprint.exists()
@@ -109,10 +107,12 @@ def test_backup_vm_redoes_inactive_when_marker_is_stale(tmp_path: Path, monkeypa
     (marker.parent / "old").mkdir()
     marker.write_text("old\nold-fp\n", encoding="utf-8")
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
-    )
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        calls.append(args)
+        return virtnbdbackup_fake_success(args, check=check, env=env)
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: False)
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
@@ -129,10 +129,7 @@ def test_backup_vm_clears_marker_when_vm_running(tmp_path: Path, monkeypatch, ba
     marker.parent.mkdir(parents=True)
     marker.write_text("old\n", encoding="utf-8")
     fingerprint.write_text("oldfp\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
-    )
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
 
     assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
     assert not marker.exists()

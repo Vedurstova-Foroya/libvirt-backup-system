@@ -17,11 +17,14 @@ def test_uninstall_ignores_missing_purge_path(tmp_path: Path) -> None:
     assert uninstall(str(tmp_path), purge_logs=True) == 0
 
 
-def test_uninstall_reports_invalid_command_timeout(tmp_path: Path, capsys) -> None:
+def test_uninstall_continues_through_invalid_command_timeout(tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("COMMAND_TIMEOUT_SECONDS=0\n", encoding="utf-8")
-    assert uninstall(str(tmp_path)) == 1
+    # A broken timeout in the env file must not block uninstall; in particular
+    # ``--purge-config`` is what removes the very file that holds the bad value.
+    assert uninstall(str(tmp_path), purge_config=True) == 0
+    assert not config_path.exists()
     assert "invalid command timeout" in capsys.readouterr().err
 
 
@@ -106,10 +109,14 @@ def test_uninstall_returns_nonzero_when_systemctl_fails(tmp_path: Path, monkeypa
 
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
     monkeypatch.setattr("libvirt_backup_system.installer.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
+    monkeypatch.setattr(
+        "libvirt_backup_system.systemd_units.prefixed",
+        lambda path, root: tmp_path / str(path).lstrip("/"),
+    )
     monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
     monkeypatch.setattr(
-        "libvirt_backup_system.installer.run",
+        "libvirt_backup_system.systemd_units.run",
         lambda args, check=True, env=None: CommandResult(args, 1, "", "boom"),
     )
     assert uninstall(None) == 1

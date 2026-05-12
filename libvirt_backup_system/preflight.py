@@ -19,7 +19,7 @@ REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df
 BOOLEAN_KEYS = {"BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT"}
 INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT"}
 FLOAT_KEYS = {"BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"}
-SUPPORTED_VIRTNBDBACKUP_MAJOR = 2
+SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
 ALLOWED_LIBVIRT_URI_PREFIXES = (
     "qemu:///",
     "qemu+ssh://",
@@ -180,15 +180,13 @@ def _virtnbdbackup_version_failures() -> list[str]:
     major = _parse_major_version(text)
     if major is None:
         return [f"virtnbdbackup --version unparseable: {text!r}"]
-    if major != SUPPORTED_VIRTNBDBACKUP_MAJOR:
-        return [
-            f"virtnbdbackup major version {major} is unsupported "
-            f"(need {SUPPORTED_VIRTNBDBACKUP_MAJOR}.x); reported: {text!r}"
-        ]
+    if major not in SUPPORTED_VIRTNBDBACKUP_MAJORS:
+        supported = ", ".join(f"{m}.x" for m in sorted(SUPPORTED_VIRTNBDBACKUP_MAJORS))
+        return [f"virtnbdbackup major version {major} is unsupported (need {supported}); reported: {text!r}"]
     return []
 
 
-def _validate_backup_path(config: Config) -> list[str]:
+def _validate_backup_path_readonly(config: Config) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
     backup_path = config.path_value("BACKUP_PATH")
@@ -202,18 +200,37 @@ def _validate_backup_path(config: Config) -> list[str]:
         return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
     if not subpath_is_safe(backup_path, backup_root(config)):
         return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
+    return []
+
+
+def _validate_backup_path_writable(config: Config) -> list[str]:
+    failures = _validate_backup_path_readonly(config)
+    if failures or not config.get("BACKUP_PATH").strip():
+        return failures
+    backup_path = config.path_value("BACKUP_PATH")
     try:
         host_root = backup_root(config)
+        # Re-check the mount state immediately before each filesystem mutation
+        # (mkdir, then write probe). The readonly check above can succeed and
+        # then the NFS mount drop in the window before mkdir, which would
+        # otherwise create BACKUP_PATH/HOST_ID on the underlying local
+        # mountpoint and silently pollute it. The second recheck before the
+        # probe closes the same gap for the file write.
+        mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
+        if mount_required and not backup_path.is_mount():
+            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
         host_root.mkdir(parents=True, exist_ok=True)
         if not subpath_is_safe(backup_path, host_root):
             return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
+        if mount_required and not backup_path.is_mount():
+            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
         _write_probe(host_root / WRITE_PROBE_NAME)
     except OSError as exc:
         return [f"BACKUP_PATH must be writable: {exc}"]
     return []
 
 
-def _validate_env_values(config: Config) -> list[str]:
+def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]:
     failures: list[str] = []
     failures.extend(_validate_required_present(config))
     failures.extend(_validate_booleans(config))
@@ -222,12 +239,19 @@ def _validate_env_values(config: Config) -> list[str]:
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    failures.extend(_validate_backup_path(config))
+    # ``list-vms``/``verify``/``cleanup`` call this with ``require_writable=False``:
+    # those commands are documented as read/inspect-only and must not create
+    # BACKUP_PATH/HOST_ID or run a write probe — that would mutate storage on
+    # a read-only or temporarily-down backup mount.
+    if require_writable:
+        failures.extend(_validate_backup_path_writable(config))
+    else:
+        failures.extend(_validate_backup_path_readonly(config))
     return failures
 
 
 def validate_config(config: Config) -> int:
-    failures = _validate_env_values(config)
+    failures = _validate_env_values(config, require_writable=False)
     if failures:
         for failure in failures:
             event("error", "config validation failed", reason=failure)
@@ -236,7 +260,7 @@ def validate_config(config: Config) -> int:
 
 
 def check(config: Config) -> int:
-    failures = _validate_env_values(config)
+    failures = _validate_env_values(config, require_writable=True)
     for binary in REQUIRED_BINARIES:
         if not shutil.which(binary):
             failures.append(f"missing binary: {binary}")

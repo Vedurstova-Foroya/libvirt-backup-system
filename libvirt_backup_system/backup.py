@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import shutil
+import time
 from pathlib import Path
 
 from .cleanup import backup_root, cleanup, runtime_backup_path_ok
-from .config import Config, iter_month_dirs
+from .config import Config
 from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
 from .inactive_markers import (
     marked_backup_dir,
@@ -17,6 +19,7 @@ from .inactive_markers import (
 from .logging_json import event
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
+from .verify import verify
 from .vms import VM, is_safe_vm_name, list_vms
 
 __all__ = [
@@ -108,6 +111,7 @@ def _finalize_inactive_marker(  # noqa: PLR0913
     pre_fingerprint: str,
     stamp: str,
     dest: Path,
+    pre_copy_time: float,
 ) -> bool:
     if not runtime_backup_path_ok(config):
         return False
@@ -122,13 +126,27 @@ def _finalize_inactive_marker(  # noqa: PLR0913
         event("error", "inactive fingerprint computation failed", vm=vm.name)
         return False
     if post_fingerprint != pre_fingerprint:
-        # Domain XML changed during the backup, so the just-written copy does
-        # not match the current config. Skip the marker so the next run redoes
-        # the copy rather than treating a stale snapshot as fresh.
-        event("warning", "domain XML changed during inactive backup; not marking fresh", vm=vm.name)
-        event("info", "backup completed", vm=vm.name, destination=str(dest))
-        return True
+        # Domain XML changed mid-backup; fail the VM so the run is non-zero and
+        # cleanup is skipped (retention would otherwise prune known-good months
+        # after this known-stale copy). Data is left on disk for inspection;
+        # the missing marker forces a recopy on the next run.
+        event("error", "domain XML changed during inactive backup; backup not trusted", vm=vm.name)
+        return False
     if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
+        return False
+    # Backdate the marker to the pre-copy timestamp so any mid-copy or
+    # post-copy disk write has a newer mtime than the marker and forces a
+    # recopy. A marker stamped "now" (post-copy) would falsely register a
+    # mid-copy modification as fresh.
+    try:
+        os.utime(inactive_marker, (pre_copy_time, pre_copy_time))
+    except OSError as exc:
+        # Backdating is load-bearing for freshness, not a nice-to-have: a
+        # marker with the default post-copy mtime can falsely classify a
+        # mid-copy disk modification as still fresh. Roll the marker back and
+        # fail this VM so the next run redoes the copy instead of trusting it.
+        event("error", "inactive marker backdate failed; rolling back marker", vm=vm.name, error=str(exc))
+        remove_marker(inactive_marker, vm.name)
         return False
     remove_fingerprint(inactive_marker, vm.name)
     event("info", "backup completed", vm=vm.name, destination=str(dest))
@@ -179,15 +197,33 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         return False
 
     pre_fingerprint: str | None = None
+    pre_copy_time: float = 0.0
     if vm.inactive:
         pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
         if pre_fingerprint is None:
             event("error", "inactive fingerprint computation failed", vm=vm.name)
             return False
+        # Captured before the copy starts so the marker can be backdated to a
+        # moment that pre-dates any possible mid-copy disk modification.
+        pre_copy_time = time.time()
 
     if not runtime_backup_path_ok(config):
         return False
-    month_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        month_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A single VM's month-directory creation failure must not abort the
+        # whole run. Log and fail this VM only; the run-level loop will move
+        # on to the next VM rather than skipping every remaining one because
+        # of a transient permission/quota issue on one path.
+        event(
+            "error",
+            "backup skipped because month directory creation failed",
+            vm=vm.name,
+            path=str(month_dir),
+            error=str(exc),
+        )
+        return False
     if not _ensure_backup_subpath_safe(config, month_dir, "backup skipped because destination became unsafe"):
         return False
 
@@ -215,72 +251,49 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         )
         return False
 
+    # A virtnbdbackup zero exit without a produced destination, or with ``dest``
+    # swapped for a symlink mid-copy, must not be treated as success: retention
+    # would otherwise prune older known-good months on the back of a hollow
+    # write, and cleanup with BACKUP_RETENTION_MONTHS=-1 returns before
+    # scanning for unsafe symlinks at all.
+    if not dest.is_dir():
+        event("error", "backup reported success but destination is missing", vm=vm.name, destination=str(dest))
+        return False
+    if not _ensure_backup_subpath_safe(config, dest, "backup destination became unsafe after virtnbdbackup"):
+        return False
+
     if vm.inactive and pre_fingerprint is not None:
-        return _finalize_inactive_marker(config, inactive_marker, month_dir, vm, pre_fingerprint, stamp, dest)
+        return _finalize_inactive_marker(
+            config,
+            inactive_marker,
+            month_dir,
+            vm,
+            pre_fingerprint,
+            stamp,
+            dest,
+            pre_copy_time,
+        )
+    # Re-check BACKUP_REQUIRE_NFS_MOUNT after the running-VM copy completes:
+    # virtnbdbackup writing to a path that lost its NFS mount mid-run would have
+    # silently landed on the underlying local directory. Reporting that as
+    # success would let cleanup proceed on data that is not on the intended
+    # backup volume. Inactive VMs are protected via _finalize_inactive_marker.
+    if not runtime_backup_path_ok(config):
+        event("error", "backup completed but backup path is no longer mounted", vm=vm.name, destination=str(dest))
+        return False
     event("info", "backup completed", vm=vm.name, destination=str(dest))
     return True
 
 
-def run_backups(config: Config) -> int:
+def run_backups(config: Config, *, month: str | None = None) -> int:
     vms = list_vms(config)
-    month = current_month()
+    # ``month`` is supplied by the ``run`` CLI so the value captured here is the
+    # same one passed to cleanup. Computing it locally only happens when called
+    # directly (e.g. tests); the CLI always pins it once at run start.
+    month = month or current_month()
     stamp = timestamp()
     ok = True
     for vm in vms:
         if not backup_vm(config, vm, month, stamp):
             ok = False
-    return 0 if ok else 1
-
-
-def _iter_verify_targets(root: Path, vm_name: str | None) -> tuple[list[Path], bool]:
-    if vm_name is not None:
-        if not is_safe_vm_name(vm_name):
-            event("error", "verify target name is invalid", vm=vm_name)
-            return [], False
-        return [root / vm_name], True
-    return sorted(root.glob("*")), True
-
-
-def _verify_backup_dir(backup_dir: Path) -> bool:
-    try:
-        run_streamed(["virtnbdrestore", "-i", str(backup_dir), "-o", "verify"])
-    except CommandError as exc:
-        event("error", "verify failed", backup=str(backup_dir), stderr=exc.result.stderr.strip())
-        return False
-    event("info", "verify passed", backup=str(backup_dir))
-    return True
-
-
-def verify(config: Config, vm_name: str | None = None) -> int:
-    root = backup_root(config)
-    backup_path = config.path_value("BACKUP_PATH")
-    roots, name_ok = _iter_verify_targets(root, vm_name)
-    ok = name_ok
-    verified = 0
-    for vm_root in roots:
-        if not subpath_is_safe(backup_path, vm_root):
-            event("error", "verify skipped because path is unsafe", path=str(vm_root))
-            ok = False
-            continue
-        if not vm_root.is_dir():
-            if vm_name:
-                event("error", "verify target not found", vm=vm_name, path=str(vm_root))
-                ok = False
-            continue
-        for month_dir in iter_month_dirs(vm_root):
-            if not subpath_is_safe(backup_path, month_dir):
-                event("error", "verify skipped because month path is unsafe", path=str(month_dir))
-                ok = False
-                continue
-            for backup_dir in sorted(path for path in month_dir.iterdir() if path.is_dir()):
-                if not subpath_is_safe(backup_path, backup_dir):
-                    event("error", "verify skipped because backup path is unsafe", path=str(backup_dir))
-                    ok = False
-                    continue
-                if not _verify_backup_dir(backup_dir):
-                    ok = False
-                verified += 1
-    if verified == 0:
-        event("error", "verify found no backups", vm=vm_name or None, root=str(root))
-        ok = False
     return 0 if ok else 1

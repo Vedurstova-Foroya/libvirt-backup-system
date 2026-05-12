@@ -12,6 +12,7 @@ import sys
 parser = argparse.ArgumentParser()
 parser.add_argument("-i", required=True)
 parser.add_argument("-o", required=True)
+parser.add_argument("-a", "--action", default="restore", choices=("dump", "restore", "verify"))
 args, _ = parser.parse_known_args()
 
 source = pathlib.Path(args.i)
@@ -19,8 +20,11 @@ if not source.exists():
     print(f"source missing: {source}", file=sys.stderr)
     raise SystemExit(2)
 
-if args.o != "verify":
-    print(f"unsupported restore mode: {args.o}", file=sys.stderr)
+# Accept both the explicit v2.x ``-a verify`` form and the legacy ``-o verify``
+# shortcut so the fake stays compatible with anything the runtime may invoke.
+mode = "verify" if args.action == "verify" or args.o == "verify" else args.action
+if mode != "verify":
+    print(f"unsupported restore mode: {mode}", file=sys.stderr)
     raise SystemExit(2)
 
 metadata_path = source / "metadata.json"

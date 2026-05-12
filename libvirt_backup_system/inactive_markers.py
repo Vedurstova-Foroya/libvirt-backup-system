@@ -13,6 +13,21 @@ from .storage import subpath_is_safe
 LEGACY_FINGERPRINT_FILE_NAME = ".inactive-copy-fingerprint"
 
 
+def _stamp_is_safe(stamp: str) -> bool:
+    # ``Path(stamp).name == stamp`` alone passed ".." through unchanged
+    # (``Path("..").name`` is ".."), which then resolved month_dir / ".." to
+    # the VM directory parent — a path traversal out of the month directory.
+    # Reject the path-special names, separators, NUL/control characters, and
+    # leading-dot hidden-file forms explicitly before the round-trip check.
+    if not stamp or stamp in {".", ".."} or stamp.startswith("."):
+        return False
+    if "/" in stamp or "\\" in stamp or "\x00" in stamp:
+        return False
+    if any(ord(char) < 32 or ord(char) == 127 for char in stamp):
+        return False
+    return Path(stamp).name == stamp
+
+
 def _backup_subpath_is_safe(config: Config, path: Path) -> bool:
     if not config.get("BACKUP_PATH").strip():
         return False
@@ -109,7 +124,16 @@ def _atomic_write(path: Path, content: str, vm_name: str, error_message: str) ->
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
             handle.write(content)
+            handle.flush()
+            # fsync the data file before rename so a crash between write and
+            # rename cannot leave a zero-length marker behind. Without it a
+            # power loss could lose the freshness stamp and force a redundant
+            # monthly copy on the next run.
+            os.fsync(handle.fileno())
         tmp_path.replace(path)
+        # fsync the parent directory so the rename itself is durable. The new
+        # name only survives a crash once the directory entry is committed.
+        _fsync_directory(parent)
     except OSError as exc:
         if fd != -1:
             with suppress(OSError):
@@ -120,6 +144,21 @@ def _atomic_write(path: Path, content: str, vm_name: str, error_message: str) ->
     return True
 
 
+def _fsync_directory(directory: Path) -> None:
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        # Some filesystems (e.g. certain NFS configurations) refuse to open
+        # directories for fsync. The rename is still safer than no fsync — the
+        # marker just falls back to "best effort durable".
+        return
+    try:
+        with suppress(OSError):
+            os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def marked_backup_dir(config: Config, month_dir: Path, marker: Path, vm_name: str) -> Path | None:
     lines = _read_marker_lines(marker)
     if lines is None:
@@ -128,7 +167,7 @@ def marked_backup_dir(config: Config, month_dir: Path, marker: Path, vm_name: st
         event("info", "inactive marker is malformed, recopying", vm=vm_name, marker=str(marker))
         return None
     stamp = lines[0]
-    if Path(stamp).name != stamp:
+    if not _stamp_is_safe(stamp):
         event("error", "inactive marker stamp is unsafe, recopying", vm=vm_name, marker=str(marker), stamp=stamp)
         return None
     backup_dir = month_dir / stamp

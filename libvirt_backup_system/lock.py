@@ -32,6 +32,15 @@ def acquire_run_lock(config: Config) -> Iterator[Path]:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise LockBusyError(path) from exc
+        # Stamp the holder's PID so an operator paging in mid-run can see who
+        # is holding the lock (cat run.lock). flock keeps mutual exclusion;
+        # this is purely diagnostic so we ignore I/O failures.
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        except OSError:
+            pass
         try:
             yield path
         finally:

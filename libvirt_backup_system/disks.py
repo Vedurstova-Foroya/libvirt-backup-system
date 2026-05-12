@@ -86,14 +86,18 @@ def disks_modified_after(disks: list[str], mtime: float) -> bool:
     Block devices report unreliable inode mtimes (the device node is rarely
     rewritten when its contents change), so any block device is treated as
     modified to force a re-copy rather than risk skipping a stale backup.
-    Any ``OSError`` while stat-ing is treated the same way.
+    Any ``OSError`` while stat-ing is treated the same way. The mtime
+    comparison is inclusive: on coarse-resolution filesystems (NFS, ext4 with
+    one-second granularity) a disk written at the same wall-clock second as
+    the marker would compare equal and be falsely reused, so equality is
+    treated as modified.
     """
     for disk in disks:
         path = Path(disk)
         try:
             if path.is_block_device():
                 return True
-            if path.stat().st_mtime > mtime:
+            if path.stat().st_mtime >= mtime:
                 return True
         except OSError:
             return True

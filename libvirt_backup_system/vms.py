@@ -25,7 +25,16 @@ class VM:
 
 
 def is_safe_vm_name(name: str) -> bool:
-    return bool(name) and name not in {".", ".."} and not name.startswith("-") and "/" not in name and "\\" not in name
+    if not name or name in {".", ".."} or name.startswith("-"):
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    # Reject control characters (incl. NUL, newline, tab, DEL) defensively.
+    # Real libvirt rejects these at define-time, but a corrupted state file or
+    # a hostile environment variable could still surface one here, and any
+    # control char in a path argument flowing to virsh/virtnbdbackup is an
+    # injection risk we want to refuse rather than pass through.
+    return not any(ord(char) < 32 or ord(char) == 127 for char in name)
 
 
 def _assert_safe_vm_name(name: str) -> None:

@@ -38,8 +38,8 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
         yield Path("/tmp/fake.lock")
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.cleanup", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.cleanup", lambda config, *, current_month=None: 0)
     assert main(["run"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 2)
@@ -123,10 +123,12 @@ def test_cli_run_skips_cleanup_when_backups_fail(tmp_path: Path, monkeypatch, ca
         yield Path("/tmp/fake.lock")
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 1)
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 1)
     monkeypatch.setattr(
         "libvirt_backup_system.cli.cleanup",
-        lambda config: (_ for _ in ()).throw(AssertionError("cleanup should not run when backups fail")),
+        lambda config, *, current_month=None: (_ for _ in ()).throw(
+            AssertionError("cleanup should not run when backups fail")
+        ),
     )
     assert main(["run"]) == 1
     assert "cleanup skipped because backups failed" in capsys.readouterr().err
@@ -148,9 +150,39 @@ def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", busy)
     monkeypatch.setattr(
         "libvirt_backup_system.cli.run_backups",
-        lambda config: (_ for _ in ()).throw(AssertionError("should not run")),
+        lambda config, *, month=None: (_ for _ in ()).throw(AssertionError("should not run")),
     )
     assert main(["run"]) == 1
+    err = capsys.readouterr().err
+    assert "another run in progress" in err
+    assert "run.lock" in err
+
+
+def test_cli_cleanup_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Standalone ``cleanup`` must hold the same lock as ``run`` so that a
+    # manual cleanup can't race with a scheduled backup. When the lock is
+    # already held, surface the conflict instead of pruning underneath the
+    # in-flight run.
+    from libvirt_backup_system.lock import LockBusyError
+
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+
+    @contextlib.contextmanager
+    def busy(config: object):
+        raise LockBusyError(tmp_path / "run.lock")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", busy)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.cleanup",
+        lambda config, *, current_month=None: (_ for _ in ()).throw(
+            AssertionError("cleanup must not run while the lock is busy")
+        ),
+    )
+    assert main(["cleanup"]) == 1
     err = capsys.readouterr().err
     assert "another run in progress" in err
     assert "run.lock" in err

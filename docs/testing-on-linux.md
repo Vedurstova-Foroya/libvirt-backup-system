@@ -176,6 +176,17 @@ capability, but the real nested-VM backup validation scenario is still
 scaffolded and not enabled. If KVM capability is missing, that path is skipped
 with a clear reason instead of failing the suite.
 
+> **Coverage caveat.** The Docker Compose scenario runs the orchestrator against
+> a `PATH`-shadowed set of fake CLIs (`tests/e2e/fakes/virsh`,
+> `tests/e2e/fakes/virtnbdbackup`, `tests/e2e/fakes/virtnbdrestore`,
+> `tests/e2e/fakes/qemu-img`, `tests/e2e/fakes/df`) rather than real libvirt
+> tooling. It exercises argument shape, exit codes, and orchestration logic but
+> does not validate that an actual `virtnbdbackup` run on a real domain produces
+> a restorable backup. The real-KVM path is a placeholder
+> (`tests/e2e/__main__.py:run_real_kvm_if_available` returns 0 without invoking
+> libvirt). Treat e2e success as "the orchestrator wires together correctly",
+> not "backups will restore on this host".
+
 To run only the KVM capability probe path:
 
 ```bash

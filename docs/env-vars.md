@@ -4,7 +4,8 @@
 #   /etc/libvirt-backup-system/libvirt-backup.env
 #
 # Values in the real process environment override values in this file.
-# Booleans are enabled by: 1, true, yes, on. Anything else is false.
+# Booleans accept (case-insensitive): 1, true, yes, on as true; 0, false, no, off as false.
+# Any other value is rejected by preflight rather than silently coerced.
 
 # Libvirt connection used by virsh for VM discovery and state checks.
 # LIBVIRT_URI=qemu:///system

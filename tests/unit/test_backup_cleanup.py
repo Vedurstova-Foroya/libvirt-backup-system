@@ -134,6 +134,21 @@ def test_cleanup_returns_nonzero_when_rmtree_fails(tmp_path: Path, monkeypatch, 
     assert "month cleanup failed" in capsys.readouterr().err
 
 
+def test_cleanup_protects_caller_supplied_current_month(tmp_path: Path, backup_config) -> None:
+    # Simulate a month-boundary crossing: run_backups captured "2026-01" while
+    # writing, but cleanup runs after midnight when ``now`` is "2026-02". With
+    # zero retention the only directory that must survive is the one the run
+    # just wrote (2026-01), not the future-dated 2026-02 that ``now`` matches.
+    cfg = _with_retention(backup_config)
+    cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
+    for month in ["2026-01", "2026-02"]:
+        (tmp_path / "backups/host/alpha" / month).mkdir(parents=True)
+
+    assert cleanup(cfg, current_month="2026-01") == 0
+    assert (tmp_path / "backups/host/alpha/2026-01").exists()
+    assert not (tmp_path / "backups/host/alpha/2026-02").exists()
+
+
 def test_cleanup_skips_pruning_when_mount_disappears_between_initial_check_and_rmtree(
     tmp_path: Path,
     monkeypatch,

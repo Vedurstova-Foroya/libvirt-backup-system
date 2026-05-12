@@ -113,12 +113,18 @@ def test_disks_modified_after_detects_changes(tmp_path: Path) -> None:
     disk.write_bytes(b"data")
     mtime = disk.stat().st_mtime
 
-    assert not disks_modified_after([str(disk)], mtime)
+    earlier = mtime - 100
+    assert not disks_modified_after([str(disk)], mtime + 100)
+    assert not disks_modified_after([str(disk)], mtime + 1)
+
+    # Equality must compare modified: on coarse-resolution filesystems a disk
+    # written at the same second as the marker would otherwise be reused.
+    assert disks_modified_after([str(disk)], mtime)
 
     later = mtime + 100
     disk.write_bytes(b"more")
     os.utime(disk, (later, later))
-    assert disks_modified_after([str(disk)], mtime)
+    assert disks_modified_after([str(disk)], earlier)
 
 
 def test_disks_modified_after_treats_block_device_as_modified(monkeypatch, tmp_path: Path) -> None:

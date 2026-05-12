@@ -6,7 +6,6 @@ import pytest
 
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.preflight import (
-    WRITE_PROBE_NAME,
     _df_available_kb,
     check,
     validate_config,
@@ -116,8 +115,7 @@ def test_validate_config_reports_numeric_and_path_edge_cases(
             "BACKUP_PATH": str(backup_path),
         }
     )
-    checks = iter([True, False])
-    monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: next(checks))
+    monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: False)
     assert validate_config(cfg) == 1
     assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
 
@@ -129,63 +127,6 @@ def test_validate_config_rejects_non_finite_float_values(value: str, backup_conf
 
     assert validate_config(cfg) == 1
     assert "BACKUP_ESTIMATE_GB_PER_VM must be a finite number" in capsys.readouterr().err
-
-
-def test_validate_config_reports_write_probe_failure(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    backup_config,
-) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_path = tmp_path / "backup"
-    backup_path.mkdir()
-    cfg.values["BACKUP_PATH"] = str(backup_path)
-
-    def fail_open(path: object, flags: int, mode: int = 0o777) -> int:
-        raise OSError("readonly")
-
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.open", fail_open)
-    assert validate_config(cfg) == 1
-    assert "BACKUP_PATH must be writable" in capsys.readouterr().err
-
-
-def test_validate_config_rejects_write_probe_symlink_without_following(
-    tmp_path: Path,
-    capsys,
-    backup_config,
-) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_path = tmp_path / "backup"
-    host_root = backup_path / "host"
-    host_root.mkdir(parents=True)
-    cfg.values["BACKUP_PATH"] = str(backup_path)
-
-    target = tmp_path / "probe-target"
-    target.write_text("do not touch\n", encoding="utf-8")
-    probe = host_root / WRITE_PROBE_NAME
-    probe.symlink_to(target)
-
-    assert validate_config(cfg) == 1
-    assert target.read_text(encoding="utf-8") == "do not touch\n"
-    assert probe.is_symlink()
-    assert "BACKUP_PATH must be writable" in capsys.readouterr().err
-
-
-def test_validate_config_reports_incomplete_write_probe(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    backup_config,
-) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_path = tmp_path / "backup"
-    backup_path.mkdir()
-    cfg.values["BACKUP_PATH"] = str(backup_path)
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.write", lambda fd, data: 2)
-
-    assert validate_config(cfg) == 1
-    assert "write probe was incomplete" in capsys.readouterr().err
 
 
 def test_check_reports_low_backup_space(monkeypatch, capsys, backup_config) -> None:

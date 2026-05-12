@@ -5,6 +5,21 @@ from pathlib import Path
 import pytest
 
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.shell import CommandResult
+
+
+def virtnbdbackup_fake_success(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+    """Mock virtnbdbackup that also produces the output directory.
+
+    Production-side, backup_vm() now refuses to mark a backup successful unless
+    the destination directory exists when virtnbdbackup returns 0 (a defense
+    against hollow successes). Bare ``lambda: CommandResult(...)`` mocks no
+    longer model real virtnbdbackup behavior; tests that want the success path
+    should route through this helper.
+    """
+    if args and args[0] == "virtnbdbackup" and "-o" in args:
+        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
+    return CommandResult(args, 0, "", "")
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ import json
 import sys
 import traceback
 
-from .backup import cleanup, run_backups, verify
+from .backup import cleanup, current_month, run_backups, verify
 from .config import Config
 from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
@@ -44,6 +44,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_command(config: Config) -> int:
+    preflight_code = check(config)
+    if preflight_code != 0:
+        return preflight_code
+    try:
+        with acquire_run_lock(config):
+            # Pin the month before both run_backups and cleanup so a mid-run
+            # month boundary cannot let cleanup classify the just-written
+            # month as past-month and prune it.
+            run_month = current_month()
+            backup_code = run_backups(config, month=run_month)
+            if backup_code != 0:
+                event("warning", "cleanup skipped because backups failed")
+                return backup_code
+            # Cleanup runs under the same lock so a second invocation cannot
+            # prune mid-transfer of the first. ``return`` inside the ``with``
+            # releases only after cleanup returns.
+            return cleanup(config, current_month=run_month)
+    except LockBusyError as exc:
+        event("error", "another run in progress", lock_path=str(exc.path))
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -73,22 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"check", "preflight"}:
             return check(config)
         if args.command == "run":
-            preflight_code = check(config)
-            if preflight_code != 0:
-                return preflight_code
-            try:
-                with acquire_run_lock(config):
-                    backup_code = run_backups(config)
-                    if backup_code != 0:
-                        event("warning", "cleanup skipped because backups failed")
-                        return backup_code
-                    # Cleanup runs under the same lock so a second invocation
-                    # cannot prune mid-transfer of the first. ``return`` inside
-                    # the ``with`` releases only after cleanup returns.
-                    return cleanup(config)
-            except LockBusyError as exc:
-                event("error", "another run in progress", lock_path=str(exc.path))
-                return 1
+            return _run_command(config)
         if args.command == "list-vms":
             config_code = validate_config(config)
             if config_code != 0:
@@ -109,12 +117,27 @@ def main(argv: list[str] | None = None) -> int:
             config_code = validate_config(config)
             if config_code != 0:
                 return config_code
-            return cleanup(config)
+            # Hold the same run-lock that ``run`` uses; otherwise a manual
+            # cleanup could prune mid-transfer of a scheduled backup. The lock
+            # is non-blocking — if a run is already in progress, surface that
+            # instead of racing against it.
+            try:
+                with acquire_run_lock(config):
+                    return cleanup(config)
+            except LockBusyError as exc:
+                event("error", "another run in progress", lock_path=str(exc.path))
+                return 1
     except KeyboardInterrupt:
         event("error", "interrupted")
         return 130
     except Exception as exc:
-        event("error", "fatal error", error=str(exc), traceback=traceback.format_exc())
+        # The JSON record itself stays on one line (json.dumps escapes newlines
+        # to "\n"), but those literal escape sequences still bloat the line
+        # length and hide useful context behind scrolling. Collapse the
+        # traceback to a single readable line so operators can grep one line
+        # per event without losing the frame chain.
+        flat_traceback = " | ".join(line.strip() for line in traceback.format_exc().splitlines() if line.strip())
+        event("error", "fatal error", error=str(exc), traceback=flat_traceback)
         return 1
 
     parser.print_help(sys.stderr)

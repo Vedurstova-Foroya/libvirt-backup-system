@@ -55,7 +55,11 @@ def test_backup_vm_recopies_when_inactive_marker_read_fails(
     monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.read_text", fake_read_text)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
@@ -78,7 +82,11 @@ def test_backup_vm_recopies_when_inactive_marker_is_malformed(
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
@@ -86,20 +94,29 @@ def test_backup_vm_recopies_when_inactive_marker_is_malformed(
     assert "inactive marker is malformed" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "bad_stamp",
+    ["../oldstamp", "..", ".", ".hidden", "a\\b", "a\tb", "a\x01b"],
+)
 def test_backup_vm_recopies_when_inactive_marker_stamp_is_unsafe(
     tmp_path: Path,
     monkeypatch,
     capsys,
     backup_config,
+    bad_stamp: str,
 ) -> None:
     cfg = _backup_config(backup_config)
     marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
-    marker.write_text("../oldstamp\nfp-stub\n", encoding="utf-8")
+    marker.write_text(f"{bad_stamp}\nfp-stub\n", encoding="utf-8")
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
@@ -123,7 +140,11 @@ def test_backup_vm_recopies_when_inactive_marker_backup_path_is_unsafe(
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
@@ -153,7 +174,11 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_check_fails(
     monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.is_dir", fake_is_dir)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
@@ -232,11 +257,31 @@ def test_read_marker_logs_os_error_from_read_text(tmp_path: Path, monkeypatch, c
     monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.read_text", fake_read_text)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     assert "inactive marker read failed" in capsys.readouterr().err
+
+
+def test_atomic_write_tolerates_dir_fsync_failure(tmp_path: Path, monkeypatch) -> None:
+    # _fsync_directory swallows OSError from os.open on the parent. Some
+    # network filesystems refuse to open a directory for fsync; the marker
+    # write itself must still succeed.
+    marker = tmp_path / "marker"
+    original_open = os.open
+
+    def fake_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if str(path) == str(tmp_path):
+            raise OSError("nfs refuses directory open")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("libvirt_backup_system.inactive_markers.os.open", fake_open)
+    assert write_marker(marker, "stamp", "fp", "alpha")
+    assert marker.read_text(encoding="utf-8") == "stamp\nfp\n"
 
 
 def test_read_marker_treats_symlink_marker_as_missing(tmp_path: Path) -> None:

@@ -23,17 +23,17 @@ sudo mkdir -p /var/tmp/libvirt-restore/my-vm-backup
 sudo rsync -aH --numeric-ids "$SOURCE"/ /var/tmp/libvirt-restore/my-vm-backup/
 ```
 
-Verify the copied backup before restoring from it:
+Verify the copied backup before restoring from it (`-a` selects the action; `-o` is the required output path even for verify):
 
 ```sh
-sudo virtnbdrestore -i /var/tmp/libvirt-restore/my-vm-backup -o verify
+sudo virtnbdrestore -a verify -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/my-vm-backup
 ```
 
-Restore into an empty staging directory:
+Restore into an empty staging directory. `-o` is the restore *target directory* (not an action keyword), and `-D` is an optional boolean flag for registering the VM after restore — omit it unless you want `virtnbdrestore` to redefine the VM:
 
 ```sh
 sudo mkdir -p /var/tmp/libvirt-restore/my-vm-restored
-sudo virtnbdrestore -i /var/tmp/libvirt-restore/my-vm-backup -o restore -D /var/tmp/libvirt-restore/my-vm-restored
+sudo virtnbdrestore -a restore -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/my-vm-restored
 ```
 
 After the restore completes, inspect the restored files, move the disk images to the intended libvirt storage location, define or update the VM using your site’s normal libvirt process, and boot it only after confirming the recovered disks, network identity, and any existing production instance will not conflict.

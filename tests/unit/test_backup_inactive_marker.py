@@ -34,7 +34,11 @@ def test_backup_vm_replaces_symlinked_inactive_marker_without_touching_target(
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
     monkeypatch.setattr(
         "libvirt_backup_system.backup.inactive_marker_is_fresh",
@@ -69,7 +73,11 @@ def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
     monkeypatch.setattr("libvirt_backup_system.backup.Path.lstat", fake_lstat)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
 
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
@@ -90,7 +98,11 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            calls.append(args),
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[2],
     )
     monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
 
@@ -124,7 +136,10 @@ def test_backup_vm_logs_inactive_fingerprint_removal_failure(
     monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.unlink", fake_unlink)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
     )
 
     assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
@@ -146,7 +161,10 @@ def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypa
     monkeypatch.setattr("libvirt_backup_system.backup.Path.unlink", fake_unlink)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
     )
 
     assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
@@ -155,15 +173,83 @@ def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypa
 
 def test_backup_vm_fails_when_marker_path_becomes_unsafe(monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
-    checks = iter([True, True, False])
+    # Four subpath-safety calls happen for an inactive VM that completes a
+    # copy: pre-mkdir month_dir, post-mkdir month_dir, post-copy dest, and
+    # finalize-time month_dir. Flip the final one so the marker write is the
+    # step that aborts.
+    checks = iter([True, True, True, False])
     monkeypatch.setattr("libvirt_backup_system.backup.backup_subpath_is_safe", lambda config, path: next(checks))
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
     )
 
     assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     assert "inactive marker skipped because destination became unsafe" in capsys.readouterr().err
+
+
+def test_backup_vm_fails_when_domain_xml_changes_during_backup(
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    fingerprints = iter(["pre-fp", "post-fp"])
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.domain_xml_fingerprint",
+        lambda uri, name: next(fingerprints),
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
+    )
+
+    written: list[tuple[str, str]] = []
+
+    def fake_write(marker, stamp, fingerprint, vm):
+        written.append((stamp, fingerprint))
+        return True
+
+    monkeypatch.setattr("libvirt_backup_system.backup.write_marker", fake_write)
+
+    # XML drift mid-copy must fail the VM so the run is non-zero and cleanup is
+    # skipped; otherwise retention could prune known-good months after a copy
+    # whose configuration no longer matches the live domain.
+    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    captured = capsys.readouterr()
+    assert "domain XML changed during inactive backup; backup not trusted" in captured.err
+    assert written == []
+
+
+def test_finalize_inactive_marker_fails_on_utime_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
+    )
+
+    def failing_utime(path: object, times: tuple[float, float]) -> None:
+        raise OSError("readonly mount")
+
+    monkeypatch.setattr("libvirt_backup_system.backup.os.utime", failing_utime)
+
+    # Backdating is load-bearing for the mid-copy disk-modification check, not
+    # advisory. utime failure must roll the marker back and fail the VM so a
+    # marker with the wrong (post-copy) mtime never reaches the next run.
+    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    err = capsys.readouterr().err
+    assert "inactive marker backdate failed; rolling back marker" in err
+    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    assert not marker.exists()
 
 
 def test_backup_vm_fails_and_cleans_up_when_marker_write_fails(
@@ -181,7 +267,10 @@ def test_backup_vm_fails_and_cleans_up_when_marker_write_fails(
     monkeypatch.setattr("libvirt_backup_system.inactive_markers._open_excl_nofollow", fail_open)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+        lambda args, check=True, env=None: (
+            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
+            CommandResult(args, 0, "", ""),
+        )[1],
     )
 
     assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")

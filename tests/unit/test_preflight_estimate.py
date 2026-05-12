@@ -202,10 +202,14 @@ def test_virtnbdbackup_version_rejects_unsupported_major(monkeypatch) -> None:
     assert "unsupported" in failures[0]
 
 
-def test_virtnbdbackup_version_accepts_supported_major(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "reported",
+    ["virtnbdbackup 1.9.15", "virtnbdbackup 2.28", "virtnbdbackup 2.46"],
+)
+def test_virtnbdbackup_version_accepts_supported_majors(monkeypatch, reported: str) -> None:
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.run",
-        lambda args, *, check=True, env=None: CommandResult(args, 0, "", "virtnbdbackup 2.46"),
+        lambda args, *, check=True, env=None: CommandResult(args, 0, "", reported),
     )
     assert _virtnbdbackup_version_failures() == []
