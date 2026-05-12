@@ -17,7 +17,6 @@ def _backup_config(cfg: Config) -> Config:
         {
             "BACKUP_COMPRESS": "true",
             "INACTIVE_COPY_EVERY_RUN": "false",
-            "BACKUP_RETENTION_MONTHS": "1",
         }
     )
     return cfg
@@ -243,7 +242,7 @@ def test_atomic_write_cleans_tempfile_when_rename_fails(tmp_path: Path, monkeypa
 
 def test_read_marker_logs_os_error_from_read_text(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = backup_config
-    cfg.values.update({"BACKUP_COMPRESS": "true", "INACTIVE_COPY_EVERY_RUN": "false", "BACKUP_RETENTION_MONTHS": "1"})
+    cfg.values.update({"BACKUP_COMPRESS": "true", "INACTIVE_COPY_EVERY_RUN": "false"})
     marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("stamp\nfp-stub\n", encoding="utf-8")

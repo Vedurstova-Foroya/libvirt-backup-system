@@ -53,9 +53,10 @@ def list_vms(config: Config, *, include_blacklisted: bool = False) -> list[VM]:
         try:
             state = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", name]).stdout.strip()
         except CommandError as exc:
-            # Propagate instead of skipping: returning a partial list lets a
-            # subsequent run_backups+cleanup pair prune retention history for
-            # a VM that was never actually backed up this run.
+            # Propagate instead of skipping: a transient virsh failure for one
+            # VM must not silently drop that VM from the run, since the missing
+            # state would be reported as "no backup needed" rather than as an
+            # error operators can act on.
             event(
                 "error",
                 "VM state discovery failed",

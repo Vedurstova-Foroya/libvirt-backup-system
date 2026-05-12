@@ -17,7 +17,6 @@ def _preflight_config(cfg: Config) -> Config:
             "REQUIRE_ROOT": "true",
             "BACKUP_ESTIMATE_GB_PER_VM": "1",
             "SPACE_MARGIN_PERCENT": "20",
-            "BACKUP_RETENTION_MONTHS": "12",
         }
     )
     return cfg
@@ -29,6 +28,7 @@ def _patch_valid_preflight(monkeypatch, *, available_kb: int = 2_000_000) -> Non
     monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
+    monkeypatch.setattr("libvirt_backup_system.preflight._validate_scratch_dir", list)
 
 
 def test_check_rejects_host_root_becoming_unsafe_after_mkdir(
@@ -159,9 +159,9 @@ def test_check_reports_incomplete_write_probe(tmp_path: Path, monkeypatch, capsy
 
 
 def test_validate_config_skips_write_probe(tmp_path: Path, monkeypatch, backup_config) -> None:
-    # list-vms / verify / cleanup go through validate_config and must not mutate
-    # storage. Even with os.open and os.write rigged to fail, validate_config
-    # should pass because the write probe is only run by ``check`` (preflight).
+    # list-vms / verify go through validate_config and must not mutate storage.
+    # Even with os.open and os.write rigged to fail, validate_config should
+    # pass because the write probe is only run by ``check`` (preflight).
     cfg = _preflight_config(backup_config)
     backup_path = tmp_path / "backup"
     backup_path.mkdir()

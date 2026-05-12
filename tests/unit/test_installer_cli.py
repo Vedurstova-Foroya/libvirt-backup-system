@@ -39,7 +39,6 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.cleanup", lambda config, *, current_month=None: 0)
     assert main(["run"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 2)
@@ -52,7 +51,6 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 3)
     assert main(["list-vms"]) == 3
     assert main(["verify"]) == 3
-    assert main(["cleanup"]) == 3
 
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     assert main(["list-vms", "--json"]) == 0
@@ -62,9 +60,6 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
     assert main(["verify", "--vm", "alpha"]) == 0
-
-    monkeypatch.setattr("libvirt_backup_system.cli.cleanup", lambda config: 0)
-    assert main(["cleanup"]) == 0
 
 
 def test_cli_list_vms_json_keeps_env_override_logs_off_stdout(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -112,28 +107,6 @@ def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypat
     assert kwargs["purge_logs"] is True
 
 
-def test_cli_run_skips_cleanup_when_backups_fail(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
-    )
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
-
-    @contextlib.contextmanager
-    def fake_lock(config: object):
-        yield Path("/tmp/fake.lock")
-
-    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 1)
-    monkeypatch.setattr(
-        "libvirt_backup_system.cli.cleanup",
-        lambda config, *, current_month=None: (_ for _ in ()).throw(
-            AssertionError("cleanup should not run when backups fail")
-        ),
-    )
-    assert main(["run"]) == 1
-    assert "cleanup skipped because backups failed" in capsys.readouterr().err
-
-
 def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
     from libvirt_backup_system.lock import LockBusyError
 
@@ -158,11 +131,10 @@ def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
     assert "run.lock" in err
 
 
-def test_cli_cleanup_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
-    # Standalone ``cleanup`` must hold the same lock as ``run`` so that a
-    # manual cleanup can't race with a scheduled backup. When the lock is
-    # already held, surface the conflict instead of pruning underneath the
-    # in-flight run.
+def test_cli_verify_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
+    # verify holds the same run-lock as run: a concurrent backup could
+    # otherwise expose a half-written backup directory and produce a confusing
+    # virtnbdrestore error instead of a clean "another run in progress".
     from libvirt_backup_system.lock import LockBusyError
 
     monkeypatch.setattr(
@@ -177,12 +149,10 @@ def test_cli_cleanup_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> N
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", busy)
     monkeypatch.setattr(
-        "libvirt_backup_system.cli.cleanup",
-        lambda config, *, current_month=None: (_ for _ in ()).throw(
-            AssertionError("cleanup must not run while the lock is busy")
-        ),
+        "libvirt_backup_system.cli.verify",
+        lambda config, vm_name=None: (_ for _ in ()).throw(AssertionError("verify must not run while lock is busy")),
     )
-    assert main(["cleanup"]) == 1
+    assert main(["verify"]) == 1
     err = capsys.readouterr().err
     assert "another run in progress" in err
     assert "run.lock" in err

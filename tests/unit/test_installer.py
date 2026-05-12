@@ -83,6 +83,9 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     rw_line = next(line for line in service_text.splitlines() if line.startswith("ReadWritePaths="))
     assert _quoted_systemd_path(tmp_path / "backups") in rw_line
     assert _quoted_systemd_path(Path("/var/lib/libvirt-backup-system")) in rw_line
+    # /var/tmp must be writable so virtnbdbackup's default scratch dir is
+    # not blocked by ProtectSystem=strict in scheduled runs.
+    assert _quoted_systemd_path(Path("/var/tmp")) in rw_line
     timer_path = tmp_path / "etc/systemd/system/libvirt-backup-system.timer"
     assert "OnCalendar=" in timer_path.read_text(encoding="utf-8")
 

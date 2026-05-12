@@ -65,14 +65,26 @@ def kvm_skip_reason() -> str | None:
     return None
 
 
-def run_real_kvm_if_available() -> int:
+def run_real_kvm_if_available(*, require: bool) -> int:
     reason = kvm_skip_reason()
     if reason:
+        if require:
+            print(f"FAIL --require-real-kvm: {reason}", file=sys.stderr)
+            return 1
         print(f"SKIP real KVM e2e: {reason}")
         return 0
-    print(
-        "Real KVM e2e capability detected. The real KVM scenario is scaffolded but not enabled in this portable suite."
-    )
+    # The real-KVM scenario (boot a real domain under qemu:///system, run
+    # virtnbdbackup against it, restore-verify the result) is not implemented
+    # in this portable suite — it needs a guest image, libvirt config, and
+    # nested-KVM infra that varies per host. ``--require-real-kvm`` makes a
+    # production CI gate fail loudly here rather than silently passing on a
+    # scaffolded code path; without the flag the default is to print a notice
+    # and continue so contributors without KVM don't see false failures.
+    message = "Real KVM e2e capability detected, but the real-domain scenario is scaffolded only."
+    if require:
+        print(f"FAIL --require-real-kvm: {message}", file=sys.stderr)
+        return 1
+    print(message)
     return 0
 
 
@@ -80,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run adaptive libvirt-backup-system end-to-end tests.")
     parser.add_argument("--skip-docker", action="store_true", help="Skip the Docker Compose orchestration test.")
     parser.add_argument("--skip-kvm", action="store_true", help="Skip the real KVM capability probe/path.")
+    parser.add_argument(
+        "--require-real-kvm",
+        action="store_true",
+        help="Fail (instead of skipping) if the real-KVM scenario cannot run end-to-end.",
+    )
     args = parser.parse_args(argv)
 
     if not args.skip_docker:
@@ -87,9 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         if mac_safe != 0:
             return mac_safe
     if args.skip_kvm:
+        if args.require_real_kvm:
+            print("FAIL --require-real-kvm: --skip-kvm was also passed", file=sys.stderr)
+            return 1
         print("SKIP real KVM e2e: disabled by --skip-kvm")
         return 0
-    return run_real_kvm_if_available()
+    return run_real_kvm_if_available(require=args.require_real_kvm)
 
 
 if __name__ == "__main__":

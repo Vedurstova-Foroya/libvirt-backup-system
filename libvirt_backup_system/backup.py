@@ -6,7 +6,6 @@ import shutil
 import time
 from pathlib import Path
 
-from .cleanup import backup_root, cleanup, runtime_backup_path_ok
 from .config import Config
 from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
 from .inactive_markers import (
@@ -17,6 +16,7 @@ from .inactive_markers import (
     write_marker,
 )
 from .logging_json import event
+from .paths import backup_root, runtime_backup_path_ok
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
@@ -26,9 +26,9 @@ __all__ = [
     "backup_root",
     "backup_subpath_is_safe",
     "backup_vm",
-    "cleanup",
     "current_month",
     "run_backups",
+    "runtime_backup_path_ok",
     "timestamp",
     "verify",
 ]
@@ -79,8 +79,9 @@ def _remove_partial_destination(dest: Path, vm_name: str) -> None:
 
 def _confirm_inactive_marker_still_fresh(backup_dir: Path, vm: VM, month: str) -> bool:
     # Re-check the backup directory exists immediately before returning, so a
-    # concurrent cleanup that pruned it between marked_backup_dir() and here
-    # forces a recopy rather than a false "already fresh" claim.
+    # concurrent operator removal between marked_backup_dir() and here forces a
+    # recopy rather than a false "already fresh" claim. (This system does not
+    # prune backups itself, but operators may run external retention tools.)
     try:
         if not backup_dir.is_dir():
             event(
@@ -126,10 +127,9 @@ def _finalize_inactive_marker(  # noqa: PLR0913
         event("error", "inactive fingerprint computation failed", vm=vm.name)
         return False
     if post_fingerprint != pre_fingerprint:
-        # Domain XML changed mid-backup; fail the VM so the run is non-zero and
-        # cleanup is skipped (retention would otherwise prune known-good months
-        # after this known-stale copy). Data is left on disk for inspection;
-        # the missing marker forces a recopy on the next run.
+        # Domain XML changed mid-backup; fail the VM so the run is non-zero.
+        # Data is left on disk for inspection; the missing marker forces a
+        # recopy on the next run.
         event("error", "domain XML changed during inactive backup; backup not trusted", vm=vm.name)
         return False
     if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
@@ -158,6 +158,7 @@ def _maybe_reuse_inactive_backup(config: Config, vm: VM, month: str, month_dir: 
         return False
     backup_dir = marked_backup_dir(config, month_dir, inactive_marker, vm.name)
     if backup_dir and inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, inactive_marker):
+        remove_fingerprint(inactive_marker, vm.name)  # reap legacy sidecar on the reuse path too
         return _confirm_inactive_marker_still_fresh(backup_dir, vm, month)
     if backup_dir:
         event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
@@ -203,9 +204,7 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         if pre_fingerprint is None:
             event("error", "inactive fingerprint computation failed", vm=vm.name)
             return False
-        # Captured before the copy starts so the marker can be backdated to a
-        # moment that pre-dates any possible mid-copy disk modification.
-        pre_copy_time = time.time()
+        pre_copy_time = time.time()  # wall-clock; backward NTP step mid-copy is a tiny documented gap
 
     if not runtime_backup_path_ok(config):
         return False
@@ -231,7 +230,9 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         remove_marker(inactive_marker, vm.name)
         remove_fingerprint(inactive_marker, vm.name)
 
-    level = "copy" if vm.inactive else "auto"
+    # Active backups are full-per-run by design (fresh stamp dir per run);
+    # ``-l full`` makes that explicit so ``-l auto`` cannot silently incremental.
+    level = "copy" if vm.inactive else "full"
     cmd = ["virtnbdbackup", "-U", config.get("LIBVIRT_URI"), "-d", vm.name, "-l", level, "-o", str(dest)]
     if config.enabled("BACKUP_COMPRESS"):
         cmd.append("--compress")
@@ -252,10 +253,8 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
         return False
 
     # A virtnbdbackup zero exit without a produced destination, or with ``dest``
-    # swapped for a symlink mid-copy, must not be treated as success: retention
-    # would otherwise prune older known-good months on the back of a hollow
-    # write, and cleanup with BACKUP_RETENTION_MONTHS=-1 returns before
-    # scanning for unsafe symlinks at all.
+    # swapped for a symlink mid-copy, must not be treated as success: a hollow
+    # write would otherwise be recorded as a real backup.
     if not dest.is_dir():
         event("error", "backup reported success but destination is missing", vm=vm.name, destination=str(dest))
         return False
@@ -276,8 +275,8 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
     # Re-check BACKUP_REQUIRE_NFS_MOUNT after the running-VM copy completes:
     # virtnbdbackup writing to a path that lost its NFS mount mid-run would have
     # silently landed on the underlying local directory. Reporting that as
-    # success would let cleanup proceed on data that is not on the intended
-    # backup volume. Inactive VMs are protected via _finalize_inactive_marker.
+    # success would record data that is not on the intended backup volume.
+    # Inactive VMs are protected via _finalize_inactive_marker.
     if not runtime_backup_path_ok(config):
         event("error", "backup completed but backup path is no longer mounted", vm=vm.name, destination=str(dest))
         return False
@@ -287,9 +286,9 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
 
 def run_backups(config: Config, *, month: str | None = None) -> int:
     vms = list_vms(config)
-    # ``month`` is supplied by the ``run`` CLI so the value captured here is the
-    # same one passed to cleanup. Computing it locally only happens when called
-    # directly (e.g. tests); the CLI always pins it once at run start.
+    # ``month`` is supplied by the ``run`` CLI so the value captured here is
+    # the same one used for the entire run. Computing it locally only happens
+    # when called directly (e.g. tests); the CLI always pins it once at run start.
     month = month or current_month()
     stamp = timestamp()
     ok = True

@@ -17,7 +17,6 @@ CONFIG_KEYS = {
     "BACKUP_COMPRESS",
     "SYSTEMD_ON_CALENDAR",
     "BACKUP_REQUIRE_NFS_MOUNT",
-    "BACKUP_RETENTION_MONTHS",
     "SPACE_MARGIN_PERCENT",
     "INACTIVE_COPY_EVERY_RUN",
     "BACKUP_ESTIMATE_GB_PER_VM",
@@ -35,7 +34,6 @@ DEFAULTS = {
     "BACKUP_COMPRESS": "true",
     "SYSTEMD_ON_CALENDAR": "*-*-* 02:30:00",
     "BACKUP_REQUIRE_NFS_MOUNT": "true",
-    "BACKUP_RETENTION_MONTHS": "12",
     "SPACE_MARGIN_PERCENT": "20",
     "INACTIVE_COPY_EVERY_RUN": "false",
     "BACKUP_ESTIMATE_GB_PER_VM": "1",
@@ -52,7 +50,6 @@ COMMENTED_ENV_KEYS = {
     "BACKUP_COMPRESS",
     "SYSTEMD_ON_CALENDAR",
     "BACKUP_REQUIRE_NFS_MOUNT",
-    "BACKUP_RETENTION_MONTHS",
     "SPACE_MARGIN_PERCENT",
     "INACTIVE_COPY_EVERY_RUN",
     "BACKUP_ESTIMATE_GB_PER_VM",
@@ -84,9 +81,9 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "BACKUP_REQUIRE_NFS_MOUNT",
     None,
     '# Backup host folder name. Empty means "use this machine\'s short hostname".',
-    "# Keep this stable: renaming HOST_ID orphans existing retention history",
-    "# and inactive-copy markers under the previous folder, and cleanup will",
-    "# stop pruning them.",
+    "# Keep this stable: renaming HOST_ID orphans existing inactive-copy markers",
+    "# under the previous folder, so monthly-fresh inactive copies will be redone",
+    "# and the old data left untouched in the prior HOST_ID directory.",
     "HOST_ID",
     None,
     "# VM names to skip. Separate with spaces or commas.",
@@ -99,10 +96,9 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Re-run install or edit/reload the timer if this changes after install.",
     "SYSTEMD_ON_CALENDAR",
     None,
-    "# Number of monthly backup directories to keep per VM.",
-    "# Set to -1 to keep all months (cleanup never prunes).",
-    "# 0 is rejected by preflight to avoid an unintentional 'delete everything'.",
-    "BACKUP_RETENTION_MONTHS",
+    "# Retention and cleanup are intentionally out of scope for this system: it",
+    "# only writes backups and never deletes them. Use an external tool (or",
+    '# storage-side policy) to manage retention. See README "Non-goals".',
     None,
     "# Extra free-space margin added to preflight's backup size estimate.",
     "SPACE_MARGIN_PERCENT",
@@ -116,7 +112,9 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "BACKUP_ESTIMATE_GB_PER_VM",
     None,
     "# Multiplier applied to the sum of VM disk virtual sizes when estimating",
-    "# required backup space (accounts for incremental overhead and metadata).",
+    "# required backup space. Backups are full-per-run (no incremental chain);",
+    "# the name is historical. The multiplier accounts for compression overhead,",
+    "# metadata, and per-VM safety margin on top of the raw disk virtual size.",
     "BACKUP_INCREMENTAL_MULTIPLIER",
     None,
     "# Require preflight and run commands to execute as root.",
@@ -206,6 +204,11 @@ class Config:
                         event("info", "env override", key=key, source="environ")
                     values[key] = env_value
         if not values.get("HOST_ID"):
+            # Fall back to the short hostname. If that is also empty (kernel
+            # hostname unset, or starts with a dot in some container envs),
+            # leave HOST_ID="" so _validate_required_present surfaces a clean
+            # "HOST_ID must not be empty" rather than Config.load raising a
+            # RuntimeError that the cli reports as an unstructured fatal.
             values["HOST_ID"] = socket.gethostname().split(".")[0]
         return cls(values=values, path=path, prefix=root)
 

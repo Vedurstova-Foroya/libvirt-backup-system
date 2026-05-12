@@ -13,7 +13,6 @@ def _backup_config(cfg: Config) -> Config:
         {
             "BACKUP_COMPRESS": "true",
             "INACTIVE_COPY_EVERY_RUN": "false",
-            "BACKUP_RETENTION_MONTHS": "1",
         }
     )
     return cfg
@@ -46,7 +45,7 @@ def test_backup_vm_uses_copy_only_for_shut_off(tmp_path: Path, monkeypatch, back
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
 
     assert backup_vm(cfg, VM("alpha", "paused"), "2026-05", "s1")
-    assert "auto" in calls[-1]
+    assert "full" in calls[-1]
     assert "copy" not in calls[-1]
     paused_marker = tmp_path / "backups/host/alpha/2026-05/.inactive-copy-complete"
     assert not paused_marker.exists()

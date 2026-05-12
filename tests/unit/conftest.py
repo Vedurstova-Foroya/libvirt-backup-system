@@ -8,6 +8,21 @@ from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pin the default install prefix to a per-session tmp dir so any
+    # ``Config.load()`` call that falls through with ``prefix=None`` resolves
+    # ``default_config_path`` under tmp instead of the real
+    # ``/etc/libvirt-backup-system/libvirt-backup.env``. On CI that file does
+    # not exist, but a developer host that already ran ``install`` owns the
+    # file as root:root 0600, which makes ``parse_env_file`` raise
+    # ``PermissionError`` instead of returning the empty dict the suite
+    # implicitly assumes. Tests that need a specific prefix still pass it
+    # explicitly; this fixture only changes the otherwise-undefined default.
+    isolated_root = tmp_path_factory.mktemp("isolated_root")
+    monkeypatch.setenv("LIBVIRT_BACKUP_ROOT_PREFIX", str(isolated_root))
+
+
 def virtnbdbackup_fake_success(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
     """Mock virtnbdbackup that also produces the output directory.
 
@@ -42,17 +57,3 @@ def _stub_domain_xml_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
     # test only needs to override when it wants to assert the fingerprint code
     # path directly.
     monkeypatch.setattr("libvirt_backup_system.backup.domain_xml_fingerprint", lambda uri, name: "fp-stub")
-
-
-def symlink_backup_vm_path(tmp_path: Path, symlink_case: str) -> Path:
-    if symlink_case == "host":
-        outside_host = tmp_path / "outside/host"
-        outside_host.mkdir(parents=True)
-        (tmp_path / "backups/host").symlink_to(outside_host, target_is_directory=True)
-        return outside_host / "alpha"
-
-    outside_vm = tmp_path / "outside/alpha"
-    outside_vm.mkdir(parents=True)
-    (tmp_path / "backups/host").mkdir()
-    (tmp_path / "backups/host/alpha").symlink_to(outside_vm, target_is_directory=True)
-    return outside_vm

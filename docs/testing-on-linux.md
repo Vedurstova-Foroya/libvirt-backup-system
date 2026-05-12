@@ -167,8 +167,9 @@ uv run --locked --extra dev python -m tests.e2e
 
 The runner always executes the Docker Compose orchestration scenario. That path
 uses a runner container, a mounted backup volume, and fake libvirt tools to test
-install/uninstall behavior, preflight checks, backup orchestration, retention,
-structured logging, and failure handling.
+install/uninstall behavior, preflight checks, backup orchestration, structured
+logging, and failure handling. Retention is not exercised because the system
+deliberately does not implement retention — see [Non-goals](../docs/commands.md#non-goals).
 
 On Linux hosts with `/dev/kvm`, the runner also probes whether a privileged
 container can access KVM. The current portable suite reports the detected KVM
@@ -186,6 +187,20 @@ with a clear reason instead of failing the suite.
 > (`tests/e2e/__main__.py:run_real_kvm_if_available` returns 0 without invoking
 > libvirt). Treat e2e success as "the orchestrator wires together correctly",
 > not "backups will restore on this host".
+>
+> What this **does not** prove, and therefore must be exercised manually on a
+> real KVM host before any production deploy:
+>
+> - `virtnbdbackup`/`virtnbdrestore` happy-path against a real qemu:///system
+>   domain (full backup, then verify the produced directory restores cleanly).
+> - The systemd sandbox (`ProtectSystem=strict`, `ReadWritePaths`, scratch dir
+>   under `/var/tmp`) — only the scheduled run path goes through the sandbox.
+>   Manual invocations on the unsandboxed shell can mask a unit that would fail
+>   in service mode.
+> - Behavior under real disk layouts (LVM, RBD, iSCSI block-backed disks). The
+>   fakes treat every disk as a regular file.
+> - Inactive-VM marker freshness across real disk mtime semantics on NFS, ext4,
+>   xfs, etc. The fake virtnbdbackup writes one regular file per run.
 
 To run only the KVM capability probe path:
 
@@ -198,6 +213,22 @@ To force the suite to skip the KVM probe:
 ```bash
 uv run --locked --extra dev python -m tests.e2e --skip-kvm
 ```
+
+## Production reliance: real-KVM gate
+
+The default e2e is permissive about the real-KVM path — it prints a notice and
+returns success when KVM is detected but the real-domain scenario is still
+scaffolded. **Before any production reliance on libvirt-backup-system**, wire up
+a self-hosted or nightly CI gate that runs the suite with `--require-real-kvm`:
+
+```bash
+uv run --locked --extra dev python -m tests.e2e --require-real-kvm
+```
+
+That flag turns the "scaffolded only" notice into a hard failure, so a CI host
+with `/dev/kvm` available cannot silently pass a build that depends on real
+virtnbdbackup behavior. Until the scaffolded scenario lands, this is the
+mechanism that surfaces the gap rather than letting it lurk.
 
 ## Run the Full Local Gate
 

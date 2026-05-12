@@ -63,7 +63,12 @@ def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(monkeypatch, capsy
     assert "qemu-img info failed for disk" in capsys.readouterr().err
 
 
-def test_vm_estimated_bytes_keeps_larger_known_total_when_later_disk_fails(monkeypatch, capsys) -> None:
+def test_vm_estimated_bytes_adds_fallback_per_failed_disk(monkeypatch, capsys) -> None:
+    # A failed disk after a successful one must contribute the per-VM fallback
+    # rather than being absorbed by ``max(total, fallback)``. Without this, an
+    # 8-disk VM where disk 1 reports 1 TB and disks 2-8 fail would estimate at
+    # 1 TB instead of 1 TB + 7*fallback and silently undersize the preflight
+    # space check.
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: ["/disk1.qcow2", "/disk2.qcow2"],
@@ -75,8 +80,21 @@ def test_vm_estimated_bytes_keeps_larger_known_total_when_later_disk_fails(monke
         return 100
 
     monkeypatch.setattr("libvirt_backup_system.preflight._disk_virtual_size_bytes", fake_disk_size)
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 100
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 107
     assert "qemu-img info failed for disk" in capsys.readouterr().err
+
+
+def test_vm_estimated_bytes_adds_fallback_for_each_failed_disk(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.vm_disk_paths",
+        lambda uri, name: ["/disk1.qcow2", "/disk2.qcow2", "/disk3.qcow2"],
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight._disk_virtual_size_bytes",
+        lambda path: (_ for _ in ()).throw(ValueError("bad json")),
+    )
+
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 11) == 33
 
 
 def test_vm_estimated_bytes_sums_disks(monkeypatch) -> None:

@@ -6,7 +6,6 @@ from pathlib import Path
 from libvirt_backup_system import backup
 from libvirt_backup_system.backup import (
     backup_vm,
-    cleanup,
     current_month,
     run_backups,
     timestamp,
@@ -22,7 +21,6 @@ def _backup_config(cfg: Config) -> Config:
         {
             "BACKUP_COMPRESS": "true",
             "INACTIVE_COPY_EVERY_RUN": "false",
-            "BACKUP_RETENTION_MONTHS": "1",
         }
     )
     return cfg
@@ -55,7 +53,7 @@ def test_backup_vm_running_success(tmp_path: Path, monkeypatch, backup_config) -
             "-d",
             "alpha",
             "-l",
-            "auto",
+            "full",
             "-o",
             str(tmp_path / "backups/host/alpha/2026-05/stamp"),
             "--compress",
@@ -277,14 +275,6 @@ def test_run_backups_success_and_failures(tmp_path: Path, monkeypatch, backup_co
 
     monkeypatch.setattr("libvirt_backup_system.backup.backup_vm", lambda config, vm, month, stamp: True)
     assert run_backups(cfg) == 0
-
-
-def test_cleanup_zero_retention(tmp_path: Path, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    cfg.values["BACKUP_RETENTION_MONTHS"] = "0"
-    (tmp_path / "backups/host/alpha/2026-01").mkdir(parents=True)
-    assert cleanup(cfg) == 0
-    assert not (tmp_path / "backups/host/alpha/2026-01").exists()
 
 
 def test_backup_vm_rejects_unsafe_vm_name(backup_config) -> None:

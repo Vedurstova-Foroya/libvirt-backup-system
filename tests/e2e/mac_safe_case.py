@@ -33,7 +33,6 @@ def write_config() -> None:
                 "VM_BLACKLIST=ignore-me",
                 "BACKUP_COMPRESS=true",
                 "BACKUP_REQUIRE_NFS_MOUNT=true",
-                "BACKUP_RETENTION_MONTHS=1",
                 "SPACE_MARGIN_PERCENT=20",
                 "INACTIVE_COPY_EVERY_RUN=false",
                 "BACKUP_ESTIMATE_GB_PER_VM=0.001",
@@ -91,19 +90,17 @@ def main() -> int:
         checkpoint = metadata["checkpoint"]
         assert (timestamps[-1] / f"{checkpoint}.checkpoint").is_file(), "checkpoint missing"
 
-    old = BACKUP_PATH / "e2e-host/alpha" / "1999-01"
-    old.mkdir(parents=True)
-    run([str(BIN), "cleanup"])
-    assert not old.exists(), "old backup month was not cleaned"
-
     run([str(BIN), "verify"])
 
+    # The system has no cleanup/retention command and must not prune older data
+    # itself. Drop an old month directory in place and confirm a failing run
+    # leaves it untouched.
+    old = BACKUP_PATH / "e2e-host/alpha" / "1999-01"
     old.mkdir(parents=True)
     failed = run([str(BIN), "run"], check=False, env={"FAIL_BACKUP_FOR": "alpha"})
     assert failed.returncode != 0, "backup failure should produce non-zero exit"
     assert "backup failed" in failed.stderr
-    assert "cleanup skipped because backups failed" in failed.stderr
-    assert old.exists(), "cleanup should not prune retention after a failed backup"
+    assert old.exists(), "backup system must never delete existing data"
     old.rmdir()
 
     run(["python3", "-m", "libvirt_backup_system", "--prefix", str(PREFIX), "uninstall"])

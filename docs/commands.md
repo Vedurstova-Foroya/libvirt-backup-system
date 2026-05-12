@@ -33,7 +33,7 @@ sudo libvirt-backup-system check
 
 ## `run`
 
-Runs preflight, acquires the run lock, backs up selected VMs, and applies retention cleanup.
+Runs preflight, acquires the run lock, and backs up selected VMs. The run never deletes prior backups (see [Non-goals](#non-goals)).
 
 ```sh
 sudo libvirt-backup-system run
@@ -51,21 +51,19 @@ sudo libvirt-backup-system list-vms --include-blacklisted
 
 ## `verify`
 
-Runs `virtnbdrestore -o verify` against discovered backup directories.
+Runs `virtnbdrestore -a verify` against discovered backup directories.
 
 ```sh
 sudo libvirt-backup-system verify
 sudo libvirt-backup-system verify --vm my-vm
 ```
 
-## `cleanup`
-
-Prunes old monthly backup directories according to `BACKUP_RETENTION_MONTHS`.
-
-```sh
-sudo libvirt-backup-system cleanup
-```
-
 ## Restore
 
 There is no restore command. Restoring is intentionally manual; see [Manual restore process](manual-restore.md).
+
+## Non-goals
+
+Retention and cleanup are intentionally **out of scope** for this system. It only ever writes new backups; it does not delete, prune, rotate, or otherwise reclaim space from prior backups. There is no `cleanup` subcommand, no retention env var, and no implicit "keep N months" behavior.
+
+If your environment needs retention, drive it externally — for example with a separate cron job that uses `find`/`rm`, a storage-side snapshot policy, or an NFS/QNAP appliance feature. **Do not add retention or cleanup logic back into this codebase.** Keeping this system write-only is a deliberate design choice: it removes an entire class of "the backup system deleted real backups" failure modes (clock skew, mis-set env var, mid-run pruning) and lets retention be owned by whichever team or appliance already manages storage lifecycle.

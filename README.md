@@ -24,8 +24,11 @@ The systemd timer is installed with the default schedule `*-*-* 02:30:00`.
 ```sh
 sudo libvirt-backup-system list-vms
 sudo libvirt-backup-system verify
-sudo libvirt-backup-system cleanup
 ```
+
+## Non-goals
+
+Retention and cleanup are intentionally **out of scope**. This system only writes backups; it never deletes them. There is no `cleanup` subcommand, no retention env var, and no implicit "keep N months" behavior — manage retention with an external tool or storage-side policy. See [docs/commands.md](docs/commands.md#non-goals) before adding any pruning behavior back in.
 
 ## Docs
 

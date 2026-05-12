@@ -60,7 +60,7 @@ sudo libvirt-backup-system check
 
 The first install leaves `BACKUP_PATH` blank unless it is supplied in the environment. When `BACKUP_PATH` is blank, systemd unit installation is skipped. Re-run `install` after setting it so the service gets the matching `RequiresMountsFor=` dependency.
 
-Only `BACKUP_PATH` is honored from the process environment during a first install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`, `BACKUP_RETENTION_MONTHS`) are written as commented defaults in `libvirt-backup.env` and are silently ignored at install time, because the systemd unit only reads the env file. Set those by editing `libvirt-backup.env` and re-running `install`.
+Only `BACKUP_PATH` is honored from the process environment during a first install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`, `BACKUP_COMPRESS`) are written as commented defaults in `libvirt-backup.env` and are silently ignored at install time, because the systemd unit only reads the env file. Set those by editing `libvirt-backup.env` and re-running `install`.
 
 The installer creates:
 

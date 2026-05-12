@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 
 def subpath_is_safe(root: Path, path: Path) -> bool:
+    # This is a check, not a lock: every caller mutates the path immediately
+    # after (mkdir, virtnbdbackup -o, rename). A sufficiently fast attacker
+    # with write access to an intermediate directory could swap a component
+    # into a symlink between the check and the syscall. In practice every
+    # intermediate directory in BACKUP_PATH/HOST_ID/VM/MONTH/STAMP is
+    # root-owned on a mount the local user cannot write to, so the attack
+    # window is theoretical; closing it would require openat()-style descended
+    # traversal which Python does not expose ergonomically.
     try:
         relative_parts = path.relative_to(root).parts
     except ValueError:
@@ -17,27 +24,6 @@ def subpath_is_safe(root: Path, path: Path) -> bool:
             return False
 
     return resolved_path_is_within(root, path)
-
-
-def unsafe_symlink_descendants(root: Path, path: Path) -> Iterator[Path]:
-    if not path.exists():
-        return
-
-    stack = [path]
-    while stack:
-        current = stack.pop()
-        for child in current.iterdir():
-            if child.is_symlink():
-                try:
-                    child.relative_to(root)
-                except ValueError:
-                    yield child
-                    continue
-                if child.is_dir() or not resolved_path_is_within(root, child):
-                    yield child
-                continue
-            if child.is_dir():
-                stack.append(child)
 
 
 def resolved_path_is_within(parent: Path, path: Path) -> bool:

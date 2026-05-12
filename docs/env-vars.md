@@ -32,16 +32,28 @@ BACKUP_PATH=
 # Set false when backing up to an intentionally local directory.
 # BACKUP_REQUIRE_NFS_MOUNT=true
 
-# Number of monthly backup directories to keep per VM.
-# Set to -1 to keep all months (cleanup never prunes).
-# 0 is rejected by preflight to avoid an unintentional "delete everything".
-# BACKUP_RETENTION_MONTHS=12
+# Retention and cleanup are intentionally out of scope for this system: it only
+# writes backups and never deletes them. There is no BACKUP_RETENTION_MONTHS
+# variable, no cleanup subcommand, and no implicit retention. Manage retention
+# externally (cron + find/rm, storage-side snapshot policy, NFS/QNAP appliance
+# feature) and see docs/commands.md "Non-goals" before reintroducing any
+# pruning behavior here.
 
 # Extra free-space margin added to preflight's backup size estimate.
 # SPACE_MARGIN_PERCENT=20
 
 # Stopped VMs are copied once per month by default.
 # Set true to copy stopped VMs on every run.
+#
+# Caveat for block-device-backed inactive VMs: when an inactive VM's disks are
+# backed by raw block devices (LVM logical volumes, iSCSI LUNs, RBD images
+# mapped as block devices, ...), the once-per-month fast path is not taken.
+# The block-device inode mtime is rarely rewritten when its contents change, so
+# the freshness check treats any block-backed disk as "possibly modified" and
+# forces a recopy on every run, regardless of INACTIVE_COPY_EVERY_RUN. This is
+# a deliberate correctness choice (the alternative is risking a stale copy);
+# operators with block-backed inactive VMs should expect every-run copies for
+# those VMs and size their backup window accordingly.
 # INACTIVE_COPY_EVERY_RUN=false
 
 # Per-VM backup size estimate used by preflight space checks, in GB.
@@ -49,7 +61,9 @@ BACKUP_PATH=
 # BACKUP_ESTIMATE_GB_PER_VM=1
 
 # Multiplier applied to the sum of VM disk virtual sizes when estimating
-# required backup space (accounts for incremental overhead and metadata).
+# required backup space. Backups are full-per-run (no incremental chain); the
+# name is historical. The multiplier accounts for compression overhead,
+# metadata, and per-VM safety margin on top of the raw disk virtual size.
 # BACKUP_INCREMENTAL_MULTIPLIER=1.2
 
 # Require preflight and run commands to execute as root.

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .cleanup import backup_root
 from .config import Config, iter_month_dirs
 from .logging_json import event
+from .paths import backup_root
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .vms import is_safe_vm_name

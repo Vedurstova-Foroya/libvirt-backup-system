@@ -80,6 +80,21 @@ def test_install_rejects_empty_calendar(tmp_path: Path, monkeypatch, capsys) -> 
     assert "SYSTEMD_ON_CALENDAR must not be empty" in capsys.readouterr().err
 
 
+def test_install_rejects_flag_shaped_calendar(tmp_path: Path, monkeypatch, capsys) -> None:
+    # ``systemd-analyze calendar --help`` returns 0, so a value starting with
+    # "-" would pass the rc check and render a broken unit file.
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.Config.load",
+        _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="--help"),
+    )
+
+    assert install(str(tmp_path)) == 1
+    assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.timer").exists()
+    assert "SYSTEMD_ON_CALENDAR must not start with '-'" in capsys.readouterr().err
+
+
 def test_install_rejects_non_positive_command_timeout(tmp_path: Path, monkeypatch, capsys) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()

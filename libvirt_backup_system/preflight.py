@@ -7,17 +7,17 @@ import re
 import shutil
 from pathlib import Path
 
-from .backup import backup_root
 from .config import CONFIG_KEYS, Config, float_value, int_value
 from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
+from .paths import backup_root
 from .shell import CommandError, run
 from .storage import subpath_is_safe
 from .vms import VM, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 BOOLEAN_KEYS = {"BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT"}
-INTEGER_KEYS = {"BACKUP_RETENTION_MONTHS", "COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT"}
+INTEGER_KEYS = {"COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT"}
 FLOAT_KEYS = {"BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"}
 SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
 ALLOWED_LIBVIRT_URI_PREFIXES = (
@@ -30,6 +30,7 @@ ALLOWED_LIBVIRT_URI_PREFIXES = (
     "test:///",
 )
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
+SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - virtnbdbackup's default; mirrored in systemd ReadWritePaths.
 
 
 def validate_libvirt_uri(uri: str) -> bool:
@@ -37,7 +38,7 @@ def validate_libvirt_uri(uri: str) -> bool:
 
 
 def _df_available_kb(path: Path) -> int:
-    result = run(["df", "-Pk", str(path)])
+    result = run(["df", "-Pk", "--", str(path)])
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     if len(lines) < 2:
         raise RuntimeError("df output did not include a data row")
@@ -68,10 +69,7 @@ def _write_probe(path: Path) -> None:
 
 
 def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
-    # qemu-img runs on the orchestrator host. Disk paths discovered for remote
-    # libvirt URIs live on the hypervisor, so probing them locally either fails
-    # outright or — worse — reads an unrelated file with the same path. Fall
-    # back to the per-VM estimate instead of producing a fake disk-sized total.
+    # qemu-img runs locally; remote URI disk paths live on the hypervisor.
     if libvirt_uri_uses_remote_transport(uri):
         event("warning", "skipping local disk introspection for remote URI", vm=vm.name, uri=uri)
         return fallback_bytes
@@ -86,7 +84,8 @@ def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
             total += _disk_virtual_size_bytes(disk)
         except (CommandError, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
             event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc))
-            return max(total, fallback_bytes)
+            # Per-disk allowance: ``max(total, fallback)`` would let a failed disk count as zero.
+            total += fallback_bytes
     return total or fallback_bytes
 
 
@@ -108,33 +107,35 @@ def _estimate_required_kb(config: Config, vms: list[VM]) -> int:
 
 
 def _validate_required_present(config: Config) -> list[str]:
-    return [f"{key} must not be empty" for key in sorted(CONFIG_KEYS - {"VM_BLACKLIST"}) if not config.get(key).strip()]
+    failures = [f"{k} must not be empty" for k in sorted(CONFIG_KEYS - {"VM_BLACKLIST"}) if not config.get(k).strip()]
+    # HOST_ID flows into Path(); reject path separators, "."/".." traversal,
+    # NUL/tab/newline that would crash later at Path() construction.
+    host_id = config.get("HOST_ID")
+    if host_id.strip():
+        if host_id in {".", ".."} or "/" in host_id or "\\" in host_id:
+            failures.append("HOST_ID must not contain path separators or be '.'/'..'")
+        elif any(ord(c) < 32 or ord(c) == 127 for c in host_id):
+            failures.append("HOST_ID must not contain control characters or NUL")
+    return failures
 
 
 def _validate_booleans(config: Config) -> list[str]:
-    failures: list[str] = []
-    for key in sorted(BOOLEAN_KEYS):
-        value = config.get(key).strip().lower()
-        if value not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
-            failures.append(f"{key} must be a boolean value")
-    return failures
+    valid = {"1", "true", "yes", "on", "0", "false", "no", "off"}
+    bad = [key for key in sorted(BOOLEAN_KEYS) if config.get(key).strip().lower() not in valid]
+    return [f"{key} must be a boolean value" for key in bad]
 
 
 def _validate_integers(config: Config) -> list[str]:
     failures: list[str] = []
     for key in sorted(INTEGER_KEYS):
         try:
-            int_config_value = int_value(config.values, key)
+            value = int_value(config.values, key)
         except ValueError:
             failures.append(f"{key} must be an integer")
             continue
-        if key == "BACKUP_RETENTION_MONTHS":
-            if int_config_value == 0 or int_config_value < -1:
-                failures.append("BACKUP_RETENTION_MONTHS must be -1 (keep all) or a positive integer")
-        elif key == "COMMAND_TIMEOUT_SECONDS":
-            if int_config_value <= 0:
-                failures.append("COMMAND_TIMEOUT_SECONDS must be greater than 0")
-        elif int_config_value < 0:
+        if key == "COMMAND_TIMEOUT_SECONDS" and value <= 0:
+            failures.append("COMMAND_TIMEOUT_SECONDS must be greater than 0")
+        elif key != "COMMAND_TIMEOUT_SECONDS" and value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
 
@@ -143,19 +144,17 @@ def _validate_floats(config: Config) -> list[str]:
     failures: list[str] = []
     for key in sorted(FLOAT_KEYS):
         try:
-            float_config_value = float_value(config.values, key)
+            value = float_value(config.values, key)
         except ValueError:
             failures.append(f"{key} must be a number")
             continue
-        if not math.isfinite(float_config_value):
+        if not math.isfinite(value):
             failures.append(f"{key} must be a finite number")
             continue
-        if key == "BACKUP_INCREMENTAL_MULTIPLIER":
-            # A zero multiplier collapses the required-space estimate to zero
-            # and effectively disables the preflight space check.
-            if float_config_value <= 0:
-                failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")
-        elif float_config_value < 0:
+        # Zero on the multiplier would collapse the space estimate, disabling the check.
+        if key == "BACKUP_INCREMENTAL_MULTIPLIER" and value <= 0:
+            failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")
+        elif key != "BACKUP_INCREMENTAL_MULTIPLIER" and value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
 
@@ -186,6 +185,16 @@ def _virtnbdbackup_version_failures() -> list[str]:
     return []
 
 
+def _validate_scratch_dir() -> list[str]:
+    try:
+        _write_probe(SCRATCH_DIR / WRITE_PROBE_NAME)
+    except (FileNotFoundError, NotADirectoryError):
+        return [f"{SCRATCH_DIR} must exist as a directory for virtnbdbackup scratch state"]
+    except OSError as exc:
+        return [f"{SCRATCH_DIR} must be writable for virtnbdbackup scratch state: {exc}"]
+    return []
+
+
 def _validate_backup_path_readonly(config: Config) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
@@ -210,12 +219,9 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
     backup_path = config.path_value("BACKUP_PATH")
     try:
         host_root = backup_root(config)
-        # Re-check the mount state immediately before each filesystem mutation
-        # (mkdir, then write probe). The readonly check above can succeed and
-        # then the NFS mount drop in the window before mkdir, which would
-        # otherwise create BACKUP_PATH/HOST_ID on the underlying local
-        # mountpoint and silently pollute it. The second recheck before the
-        # probe closes the same gap for the file write.
+        # Re-check mount before mkdir and again before the write probe: an NFS
+        # drop between phases would otherwise pollute the underlying local
+        # mountpoint instead of failing.
         mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
         if mount_required and not backup_path.is_mount():
             return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
@@ -239,10 +245,9 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    # ``list-vms``/``verify``/``cleanup`` call this with ``require_writable=False``:
-    # those commands are documented as read/inspect-only and must not create
-    # BACKUP_PATH/HOST_ID or run a write probe — that would mutate storage on
-    # a read-only or temporarily-down backup mount.
+    # require_writable=False for read-only commands (list-vms/verify) so they
+    # do not create BACKUP_PATH/HOST_ID or probe-write on a temporarily-down
+    # backup mount.
     if require_writable:
         failures.extend(_validate_backup_path_writable(config))
     else:
@@ -265,10 +270,9 @@ def check(config: Config) -> int:
         if not shutil.which(binary):
             failures.append(f"missing binary: {binary}")
     failures.extend(_virtnbdbackup_version_failures())
-
+    failures.extend(_validate_scratch_dir())
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
-
     try:
         vms = list_vms(config)
         if not vms:
@@ -276,7 +280,6 @@ def check(config: Config) -> int:
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
         vms = []
-
     required_kb = _estimate_required_kb(config, vms)
     backup_path = config.path_value("BACKUP_PATH")
     if config.get("BACKUP_PATH").strip() and backup_path.exists() and backup_path.is_dir():
@@ -286,7 +289,6 @@ def check(config: Config) -> int:
                 failures.append(f"insufficient backup space: available_kb={available} required_kb={required_kb}")
         except Exception as exc:
             failures.append(f"backup space check failed: {exc}")
-
     if failures:
         for failure in failures:
             event("error", "preflight failed", reason=failure)

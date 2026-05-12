@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from libvirt_backup_system.backup import backup_vm, cleanup
+from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
@@ -13,7 +13,6 @@ def _backup_config(cfg: Config) -> Config:
         {
             "BACKUP_COMPRESS": "true",
             "INACTIVE_COPY_EVERY_RUN": "false",
-            "BACKUP_RETENTION_MONTHS": "1",
         }
     )
     return cfg
@@ -61,20 +60,11 @@ def test_backup_vm_bails_when_required_nfs_mount_disappears(tmp_path: Path, caps
     assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
 
 
-def test_cleanup_bails_when_required_nfs_mount_disappears(tmp_path: Path, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-    cfg.path_value("BACKUP_PATH").mkdir()
-
-    assert cleanup(cfg) == 1
-    assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
-
-
 def test_backup_vm_proceeds_when_required_nfs_mount_present(tmp_path: Path, monkeypatch, backup_config) -> None:
     cfg = _backup_config(backup_config)
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
     cfg.path_value("BACKUP_PATH").mkdir()
-    monkeypatch.setattr("libvirt_backup_system.cleanup.Path.is_mount", lambda self: True)
+    monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: True)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
         lambda args, check=True, env=None: (
@@ -92,7 +82,7 @@ def test_backup_vm_bails_when_mount_disappears_before_mkdir(tmp_path: Path, monk
     cfg.path_value("BACKUP_PATH").mkdir()
     # Entry check passes; the recheck right before mkdir flips to False.
     checks = iter([True, False])
-    monkeypatch.setattr("libvirt_backup_system.cleanup.Path.is_mount", lambda self: next(checks, False))
+    monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: next(checks, False))
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
         lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("must not run")),
@@ -127,7 +117,7 @@ def test_backup_vm_finalize_aborts_when_mount_disappears(tmp_path: Path, monkeyp
     cfg.path_value("BACKUP_PATH").mkdir()
     # Entry + pre-mkdir checks pass; the finalize-time recheck flips to False.
     checks = iter([True, True, False])
-    monkeypatch.setattr("libvirt_backup_system.cleanup.Path.is_mount", lambda self: next(checks, False))
+    monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: next(checks, False))
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
         lambda args, check=True, env=None: (
@@ -180,8 +170,7 @@ def test_backup_vm_rejects_zero_exit_with_missing_destination(
     backup_config,
 ) -> None:
     # virtnbdbackup returning 0 without producing the output directory must be
-    # treated as failure; otherwise retention could prune older known-good
-    # months on the back of a hollow success.
+    # treated as failure so a hollow write is never recorded as a real backup.
     cfg = _backup_config(backup_config)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
@@ -219,8 +208,7 @@ def test_backup_vm_skips_when_month_dir_mkdir_fails(tmp_path: Path, monkeypatch,
 def test_backup_vm_rejects_dest_replaced_by_symlink_post_copy(tmp_path, monkeypatch, capsys, backup_config) -> None:
     # ``dest.is_dir()`` follows a swapped-in symlink, so a symlink race between
     # pre-flight and virtnbdbackup's exit must be caught by re-running subpath
-    # safety on dest. Cleanup is not a safety net: BACKUP_RETENTION_MONTHS=-1
-    # returns before scanning for unsafe symlinks.
+    # safety on dest.
     cfg = _backup_config(backup_config)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -243,7 +231,7 @@ def test_backup_vm_running_revalidates_nfs_after_copy(tmp_path: Path, monkeypatc
     cfg.path_value("BACKUP_PATH").mkdir()
     # Pre-copy checks pass; the post-copy revalidation sees the mount gone.
     checks = iter([True, True, False])
-    monkeypatch.setattr("libvirt_backup_system.cleanup.Path.is_mount", lambda self: next(checks, False))
+    monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: next(checks, False))
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
         lambda args, check=True, env=None: (

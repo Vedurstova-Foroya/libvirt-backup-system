@@ -14,7 +14,6 @@ def _backup_config(cfg: Config) -> Config:
         {
             "BACKUP_COMPRESS": "true",
             "INACTIVE_COPY_EVERY_RUN": "false",
-            "BACKUP_RETENTION_MONTHS": "1",
         }
     )
     return cfg
@@ -83,6 +82,28 @@ def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
     assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     assert calls
     assert "inactive marker check failed" in capsys.readouterr().err
+
+
+def test_backup_vm_reuse_path_reaps_legacy_fingerprint_sidecar(tmp_path: Path, monkeypatch, backup_config) -> None:
+    # On the reuse (fresh-marker) path, an upgraded host's legacy
+    # .inactive-copy-fingerprint sidecar must also be reaped.
+    cfg = _backup_config(backup_config)
+    parent = tmp_path / "backups/host/beta/2026-05"
+    parent.mkdir(parents=True)
+    (parent / "oldstamp").mkdir()
+    marker = parent / ".inactive-copy-complete"
+    marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
+    sidecar = parent / ".inactive-copy-fingerprint"
+    sidecar.write_text("legacy-fp\n", encoding="utf-8")
+    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("reuse must not call virtnbdbackup")),
+    )
+
+    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert not sidecar.exists()
+    assert marker.exists()
 
 
 def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
@@ -173,10 +194,8 @@ def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypa
 
 def test_backup_vm_fails_when_marker_path_becomes_unsafe(monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
-    # Four subpath-safety calls happen for an inactive VM that completes a
-    # copy: pre-mkdir month_dir, post-mkdir month_dir, post-copy dest, and
-    # finalize-time month_dir. Flip the final one so the marker write is the
-    # step that aborts.
+    # Four subpath-safety checks during an inactive copy; flip the last
+    # (finalize-time) so the marker write is the aborted step.
     checks = iter([True, True, True, False])
     monkeypatch.setattr("libvirt_backup_system.backup.backup_subpath_is_safe", lambda config, path: next(checks))
     monkeypatch.setattr(
@@ -218,9 +237,9 @@ def test_backup_vm_fails_when_domain_xml_changes_during_backup(
 
     monkeypatch.setattr("libvirt_backup_system.backup.write_marker", fake_write)
 
-    # XML drift mid-copy must fail the VM so the run is non-zero and cleanup is
-    # skipped; otherwise retention could prune known-good months after a copy
-    # whose configuration no longer matches the live domain.
+    # XML drift mid-copy must fail the VM so the run is non-zero; otherwise
+    # a backup whose configuration no longer matches the live domain would be
+    # recorded as a real success.
     assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
     captured = capsys.readouterr()
     assert "domain XML changed during inactive backup; backup not trusted" in captured.err

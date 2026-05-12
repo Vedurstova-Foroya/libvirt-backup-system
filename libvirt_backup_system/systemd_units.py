@@ -119,12 +119,15 @@ def render_unit_service(backup_path: str, bin_path: Path, config_path: Path) -> 
         if backup_path
         else ""
     )
-    # ReadWritePaths must include BACKUP_PATH (the backup destination) and
-    # /var/lib/libvirt-backup-system (the run lock and runtime state). With
-    # ProtectSystem=strict in effect the rest of the filesystem is mounted
-    # read-only, so anything missing here would fail at write time.
+    # ReadWritePaths must include BACKUP_PATH (the backup destination),
+    # /var/lib/libvirt-backup-system (the run lock and runtime state), and
+    # /var/tmp (virtnbdbackup writes scratch files there by default; the
+    # default is unaffected by ``--scratchdir`` and ProtectSystem=strict
+    # otherwise mounts /var/tmp read-only, which breaks scheduled runs while
+    # leaving manual invocations on the unsandboxed shell succeeding).
     read_write_entries = [_quote_systemd_path(validate_systemd_path(backup_path, "BACKUP_PATH"))]
     read_write_entries.append(_quote_systemd_path("/var/lib/libvirt-backup-system"))
+    read_write_entries.append(_quote_systemd_path("/var/tmp"))  # noqa: S108 - virtnbdbackup scratch.
     return UNIT_SERVICE.format(
         requires_mounts_for=requires,
         bin_path=_quote_systemd_path(binary, escape_dollar=True),
@@ -149,6 +152,12 @@ def render_unit_timer(root: Path, calendar: str) -> str | None:
     calendar = calendar.strip()
     if not calendar:
         event("error", "invalid systemd calendar", error="SYSTEMD_ON_CALENDAR must not be empty")
+        return None
+    if calendar.startswith("-"):
+        # ``systemd-analyze calendar --help`` exits 0, so a typo'd ``--help``
+        # would pass the rc check and render a unit file that systemctl
+        # daemon-reload then refuses. Catch the obvious flag-shaped value here.
+        event("error", "invalid systemd calendar", error="SYSTEMD_ON_CALENDAR must not start with '-'")
         return None
     if _systemd_analyze_available(root):
         result = run(["systemd-analyze", "calendar", calendar], check=False)

@@ -5,6 +5,7 @@ import signal
 import subprocess
 from collections import deque
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Thread
 from typing import IO
@@ -13,6 +14,14 @@ from .logging_json import event
 
 STREAMED_TAIL_LINES = 256
 TERMINATE_GRACE_SECONDS = 5.0
+# Bound on how long run_streamed will block on stream-reader threads after
+# proc.wait() returns. The leader can exit successfully while a grandchild
+# inherits stdout/stderr and keeps the pipes open; without this cap the
+# reader threads would block past COMMAND_TIMEOUT_SECONDS, outliving
+# systemd's TimeoutStartSec=infinity and holding the run lock indefinitely.
+# Kept shorter than TERMINATE_GRACE_SECONDS because the leader is already
+# gone in this path — we are only waiting for a misbehaving grandchild.
+STREAM_DRAIN_GRACE_SECONDS = 2.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 86400.0
 TIMEOUT_RETURN_CODE = 124
 
@@ -94,11 +103,19 @@ def _tee_stream(
     command: str,
     buffer: deque[str],
 ) -> None:
-    for line in iter(stream.readline, ""):
-        text = line.rstrip("\n")
-        buffer.append(text)
-        event(level, "command output", command=command, stream=stream_name, line=text)
-    stream.close()
+    try:
+        for line in iter(stream.readline, ""):
+            text = line.rstrip("\n")
+            buffer.append(text)
+            event(level, "command output", command=command, stream=stream_name, line=text)
+    except (OSError, ValueError):
+        # The parent may close the read end mid-read to break out of a wedge
+        # (a grandchild holding the write end after the leader exited). Treat
+        # that as a normal end-of-stream rather than letting the thread die
+        # with an unhandled exception.
+        pass
+    with suppress(OSError, ValueError):
+        stream.close()
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:
@@ -107,6 +124,13 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
+        # PID-reuse race (very narrow): if the child has just exited and the
+        # kernel recycled its PID into an unrelated process group between
+        # ``proc.poll()`` above and ``getpgid`` here, the fallback would signal
+        # the wrong group. ``start_new_session=True`` at Popen time plus the
+        # poll guard make the window extremely small; POSIX gives no way to
+        # close it cleanly without pidfd. Accept the residual risk rather than
+        # leave the child untracked.
         pgid = proc.pid
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
@@ -118,6 +142,69 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
             return
         except subprocess.TimeoutExpired:
             continue
+
+
+def _signal_group(pgid: int, sig: int) -> bool:
+    try:
+        os.killpg(pgid, sig)
+    except (OSError, ProcessLookupError):
+        # Group is empty or already gone — nothing left to signal.
+        return False
+    return True
+
+
+def _drain_stream_threads(
+    threads: list[Thread],
+    pgid: int,
+    streams: tuple[IO[str], ...],
+    command: str,
+) -> None:
+    """Bound the wait on stream-reader threads after the leader exits.
+
+    proc.wait() only tracks the leader. A grandchild that inherited stdout
+    or stderr keeps the parent-side pipe read open until it exits, so
+    thread.join(timeout=None) can block far past COMMAND_TIMEOUT_SECONDS.
+    Because the systemd unit runs with TimeoutStartSec=infinity and the run
+    lock is held for the entire run, a wedged grandchild could otherwise
+    pin the lock forever. Escalate in three steps:
+
+    1. Bounded join — fast path when the leader closed cleanly.
+    2. SIGTERM/SIGKILL the captured process group — reaps inherited
+       grandchildren that did not call setsid.
+    3. Close the read end of the pipes from the parent — last resort for a
+       grandchild that detached into its own session and ignored the kill.
+    """
+    for thread in threads:
+        thread.join(timeout=STREAM_DRAIN_GRACE_SECONDS)
+    if not any(thread.is_alive() for thread in threads):
+        return
+    event(
+        "warning",
+        "stream drain timed out after leader exit; signaling process group",
+        command=command,
+        grace_seconds=STREAM_DRAIN_GRACE_SECONDS,
+    )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not _signal_group(pgid, sig):
+            break
+        for thread in threads:
+            thread.join(timeout=STREAM_DRAIN_GRACE_SECONDS)
+        if not any(thread.is_alive() for thread in threads):
+            return
+    event(
+        "warning",
+        "process group kill did not release stream pipes; closing parent-side pipes",
+        command=command,
+    )
+    for stream in streams:
+        with suppress(OSError, ValueError):
+            stream.close()
+    for thread in threads:
+        thread.join(timeout=STREAM_DRAIN_GRACE_SECONDS)
+    if any(thread.is_alive() for thread in threads):
+        # The reader threads are daemons, so leaving them attached does not
+        # block process exit. We log and continue rather than hang the run.
+        event("error", "stream reader threads still blocked after pipe close; abandoning", command=command)
 
 
 def run_streamed(
@@ -135,7 +222,6 @@ def run_streamed(
     timeout_seconds = _effective_timeout(timeout)
     stdout_buf: deque[str] = deque(maxlen=tail_lines)
     stderr_buf: deque[str] = deque(maxlen=tail_lines)
-    timed_out = False
     # start_new_session puts the child into its own process group so we can kill
     # the whole tree on a parent-side exception (e.g. KeyboardInterrupt) and not
     # leave virtnbdbackup or similar tools running with stale checkpoint state.
@@ -148,12 +234,20 @@ def run_streamed(
         bufsize=1,
         start_new_session=True,
     )
+    # Capture the pgid while proc.pid is still alive. After proc.wait() reaps
+    # the leader the pid is gone, but the process group can still hold
+    # grandchildren that need to be signaled to release inherited pipes.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid
     stdout_stream = proc.stdout
     stderr_stream = proc.stderr
     # Defensive: Popen always opens both streams when PIPE is requested.
     if stdout_stream is None or stderr_stream is None:  # pragma: no cover
         _kill_process_group(proc)
         raise RuntimeError("subprocess did not open both stdout and stderr")
+    streams: tuple[IO[str], ...] = (stdout_stream, stderr_stream)
     threads: list[Thread] = [
         Thread(target=_tee_stream, args=(stdout_stream, "info", "stdout", command, stdout_buf), daemon=True),
         Thread(target=_tee_stream, args=(stderr_stream, "info", "stderr", command, stderr_buf), daemon=True),
@@ -164,21 +258,18 @@ def run_streamed(
         try:
             returncode = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            timed_out = True
             event("error", "command timed out", command=command, timeout_seconds=timeout_seconds)
             _kill_process_group(proc)
             returncode = TIMEOUT_RETURN_CODE
+        except BaseException:
+            _kill_process_group(proc)
+            raise
         finally:
-            for thread in threads:
-                thread.join(timeout=TERMINATE_GRACE_SECONDS if timed_out else None)
-    except BaseException:
-        _kill_process_group(proc)
-        for thread in threads:
-            thread.join(timeout=TERMINATE_GRACE_SECONDS)
-        raise
+            _drain_stream_threads(threads, pgid, streams, command)
     finally:
-        for stream in (stdout_stream, stderr_stream):
-            stream.close()
+        for stream in streams:
+            with suppress(OSError, ValueError):
+                stream.close()
     result = CommandResult(
         args=args,
         returncode=returncode,

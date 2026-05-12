@@ -113,6 +113,15 @@ def test_uninstall_returns_nonzero_when_systemctl_fails(tmp_path: Path, monkeypa
         "libvirt_backup_system.systemd_units.prefixed",
         lambda path, root: tmp_path / str(path).lstrip("/"),
     )
+    # Pinning installer.root_prefix to "/" bypasses the conftest-wide
+    # LIBVIRT_BACKUP_ROOT_PREFIX isolation, so Config.load() inside uninstall
+    # would otherwise try to read the host's /etc/libvirt-backup-system file.
+    # Redirect default_config_path to tmp so the load lands on a non-existent
+    # tmp file (which parse_env_file treats as "no config", matching CI).
+    monkeypatch.setattr(
+        "libvirt_backup_system.config.default_config_path",
+        lambda prefix=None: tmp_path / "etc/libvirt-backup-system/libvirt-backup.env",
+    )
     monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
     monkeypatch.setattr(

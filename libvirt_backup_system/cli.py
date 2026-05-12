@@ -6,7 +6,7 @@ import json
 import sys
 import traceback
 
-from .backup import cleanup, current_month, run_backups, verify
+from .backup import run_backups, verify
 from .config import Config
 from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
@@ -39,8 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("--vm")
 
-    sub.add_parser("cleanup")
-
     return parser
 
 
@@ -50,18 +48,7 @@ def _run_command(config: Config) -> int:
         return preflight_code
     try:
         with acquire_run_lock(config):
-            # Pin the month before both run_backups and cleanup so a mid-run
-            # month boundary cannot let cleanup classify the just-written
-            # month as past-month and prune it.
-            run_month = current_month()
-            backup_code = run_backups(config, month=run_month)
-            if backup_code != 0:
-                event("warning", "cleanup skipped because backups failed")
-                return backup_code
-            # Cleanup runs under the same lock so a second invocation cannot
-            # prune mid-transfer of the first. ``return`` inside the ``with``
-            # releases only after cleanup returns.
-            return cleanup(config, current_month=run_month)
+            return run_backups(config)
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
@@ -112,18 +99,13 @@ def main(argv: list[str] | None = None) -> int:
             config_code = validate_config(config)
             if config_code != 0:
                 return config_code
-            return verify(config, vm_name=args.vm)
-        if args.command == "cleanup":
-            config_code = validate_config(config)
-            if config_code != 0:
-                return config_code
-            # Hold the same run-lock that ``run`` uses; otherwise a manual
-            # cleanup could prune mid-transfer of a scheduled backup. The lock
-            # is non-blocking — if a run is already in progress, surface that
-            # instead of racing against it.
+            # Hold the same run-lock as ``run``: a concurrent run can expose a
+            # half-written backup directory and produce a confusing
+            # virtnbdrestore error. The lock surfaces "another run in
+            # progress" instead.
             try:
                 with acquire_run_lock(config):
-                    return cleanup(config)
+                    return verify(config, vm_name=args.vm)
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))
                 return 1

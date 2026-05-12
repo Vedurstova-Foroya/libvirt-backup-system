@@ -96,6 +96,29 @@ def test_load_ignores_env_overrides_when_disabled(tmp_path: Path, monkeypatch) -
     assert cfg.get("BACKUP_PATH") == "/from/file"
 
 
+def test_load_leaves_host_id_empty_when_hostname_is_empty(tmp_path: Path, monkeypatch) -> None:
+    # Config.load returns HOST_ID="" instead of raising so preflight's
+    # required-present check surfaces a clean "HOST_ID must not be empty"
+    # rather than cli.main reporting a "fatal error" with a traceback.
+    env_file = tmp_path / "libvirt-backup.env"
+    env_file.write_text("BACKUP_PATH=/tmp/backups\nHOST_ID=\n", encoding="utf-8")
+    monkeypatch.delenv("HOST_ID", raising=False)
+    monkeypatch.setattr("libvirt_backup_system.config.socket.gethostname", lambda: "")
+
+    cfg = Config.load(config_path=str(env_file), prefix=str(tmp_path))
+    assert cfg.get("HOST_ID") == ""
+
+
+def test_load_leaves_host_id_empty_when_hostname_is_only_a_dot(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "libvirt-backup.env"
+    env_file.write_text("BACKUP_PATH=/tmp/backups\nHOST_ID=\n", encoding="utf-8")
+    monkeypatch.delenv("HOST_ID", raising=False)
+    monkeypatch.setattr("libvirt_backup_system.config.socket.gethostname", lambda: ".example.com")
+
+    cfg = Config.load(config_path=str(env_file), prefix=str(tmp_path))
+    assert cfg.get("HOST_ID") == ""
+
+
 def test_env_override_logs_only_when_value_differs(tmp_path: Path, monkeypatch, capsys) -> None:
     env_file = tmp_path / "libvirt-backup.env"
     env_file.write_text("HOST_ID=match-host\nBACKUP_PATH=/file/path\n", encoding="utf-8")
