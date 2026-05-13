@@ -7,9 +7,10 @@ import pytest
 
 from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.inactive_markers import _atomic_write, marked_backup_dir, write_marker
+from libvirt_backup_system.inactive_markers import atomic_write, marked_backup_dir, write_marker
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import BETA_UUID
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -40,7 +41,7 @@ def test_backup_vm_recopies_when_inactive_marker_read_fails(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
     original_read_text = Path.read_text
@@ -61,7 +62,7 @@ def test_backup_vm_recopies_when_inactive_marker_read_fails(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert calls
     assert "inactive marker read failed" in capsys.readouterr().err
 
@@ -75,7 +76,7 @@ def test_backup_vm_recopies_when_inactive_marker_is_malformed(
     content: str,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text(content, encoding="utf-8")
     calls: list[list[str]] = []
@@ -88,7 +89,7 @@ def test_backup_vm_recopies_when_inactive_marker_is_malformed(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert calls
     assert "inactive marker is malformed" in capsys.readouterr().out
 
@@ -105,7 +106,7 @@ def test_backup_vm_recopies_when_inactive_marker_stamp_is_unsafe(
     bad_stamp: str,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text(f"{bad_stamp}\nfp-stub\n", encoding="utf-8")
     calls: list[list[str]] = []
@@ -118,7 +119,7 @@ def test_backup_vm_recopies_when_inactive_marker_stamp_is_unsafe(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert calls
     assert "inactive marker stamp is unsafe" in capsys.readouterr().err
 
@@ -130,7 +131,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_path_is_unsafe(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -146,7 +147,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_path_is_unsafe(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert calls
     assert "inactive marker backup path is unsafe" in capsys.readouterr().err
 
@@ -158,7 +159,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_check_fails(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     backup_dir = marker.parent / "oldstamp"
     marker.parent.mkdir(parents=True)
     marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
@@ -180,7 +181,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_check_fails(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert calls
     assert "inactive marker backup directory check failed" in capsys.readouterr().err
 
@@ -203,7 +204,7 @@ def test_atomic_write_retries_on_file_exists_and_eventually_fails(tmp_path: Path
         raise FileExistsError("collision")
 
     monkeypatch.setattr("libvirt_backup_system.inactive_markers._open_excl_nofollow", always_exists)
-    assert not _atomic_write(marker, "data", "alpha", "marker write failed")
+    assert not atomic_write(marker, "data", "alpha", "marker write failed")
     err = capsys.readouterr().err
     assert "marker write failed" in err
     assert "collision" in err
@@ -243,7 +244,7 @@ def test_atomic_write_cleans_tempfile_when_rename_fails(tmp_path: Path, monkeypa
 def test_read_marker_logs_os_error_from_read_text(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = backup_config
     cfg.values.update({"BACKUP_COMPRESS": "true", "INACTIVE_COPY_EVERY_RUN": "false"})
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("stamp\nfp-stub\n", encoding="utf-8")
     original_read_text = Path.read_text
@@ -262,7 +263,7 @@ def test_read_marker_logs_os_error_from_read_text(tmp_path: Path, monkeypatch, c
         )[1],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     assert "inactive marker read failed" in capsys.readouterr().err
 
 

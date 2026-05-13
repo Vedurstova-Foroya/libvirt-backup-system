@@ -33,7 +33,9 @@ sudo libvirt-backup-system check
 
 ## `run`
 
-Runs preflight, acquires the run lock, and backs up selected VMs. The run never deletes prior backups (see [Non-goals](#non-goals)).
+Runs preflight, acquires the run lock, and backs up selected VMs. Running VMs build a per-month incremental chain: the first run each calendar month writes a `-l full` into a new chain directory, subsequent runs in the same month append `-l inc` snapshots into the same chain. Inactive (shut-off) VMs keep their `-l copy` semantics with a per-month freshness marker.
+
+When `BACKUP_CLEANUP_ON_RUN=true` (the default) the run finishes by pruning month directories older than `BACKUP_RETENTION_MONTHS`. Pruning failure does not roll back successful backups — the run returns the higher of the backup and prune exit codes.
 
 ```sh
 sudo libvirt-backup-system run
@@ -66,12 +68,18 @@ sudo libvirt-backup-system verify
 sudo libvirt-backup-system verify --vm my-vm
 ```
 
-## Restore
+## `restore`
 
-There is no restore command. Restoring is intentionally manual; see [Manual restore process](manual-restore.md).
+Reconstructs a VM into an empty staging directory using `virtnbdrestore -a restore`. Defaults to the latest month and latest chain for the named VM; pass `--month YYYY-MM` and/or `--chain <chain-id>` to pin a specific snapshot. The output directory must either not exist or be empty — restore refuses to overwrite existing data.
 
-## Non-goals
+```sh
+sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
+sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm --month 2026-05
+sudo libvirt-backup-system restore --vm <uuid> --output /var/tmp/restore/my-vm --month 2026-05 --chain 20260507T101112_000000Z
+```
 
-Retention and cleanup are intentionally **out of scope** for this system. It only ever writes new backups; it does not delete, prune, rotate, or otherwise reclaim space from prior backups. There is no `cleanup` subcommand, no retention env var, and no implicit "keep N months" behavior.
+The restore command holds the same run-lock as `run` to avoid reading a chain dir that a concurrent backup is still writing into. See [Manual restore process](manual-restore.md) for the lower-level recovery procedure (useful when the source backup must first be staged onto local storage).
 
-If your environment needs retention, drive it externally — for example with a separate cron job that uses `find`/`rm`, a storage-side snapshot policy, or an NFS/QNAP appliance feature. **Do not add retention or cleanup logic back into this codebase.** Keeping this system write-only is a deliberate design choice: it removes an entire class of "the backup system deleted real backups" failure modes (clock skew, mis-set env var, mid-run pruning) and lets retention be owned by whichever team or appliance already manages storage lifecycle.
+## Retention
+
+Old month directories are pruned automatically at the end of every successful `run` when `BACKUP_CLEANUP_ON_RUN=true` (the default). The number of most-recent calendar months to keep is `BACKUP_RETENTION_MONTHS` (default `12`, roughly one year); `0` disables pruning entirely. Pruning is per-VM and only touches `<vm-uuid>/<yyyy-mm>/` directories — foreign files dropped under a VM dir are left alone. The most recent month dir is always preserved even if retention math would otherwise drop it.

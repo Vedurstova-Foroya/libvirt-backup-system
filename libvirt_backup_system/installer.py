@@ -80,6 +80,7 @@ def _install_without_backup_path(root: Path, systemd_dir: Path, resolved_config:
     )
     for path in [
         systemd_dir / "libvirt-backup-system.service",
+        systemd_dir / "libvirt-backup-system-check.service",
         systemd_dir / "libvirt-backup-system.timer",
     ]:
         try:
@@ -111,8 +112,9 @@ def _print_install_next_steps(config_path: Path, bin_path: Path) -> None:
         "NFS/QNAP mounts are required by default. For an intentionally local backup directory, uncomment:",
         "  BACKUP_REQUIRE_NFS_MOUNT=false",
         "",
-        "Retention and cleanup are intentionally out of scope: this system only writes backups,",
-        "never deletes them. Use an external tool or storage-side policy to manage retention.",
+        "Retention defaults to keeping 12 months (~1 year) of backups per VM, pruned at the end",
+        "of every successful run. Tune BACKUP_RETENTION_MONTHS or set BACKUP_CLEANUP_ON_RUN=false",
+        "to disable pruning.",
         "",
         "Then validate and run:",
         f"  sudo {bin_path} check",
@@ -157,10 +159,12 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     systemd_dir = prefixed("/etc/systemd/system", root)
     backup_path = cfg.get("BACKUP_PATH").strip()
     service_text = ""
+    check_service_text = ""
     timer_text = ""
     try:
         if backup_path:
-            service_text = render_unit_service(backup_path, bin_path, resolved_config)
+            service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="run")
+            check_service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="check")
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return 1
@@ -185,6 +189,7 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
 
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / "libvirt-backup-system.service").write_text(service_text, encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-check.service").write_text(check_service_text, encoding="utf-8")
     (systemd_dir / "libvirt-backup-system.timer").write_text(timer_text, encoding="utf-8")
     event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(resolved_config))
 
@@ -209,6 +214,7 @@ def _remove_installed_files(root: Path) -> bool:
     for path in [
         prefixed("/usr/local/bin/libvirt-backup-system", root),
         prefixed("/etc/systemd/system/libvirt-backup-system.service", root),
+        prefixed("/etc/systemd/system/libvirt-backup-system-check.service", root),
         prefixed("/etc/systemd/system/libvirt-backup-system.timer", root),
     ]:
         try:

@@ -7,6 +7,7 @@ from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import ALPHA_UUID, BETA_UUID
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -25,7 +26,7 @@ def test_backup_vm_replaces_symlinked_inactive_marker_without_touching_target(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     target = tmp_path / "outside-target"
     target.write_text("keep\n", encoding="utf-8")
@@ -44,7 +45,7 @@ def test_backup_vm_replaces_symlinked_inactive_marker_without_touching_target(
         lambda uri, name, m: (_ for _ in ()).throw(AssertionError("symlink marker must not be checked")),
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     assert calls
     assert target.read_text(encoding="utf-8") == "keep\n"
     assert not marker.is_symlink()
@@ -58,7 +59,7 @@ def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("old\n", encoding="utf-8")
     original_lstat = Path.lstat
@@ -79,7 +80,7 @@ def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
         )[2],
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     assert calls
     assert "inactive marker check failed" in capsys.readouterr().err
 
@@ -88,7 +89,7 @@ def test_backup_vm_reuse_path_reaps_legacy_fingerprint_sidecar(tmp_path: Path, m
     # On the reuse (fresh-marker) path, an upgraded host's legacy
     # .inactive-copy-fingerprint sidecar must also be reaped.
     cfg = _backup_config(backup_config)
-    parent = tmp_path / "backups/host/beta/2026-05"
+    parent = tmp_path / f"backups/host/{BETA_UUID}/2026-05"
     parent.mkdir(parents=True)
     (parent / "oldstamp").mkdir()
     marker = parent / ".inactive-copy-complete"
@@ -101,7 +102,7 @@ def test_backup_vm_reuse_path_reaps_legacy_fingerprint_sidecar(tmp_path: Path, m
         lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("reuse must not call virtnbdbackup")),
     )
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
     assert not sidecar.exists()
     assert marker.exists()
 
@@ -113,7 +114,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
     calls: list[list[str]] = []
@@ -127,7 +128,7 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
     )
     monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "newstamp")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
 
     assert calls
     assert marker.read_text(encoding="utf-8") == "newstamp\nfp-stub\n"
@@ -143,7 +144,7 @@ def test_backup_vm_logs_inactive_fingerprint_removal_failure(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    marker_dir = tmp_path / "backups/host/alpha/2026-05"
+    marker_dir = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05"
     marker_dir.mkdir(parents=True)
     fingerprint = marker_dir / ".inactive-copy-fingerprint"
     fingerprint.write_text("old\n", encoding="utf-8")
@@ -163,13 +164,13 @@ def test_backup_vm_logs_inactive_fingerprint_removal_failure(
         )[1],
     )
 
-    assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert "inactive fingerprint removal failed" in capsys.readouterr().err
 
 
 def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
-    marker = tmp_path / "backups/host/alpha/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/.inactive-copy-complete"
     marker.parent.mkdir(parents=True)
     marker.write_text("old\n", encoding="utf-8")
     original_unlink = Path.unlink
@@ -188,7 +189,7 @@ def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypa
         )[1],
     )
 
-    assert backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert "inactive marker removal failed" in capsys.readouterr().err
 
 
@@ -206,7 +207,7 @@ def test_backup_vm_fails_when_marker_path_becomes_unsafe(monkeypatch, capsys, ba
         )[1],
     )
 
-    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     assert "inactive marker skipped because destination became unsafe" in capsys.readouterr().err
 
 
@@ -240,7 +241,7 @@ def test_backup_vm_fails_when_domain_xml_changes_during_backup(
     # XML drift mid-copy must fail the VM so the run is non-zero; otherwise
     # a backup whose configuration no longer matches the live domain would be
     # recorded as a real success.
-    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     captured = capsys.readouterr()
     assert "domain XML changed during inactive backup; backup not trusted" in captured.err
     assert written == []
@@ -264,10 +265,10 @@ def test_finalize_inactive_marker_fails_on_utime_failure(tmp_path: Path, monkeyp
     # Backdating is load-bearing for the mid-copy disk-modification check, not
     # advisory. utime failure must roll the marker back and fail the VM so a
     # marker with the wrong (post-copy) mtime never reaches the next run.
-    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     err = capsys.readouterr().err
     assert "inactive marker backdate failed; rolling back marker" in err
-    marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     assert not marker.exists()
 
 
@@ -278,7 +279,7 @@ def test_backup_vm_fails_and_cleans_up_when_marker_write_fails(
     backup_config,
 ) -> None:
     cfg = _backup_config(backup_config)
-    parent = tmp_path / "backups/host/beta/2026-05"
+    parent = tmp_path / f"backups/host/{BETA_UUID}/2026-05"
 
     def fail_open(path: Path) -> int:
         raise OSError("open denied")
@@ -292,7 +293,7 @@ def test_backup_vm_fails_and_cleans_up_when_marker_write_fails(
         )[1],
     )
 
-    assert not backup_vm(cfg, VM("beta", "shut off"), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     # No leftover temp files for the marker; failure surfaces in the log stream.
     leftover_temps = [p for p in parent.iterdir() if p.name.startswith(".") and p.suffix == ".tmp"]
     assert leftover_temps == []

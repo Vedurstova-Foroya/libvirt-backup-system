@@ -11,6 +11,13 @@ BIN = PREFIX / "usr/local/bin/libvirt-backup-system"
 CONFIG = PREFIX / "etc/libvirt-backup-system/libvirt-backup.env"
 BACKUP_PATH = Path("/mnt/qnap-backups")
 
+# Keep in sync with the fake virsh's domuuid table — backups now live under
+# the libvirt UUID, not the VM name.
+VM_UUID = {
+    "alpha": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "beta": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+}
+
 
 def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
@@ -65,6 +72,7 @@ def main() -> int:
     vms = run([str(BIN), "list-vms", "--json"])
     listed = json.loads(vms.stdout)
     assert [vm["name"] for vm in listed] == ["alpha", "beta"], listed
+    assert [vm["uuid"] for vm in listed] == [VM_UUID["alpha"], VM_UUID["beta"]], listed
 
     low_space = run([str(BIN), "preflight"], check=False, env={"LBS_FAKE_LOW_SPACE": "1"})
     assert low_space.returncode != 0, "low-space preflight should fail"
@@ -72,15 +80,15 @@ def main() -> int:
 
     backup = run([str(BIN), "run"])
     assert_json_lines(backup.stdout)
-    month_dirs = list((BACKUP_PATH / "e2e-host/alpha").glob("????-??"))
+    month_dirs = list((BACKUP_PATH / "e2e-host" / VM_UUID["alpha"]).glob("????-??"))
     assert month_dirs, "running VM backup month missing"
-    assert list((BACKUP_PATH / "e2e-host/beta").glob("????-??")), "inactive VM backup month missing"
+    assert list((BACKUP_PATH / "e2e-host" / VM_UUID["beta"]).glob("????-??")), "inactive VM backup month missing"
     month = month_dirs[0].name
 
-    assert (BACKUP_PATH / "e2e-host/alpha" / month).is_dir(), "backup month missing"
+    assert (BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).is_dir(), "backup month missing"
 
     for vm_name in ("alpha", "beta"):
-        timestamps = sorted((BACKUP_PATH / "e2e-host" / vm_name / month).glob("*T*Z"))
+        timestamps = sorted((BACKUP_PATH / "e2e-host" / VM_UUID[vm_name] / month).glob("*T*Z"))
         assert timestamps, f"no timestamped backup directory for {vm_name}"
         metadata_path = timestamps[-1] / "metadata.json"
         assert metadata_path.is_file(), f"metadata.json missing for {vm_name}"
@@ -89,18 +97,26 @@ def main() -> int:
         assert metadata["disks"], f"no disks recorded for {vm_name}"
         checkpoint = metadata["checkpoint"]
         assert (timestamps[-1] / f"{checkpoint}.checkpoint").is_file(), "checkpoint missing"
+        # The empty <vm-name>.name marker lets operators map a current name
+        # back to its UUID dir via `find -name '<name>.name'`.
+        assert (timestamps[-1] / f"{vm_name}.name").is_file(), f"<vm>.name marker missing for {vm_name}"
 
     run([str(BIN), "verify"])
 
-    # The system has no cleanup/retention command and must not prune older data
-    # itself. Drop an old month directory in place and confirm a failing run
-    # leaves it untouched.
-    old = BACKUP_PATH / "e2e-host/alpha" / "1999-01"
+    # A failing run must never wipe the chain dir for the failing VM, and must
+    # leave older month dirs alone unless retention removes them. Disable the
+    # cleanup pass for this assertion so the retention default does not race
+    # with our handcrafted old-month dir.
+    old = BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / "1999-01"
     old.mkdir(parents=True)
-    failed = run([str(BIN), "run"], check=False, env={"FAIL_BACKUP_FOR": "alpha"})
+    failed = run(
+        [str(BIN), "run"],
+        check=False,
+        env={"FAIL_BACKUP_FOR": "alpha", "BACKUP_CLEANUP_ON_RUN": "false"},
+    )
     assert failed.returncode != 0, "backup failure should produce non-zero exit"
     assert "backup failed" in failed.stderr
-    assert old.exists(), "backup system must never delete existing data"
+    assert old.exists(), "backup system must never delete existing data on backup failure"
     old.rmdir()
 
     run(["python3", "-m", "libvirt_backup_system", "--prefix", str(PREFIX), "uninstall"])

@@ -23,6 +23,8 @@ CONFIG_KEYS = {
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
     "COMMAND_TIMEOUT_SECONDS",
+    "BACKUP_RETENTION_MONTHS",
+    "BACKUP_CLEANUP_ON_RUN",
 }
 
 
@@ -40,6 +42,8 @@ DEFAULTS = {
     "BACKUP_INCREMENTAL_MULTIPLIER": "1.2",
     "REQUIRE_ROOT": "true",
     "COMMAND_TIMEOUT_SECONDS": "86400",
+    "BACKUP_RETENTION_MONTHS": "12",
+    "BACKUP_CLEANUP_ON_RUN": "true",
 }
 
 
@@ -56,6 +60,8 @@ COMMENTED_ENV_KEYS = {
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
     "COMMAND_TIMEOUT_SECONDS",
+    "BACKUP_RETENTION_MONTHS",
+    "BACKUP_CLEANUP_ON_RUN",
 }
 
 
@@ -73,7 +79,11 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "LIBVIRT_URI",
     None,
     "# Backup root. Backups are written as:",
-    "#   BACKUP_PATH/<host-id>/<vm-name>/<yyyy-mm>/<timestamp>/",
+    "#   BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/",
+    "# Running VMs use monthly incremental chains: the first run of each calendar",
+    "# month is a full, later runs in the same month are incrementals into the",
+    "# same chain-id directory. Inactive (shut-off) VMs use ``-l copy`` and a",
+    "# per-month .inactive-copy-complete marker.",
     "BACKUP_PATH",
     None,
     "# Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.",
@@ -96,9 +106,6 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Re-run install or edit/reload the timer if this changes after install.",
     "SYSTEMD_ON_CALENDAR",
     None,
-    # Retention and cleanup are intentionally out of scope for this system: it
-    # only writes backups and never deletes them. Use an external tool (or
-    # storage-side policy) to manage retention. See README "Non-goals".
     "# Extra free-space margin added to preflight's backup size estimate.",
     "SPACE_MARGIN_PERCENT",
     None,
@@ -111,9 +118,8 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "BACKUP_ESTIMATE_GB_PER_VM",
     None,
     "# Multiplier applied to the sum of VM disk virtual sizes when estimating",
-    "# required backup space. Backups are full-per-run (no incremental chain);",
-    "# the name is historical. The multiplier accounts for compression overhead,",
-    "# metadata, and per-VM safety margin on top of the raw disk virtual size.",
+    "# required backup space. Accounts for compression overhead, metadata, and",
+    "# per-VM safety margin on top of the raw disk virtual size.",
     "BACKUP_INCREMENTAL_MULTIPLIER",
     None,
     "# Require preflight and run commands to execute as root.",
@@ -121,6 +127,14 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     None,
     "# Timeout for external commands, in seconds.",
     "COMMAND_TIMEOUT_SECONDS",
+    None,
+    "# Number of most-recent calendar months of backups to keep per VM. ``0``",
+    "# disables pruning entirely. Default of 12 retains roughly one year.",
+    "BACKUP_RETENTION_MONTHS",
+    None,
+    "# Run the monthly retention pass after every successful ``run``. Disable to",
+    "# manage retention out-of-band; pruning failures never roll back backups.",
+    "BACKUP_CLEANUP_ON_RUN",
 )
 
 
@@ -237,11 +251,10 @@ class Config:
         return "\n".join(lines) + "\n"
 
 
-def month_key(year: int, month: int) -> str:
-    return f"{year:04d}-{month:02d}"
-
-
-def _is_month_dir_name(name: str) -> bool:
+def is_month_dir_name(name: str) -> bool:
+    # Calendar-month format YYYY-MM where month is 01-12. The fixed shape lets
+    # verify, retention, and restore enumerate month dirs without touching any
+    # operator junk that may have been dropped under a VM directory.
     if len(name) != 7 or name[4] != "-":
         return False
     year, month = name[:4], name[5:]
@@ -251,4 +264,4 @@ def _is_month_dir_name(name: str) -> bool:
 def iter_month_dirs(root: Path) -> Iterable[Path]:
     if not root.exists():
         return []
-    return sorted(path for path in root.iterdir() if path.is_dir() and _is_month_dir_name(path.name))
+    return sorted(path for path in root.iterdir() if path.is_dir() and is_month_dir_name(path.name))

@@ -67,25 +67,31 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     )
     assert install(str(tmp_path)) == 0
     service_text = service_path.read_text(encoding="utf-8")
+    check_service_path = tmp_path / "etc/systemd/system/libvirt-backup-system-check.service"
+    check_service_text = check_service_path.read_text(encoding="utf-8")
     assert (
         f"ExecStart={_quoted_systemd_path(bin_path, escape_dollar=True)} "
         f"--config {_quoted_systemd_path(config_path, escape_dollar=True)} run"
     ) in service_text
+    assert (
+        f"ExecStart={_quoted_systemd_path(bin_path, escape_dollar=True)} "
+        f"--config {_quoted_systemd_path(config_path, escape_dollar=True)} check"
+    ) in check_service_text
     assert f"EnvironmentFile={_quoted_systemd_path(config_path)}" in service_text
+    assert f"EnvironmentFile={_quoted_systemd_path(config_path)}" in check_service_text
     assert f"RequiresMountsFor={_quoted_systemd_path(tmp_path / 'backups')}" in service_text
+    assert f"RequiresMountsFor={_quoted_systemd_path(tmp_path / 'backups')}" in check_service_text
     assert "TimeoutStartSec=infinity" in service_text
-    assert "ProtectSystem=strict" in service_text
     assert "NoNewPrivileges=yes" in service_text
-    # StateDirectory= is required so /var/lib/libvirt-backup-system exists
-    # before the ProtectSystem=strict sandbox locks the rest of the FS down,
-    # otherwise lock.py's mkdir at runtime fails on a fresh install.
+    # StateDirectory= creates /var/lib/libvirt-backup-system at service start
+    # so lock.py's run-lock mkdir succeeds on a fresh install.
     assert "StateDirectory=libvirt-backup-system" in service_text
-    rw_line = next(line for line in service_text.splitlines() if line.startswith("ReadWritePaths="))
-    assert _quoted_systemd_path(tmp_path / "backups") in rw_line
-    assert _quoted_systemd_path(Path("/var/lib/libvirt-backup-system")) in rw_line
-    # /var/tmp must be writable so virtnbdbackup's default scratch dir is
-    # not blocked by ProtectSystem=strict in scheduled runs.
-    assert _quoted_systemd_path(Path("/var/tmp")) in rw_line
+    # Filesystem sandboxing (ProtectSystem, ProtectHome, ReadWritePaths) is
+    # intentionally absent: it would hide /home-resident VM disk roots and
+    # backup destinations from the service.
+    assert "ProtectSystem=" not in service_text
+    assert "ProtectHome=" not in service_text
+    assert "ReadWritePaths=" not in service_text
     timer_path = tmp_path / "etc/systemd/system/libvirt-backup-system.timer"
     assert "OnCalendar=" in timer_path.read_text(encoding="utf-8")
 
@@ -98,6 +104,7 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     )
     assert install(str(tmp_path)) == 0
     assert not service_path.exists()
+    assert not check_service_path.exists()
     assert not timer_path.exists()
 
     assert uninstall(str(tmp_path), purge_config=True, purge_state=True, purge_logs=True) == 0

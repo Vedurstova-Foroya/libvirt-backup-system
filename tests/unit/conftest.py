@@ -7,6 +7,13 @@ import pytest
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 
+# Placeholder UUIDs used across the suite. Real ones come from ``virsh
+# domuuid``; tests construct VM() objects without going through ``list_vms``
+# so they need a syntactically-valid stand-in that ``is_safe_vm_uuid`` accepts.
+ALPHA_UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+BETA_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+GAMMA_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
 
 @pytest.fixture(autouse=True)
 def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,3 +64,13 @@ def _stub_domain_xml_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
     # test only needs to override when it wants to assert the fingerprint code
     # path directly.
     monkeypatch.setattr("libvirt_backup_system.backup.domain_xml_fingerprint", lambda uri, name: "fp-stub")
+
+
+@pytest.fixture(autouse=True)
+def _stub_virtnbdbackup_socket_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    # backup_vm asks nbd_probe.virtnbdbackup_socket_args whether to pass
+    # ``-f``/``--socketfile`` to virtnbdbackup; the lookup shells out to
+    # ``virsh domid`` against the configured libvirt URI. Default to ``[]``
+    # so existing tests keep asserting the unaugmented virtnbdbackup command;
+    # tests that exercise the --socketfile path override this stub.
+    monkeypatch.setattr("libvirt_backup_system.backup.virtnbdbackup_socket_args", lambda uri, name: [])

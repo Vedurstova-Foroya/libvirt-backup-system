@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import prefixed, root_prefix
 from .logging_json import event
 from .shell import run
 
-STATUS_UNITS = ("libvirt-backup-system.timer", "libvirt-backup-system.service")
+RUN_UNIT_NAME = "libvirt-backup-system.service"
+CHECK_UNIT_NAME = "libvirt-backup-system-check.service"
+TIMER_UNIT_NAME = "libvirt-backup-system.timer"
+STATUS_UNITS = (TIMER_UNIT_NAME, RUN_UNIT_NAME, CHECK_UNIT_NAME)
+UNIT_DESCRIPTIONS = {"run": "Libvirt VM backup orchestrator", "check": "Libvirt VM backup preflight check"}
+DISPATCH_OPT_OUT_ENV = "LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH"
 
 
 def systemctl_available(root: Path) -> bool:
@@ -63,7 +70,7 @@ def run_systemctl(root: Path, commands: list[list[str]]) -> bool:
 
 
 UNIT_SERVICE = """[Unit]
-Description=Libvirt VM backup orchestrator
+Description={description}
 Wants=network-online.target
 After=network-online.target libvirtd.service
 {requires_mounts_for}
@@ -71,27 +78,21 @@ After=network-online.target libvirtd.service
 Type=oneshot
 TimeoutStartSec=infinity
 EnvironmentFile={environment_file}
-ExecStart={bin_path} --config {config_arg} run
-# Defense-in-depth hardening. The service still runs as root because it shells
-# out to virsh/virtnbdbackup against qemu:///system, but the rest of the
-# filesystem is read-only and most kernel-surface escalation paths are closed.
-# Operators who need to widen access can drop a unit override under
-# /etc/systemd/system/libvirt-backup-system.service.d/.
-# StateDirectory= creates /var/lib/libvirt-backup-system before the sandbox is
-# applied and includes it in the writable set automatically. Without it, a
-# fresh install would fail at unit start because the run-lock directory did
-# not exist when ReadWritePaths= tried to bind it.
+ExecStart={bin_path} --config {config_arg} {subcommand}
+# Defense-in-depth hardening. The service runs as root because it shells out to
+# virsh/virtnbdbackup against qemu:///system; the remaining directives close
+# the easy kernel-surface escalation paths without sandboxing the filesystem,
+# which would hide VM disk roots and backup destinations placed under /home.
+# StateDirectory= creates /var/lib/libvirt-backup-system at service start so
+# lock.py's run-lock mkdir succeeds on a fresh install.
 StateDirectory=libvirt-backup-system
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-ReadWritePaths={read_write_paths}
 """
 
 UNIT_TIMER = """[Unit]
@@ -122,7 +123,9 @@ def _quote_systemd_path(path: str, *, escape_dollar: bool = False) -> str:
     return f'"{escaped}"'
 
 
-def render_unit_service(backup_path: str, bin_path: Path, config_path: Path) -> str:
+def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run") -> str:
+    if subcommand not in UNIT_DESCRIPTIONS:
+        raise ValueError(f"unknown unit subcommand: {subcommand}")
     backup_path = backup_path.strip()
     config = validate_systemd_path(config_path, "config_path")
     binary = validate_systemd_path(bin_path, "bin_path")
@@ -131,26 +134,15 @@ def render_unit_service(backup_path: str, bin_path: Path, config_path: Path) -> 
     # COMMAND_TIMEOUT_SECONDS per child process, which is the meaningful safety
     # net; a static systemd timeout would either kill legitimate multi-VM runs
     # or be so large it adds no value.
-    requires = (
-        f"RequiresMountsFor={_quote_systemd_path(validate_systemd_path(backup_path, 'BACKUP_PATH'))}\n"
-        if backup_path
-        else ""
-    )
-    # ReadWritePaths must include BACKUP_PATH (the backup destination),
-    # /var/lib/libvirt-backup-system (the run lock and runtime state), and
-    # /var/tmp (virtnbdbackup writes scratch files there by default; the
-    # default is unaffected by ``--scratchdir`` and ProtectSystem=strict
-    # otherwise mounts /var/tmp read-only, which breaks scheduled runs while
-    # leaving manual invocations on the unsandboxed shell succeeding).
-    read_write_entries = [_quote_systemd_path(validate_systemd_path(backup_path, "BACKUP_PATH"))]
-    read_write_entries.append(_quote_systemd_path("/var/lib/libvirt-backup-system"))
-    read_write_entries.append(_quote_systemd_path("/var/tmp"))  # noqa: S108 - virtnbdbackup scratch.
+    validate_systemd_path(backup_path, "BACKUP_PATH")
+    requires = f"RequiresMountsFor={_quote_systemd_path(backup_path)}\n" if backup_path else ""
     return UNIT_SERVICE.format(
+        description=UNIT_DESCRIPTIONS[subcommand],
         requires_mounts_for=requires,
         bin_path=_quote_systemd_path(binary, escape_dollar=True),
         environment_file=_quote_systemd_path(config),
         config_arg=_quote_systemd_path(config, escape_dollar=True),
-        read_write_paths=" ".join(read_write_entries),
+        subcommand=subcommand,
     )
 
 
@@ -188,3 +180,66 @@ def render_unit_timer(root: Path, calendar: str) -> str | None:
             )
             return None
     return UNIT_TIMER.format(calendar=calendar)
+
+
+def unit_name_for(subcommand: str) -> str:
+    if subcommand == "run":
+        return RUN_UNIT_NAME
+    if subcommand == "check":
+        return CHECK_UNIT_NAME
+    raise ValueError(f"no dispatch unit for subcommand: {subcommand}")
+
+
+def dispatch_via_systemd(
+    subcommand: str,
+    *,
+    prefix: str | None,
+    config_path: str | None,
+) -> int | None:
+    """Run ``subcommand`` through the installed systemd unit.
+
+    Returns the unit's exit code when dispatch is taken, or ``None`` when the
+    caller should fall back to running the subcommand in-process. Falling back
+    is the right thing whenever dispatch would change semantics:
+
+    - ``INVOCATION_ID`` is set: we are already executing inside the unit and
+      dispatching again would loop forever.
+    - ``LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH`` is set: explicit operator opt-out
+      for development or recovery.
+    - ``--prefix`` is set: install rooted elsewhere; systemctl on this host
+      manages a different (the real ``/``) install.
+    - ``--config`` is set: the unit has a config path baked into ``ExecStart``;
+      honoring a different path means staying in-process.
+    - No systemctl available, or the unit file is not on disk yet.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return None
+    if os.environ.get(DISPATCH_OPT_OUT_ENV):
+        return None
+    if prefix is not None or config_path is not None:
+        return None
+    root = root_prefix(prefix)
+    if not systemctl_available(root):
+        return None
+    unit = unit_name_for(subcommand)
+    if not (prefixed("/etc/systemd/system", root) / unit).exists():
+        return None
+    event("info", "dispatching to systemd unit", unit=unit, subcommand=subcommand)
+    rc = subprocess.run(["systemctl", "start", "--wait", unit], check=False).returncode
+    # ``systemctl show`` returns the most-recent invocation id even after the
+    # unit has finished — filter the journal to just this run's output so the
+    # operator sees exactly what the unit logged, with no surrounding noise.
+    inv = subprocess.run(
+        ["systemctl", "show", unit, "--property=InvocationID", "--value"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    inv_id = inv.stdout.strip()
+    if inv_id:
+        subprocess.run(
+            ["journalctl", f"_SYSTEMD_INVOCATION_ID={inv_id}", "--output=cat", "--no-pager"],
+            check=False,
+            stdout=sys.stderr,
+        )
+    return rc

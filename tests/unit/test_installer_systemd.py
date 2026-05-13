@@ -228,6 +228,13 @@ def test_uninstall_is_idempotent_when_units_are_absent(tmp_path: Path, monkeypat
 
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
     monkeypatch.setattr("libvirt_backup_system.installer.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
+    # systemd_units.run_systemctl computes the unit-file path through its own
+    # ``prefixed`` import, not installer's; without redirecting that too, the
+    # absent-unit-file check stats the real /etc/systemd/system and falsely
+    # passes on any developer host that has libvirt-backup-system installed.
+    monkeypatch.setattr(
+        "libvirt_backup_system.systemd_units.prefixed", lambda path, root: tmp_path / str(path).lstrip("/")
+    )
     monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
     monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)

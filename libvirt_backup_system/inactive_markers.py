@@ -13,7 +13,7 @@ from .storage import subpath_is_safe
 LEGACY_FINGERPRINT_FILE_NAME = ".inactive-copy-fingerprint"
 
 
-def _stamp_is_safe(stamp: str) -> bool:
+def stamp_is_safe(stamp: str) -> bool:
     # ``Path(stamp).name == stamp`` alone passed ".." through unchanged
     # (``Path("..").name`` is ".."), which then resolved month_dir / ".." to
     # the VM directory parent — a path traversal out of the month directory.
@@ -71,7 +71,7 @@ def remove_marker(marker: Path, vm_name: str) -> None:
 
 
 def write_marker(marker: Path, stamp: str, fingerprint: str, vm_name: str) -> bool:
-    return _atomic_write(marker, f"{stamp}\n{fingerprint}\n", vm_name, "inactive marker write failed")
+    return atomic_write(marker, f"{stamp}\n{fingerprint}\n", vm_name, "inactive marker write failed")
 
 
 def _read_marker_lines(marker: Path) -> list[str] | None:
@@ -99,7 +99,7 @@ def _open_excl_nofollow(path: Path) -> int:
     return os.open(path, flags, 0o600)
 
 
-def _atomic_write(path: Path, content: str, vm_name: str, error_message: str) -> bool:
+def atomic_write(path: Path, content: str, vm_name: str, error_message: str) -> bool:
     parent = path.parent
     tmp_path: Path | None = None
     fd = -1
@@ -167,7 +167,7 @@ def marked_backup_dir(config: Config, month_dir: Path, marker: Path, vm_name: st
         event("info", "inactive marker is malformed, recopying", vm=vm_name, marker=str(marker))
         return None
     stamp = lines[0]
-    if not _stamp_is_safe(stamp):
+    if not stamp_is_safe(stamp):
         event("error", "inactive marker stamp is unsafe, recopying", vm=vm_name, marker=str(marker), stamp=stamp)
         return None
     backup_dir = month_dir / stamp

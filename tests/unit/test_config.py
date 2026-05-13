@@ -9,8 +9,8 @@ from libvirt_backup_system.config import (
     default_config_path,
     float_value,
     int_value,
+    is_month_dir_name,
     iter_month_dirs,
-    month_key,
     parse_env_file,
     prefixed,
     root_prefix,
@@ -53,15 +53,20 @@ def test_config_helpers(tmp_path: Path, monkeypatch) -> None:
     assert int_value({"x": "3"}, "x") == 3
     assert float_value({"x": "1.5"}, "x") == 1.5
     assert split_words("one,two three") == ["one", "two", "three"]
-    assert month_key(2026, 5) == "2026-05"
+    assert is_month_dir_name("2026-05")
+    assert is_month_dir_name("2026-12")
+    assert not is_month_dir_name("2026-13")
+    assert not is_month_dir_name("2026-00")
 
 
 def test_iter_month_dirs(tmp_path: Path) -> None:
     root = tmp_path / "vm"
     assert list(iter_month_dirs(root)) == []
-    for name in ["2026-05", "not-a-month", "2026-04", "2026-5"]:
+    # Mix valid (01-12), invalid (>12, =00, no-pad), and ordinary entries that
+    # operators might drop alongside real month dirs.
+    for name in ["2026-05", "not-a-month", "2025-12", "2026-5", "2026-13", "2026-00"]:
         (root / name).mkdir(parents=True)
-    assert [path.name for path in iter_month_dirs(root)] == ["2026-04", "2026-05"]
+    assert [path.name for path in iter_month_dirs(root)] == ["2025-12", "2026-05"]
 
 
 def test_load_uses_default_config_environment(tmp_path: Path, monkeypatch) -> None:

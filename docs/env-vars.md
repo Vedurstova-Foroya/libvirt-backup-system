@@ -11,7 +11,11 @@
 # LIBVIRT_URI=qemu:///system
 
 # Backup root. Backups are written as:
-#   BACKUP_PATH/<host-id>/<vm-name>/<yyyy-mm>/<timestamp>/
+#   BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
+# Running VMs use monthly incremental chains: the first run each calendar month
+# is a full, later runs in the same month are incrementals into the same
+# chain-id directory. Inactive (shut-off) VMs use ``-l copy`` and a per-month
+# .inactive-copy-complete marker.
 BACKUP_PATH=
 
 # Backup host folder name. Empty means "use this machine's short hostname".
@@ -32,12 +36,15 @@ BACKUP_PATH=
 # Set false when backing up to an intentionally local directory.
 # BACKUP_REQUIRE_NFS_MOUNT=true
 
-# Retention and cleanup are intentionally out of scope for this system: it only
-# writes backups and never deletes them. There is no BACKUP_RETENTION_MONTHS
-# variable, no cleanup subcommand, and no implicit retention. Manage retention
-# externally (cron + find/rm, storage-side snapshot policy, NFS/QNAP appliance
-# feature) and see docs/commands.md "Non-goals" before reintroducing any
-# pruning behavior here.
+# Number of most-recent calendar months of backups to keep per VM. 0 disables
+# pruning entirely; the default of 12 retains roughly one year. Retention is
+# applied at the end of every successful run when BACKUP_CLEANUP_ON_RUN is true.
+# BACKUP_RETENTION_MONTHS=12
+
+# Run the monthly retention pass at the end of every successful ``run``.
+# Disable to manage retention out-of-band; pruning failures never roll back
+# successful backups (the run returns the worst of backup vs. prune codes).
+# BACKUP_CLEANUP_ON_RUN=true
 
 # Extra free-space margin added to preflight's backup size estimate.
 # SPACE_MARGIN_PERCENT=20
@@ -61,9 +68,10 @@ BACKUP_PATH=
 # BACKUP_ESTIMATE_GB_PER_VM=1
 
 # Multiplier applied to the sum of VM disk virtual sizes when estimating
-# required backup space. Backups are full-per-run (no incremental chain); the
-# name is historical. The multiplier accounts for compression overhead,
-# metadata, and per-VM safety margin on top of the raw disk virtual size.
+# required backup space. Running VMs build a monthly incremental chain (one
+# full + per-run increments); the multiplier accounts for compression
+# overhead, metadata, and per-VM safety margin on top of the raw disk virtual
+# size, sized for the worst-case full + full chain repopulation.
 # BACKUP_INCREMENTAL_MULTIPLIER=1.2
 
 # Require preflight and run commands to execute as root.

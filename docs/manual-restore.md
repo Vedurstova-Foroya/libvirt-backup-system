@@ -1,19 +1,29 @@
 # Manual restore process
 
-This project does not provide a restore command. Restoring a VM is an operator-led recovery task because the correct target host, storage pool, VM definition, networking, and cutover process are site-specific.
+Most operators should use the built-in `restore` subcommand:
+
+```sh
+sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
+```
+
+That command picks the latest month and latest chain, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <output>`. Pass `--month YYYY-MM` and/or `--chain <chain-id>` to pin a specific snapshot.
+
+This page covers the manual procedure for situations where the source backup must first be staged onto local storage (e.g. NFS read-only, off-host recovery), or where the operator needs full control over each step.
 
 Backups are stored as:
 
 ```text
-BACKUP_PATH/<host-id>/<vm-name>/<yyyy-mm>/<timestamp>/
+BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
 ```
+
+The `<chain-id>` is the timestamp of the first backup in the monthly incremental chain. Running VMs accumulate per-run incrementals into the same chain directory; restoring from any chain dir replays the chain end-to-end via `virtnbdrestore`.
 
 ## Recovery outline
 
-Pick the exact backup snapshot to recover:
+Pick the exact backup snapshot to recover — the chain directory under the desired calendar month:
 
 ```sh
-SOURCE=/mnt/qnap-backups/myhost/my-vm/2026-05/20260517T023000Z
+SOURCE=/mnt/qnap-backups/myhost/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/2026-05/20260507T023000Z_000000Z
 ```
 
 Copy it to local storage on the recovery host:

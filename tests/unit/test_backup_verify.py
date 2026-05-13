@@ -5,6 +5,7 @@ from pathlib import Path
 from libvirt_backup_system.backup import verify
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandError, CommandResult
+from tests.unit.conftest import ALPHA_UUID
 
 
 def _verify_config(cfg: Config) -> Config:
@@ -19,8 +20,8 @@ def _verify_config(cfg: Config) -> Config:
 
 def test_verify_success_failure_and_vm_filter(tmp_path: Path, monkeypatch, backup_config) -> None:
     cfg = _verify_config(backup_config)
-    good = tmp_path / "backups/host/alpha/2026-05/good"
-    bad = tmp_path / "backups/host/alpha/2026-05/bad"
+    good = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good"
+    bad = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/bad"
     good.mkdir(parents=True)
     bad.mkdir()
 
@@ -28,13 +29,14 @@ def test_verify_success_failure_and_vm_filter(tmp_path: Path, monkeypatch, backu
         # virtnbdrestore is called with ``-a verify -i <dir> -o <dir>`` so the
         # backup-dir argument lives at the position after ``-i``.
         input_path = args[args.index("-i") + 1]
-        if input_path in {str(bad), str(tmp_path / "backups/host/alpha/2026-05/was-bad")}:
+        if input_path in {str(bad), str(tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/was-bad")}:
             raise CommandError(CommandResult(args, 2, "", "bad"))
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr("libvirt_backup_system.verify.run_streamed", fake_run)
-    assert verify(cfg, vm_name="alpha") == 1
-    bad.rename(tmp_path / "backups/host/alpha/2026-05/was-bad")
+    # vm_name=<uuid> exercises the literal-subdir path (no virsh round-trip).
+    assert verify(cfg, vm_name=ALPHA_UUID) == 1
+    bad.rename(tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/was-bad")
     assert verify(cfg) == 1
     assert verify(cfg, vm_name="missing") == 1
 
@@ -72,20 +74,44 @@ def test_verify_rejects_invalid_vm_name(tmp_path: Path, monkeypatch, capsys, bac
 
 def test_verify_skips_unsafe_vm_root(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _verify_config(backup_config)
-    (tmp_path / "backups/host/alpha/2026-05/good").mkdir(parents=True)
+    (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)
     monkeypatch.setattr(
         "libvirt_backup_system.verify.run_streamed",
         lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
     )
     monkeypatch.setattr("libvirt_backup_system.verify.subpath_is_safe", lambda root, path: False)
 
-    assert verify(cfg, vm_name="alpha") == 1
+    assert verify(cfg, vm_name=ALPHA_UUID) == 1
     assert "verify skipped because path is unsafe" in capsys.readouterr().err
+
+
+def test_verify_resolves_name_to_uuid_via_virsh(tmp_path: Path, monkeypatch, backup_config) -> None:
+    # ``verify --vm <name>`` for a still-extant VM must round-trip through
+    # virsh to find its UUID dir; only the UUID layout exists on disk.
+    cfg = _verify_config(backup_config)
+    (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)
+    monkeypatch.setattr("libvirt_backup_system.verify.resolve_vm_uuid", lambda config, name: ALPHA_UUID)
+    monkeypatch.setattr(
+        "libvirt_backup_system.verify.run_streamed",
+        lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
+    )
+    assert verify(cfg, vm_name="alpha") == 0
+
+
+def test_verify_reports_when_resolved_uuid_dir_is_missing(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    # virsh resolves the name but no backups have been written for that UUID
+    # yet (or the dir was deleted out-of-band). Surface a clean "not found".
+    cfg = _verify_config(backup_config)
+    (tmp_path / "backups/host").mkdir(parents=True)  # exists but no UUID subdir
+    monkeypatch.setattr("libvirt_backup_system.verify.resolve_vm_uuid", lambda config, name: ALPHA_UUID)
+
+    assert verify(cfg, vm_name="alpha") == 1
+    assert "verify target not found" in capsys.readouterr().err
 
 
 def test_verify_skips_unsafe_month_dir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _verify_config(backup_config)
-    (tmp_path / "backups/host/alpha/2026-05/good").mkdir(parents=True)
+    (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)
     monkeypatch.setattr(
         "libvirt_backup_system.verify.run_streamed",
         lambda args, check=True, env=None: CommandResult(args, 0, "", ""),
@@ -99,7 +125,7 @@ def test_verify_skips_unsafe_month_dir(tmp_path: Path, monkeypatch, capsys, back
 
 def test_verify_skips_unsafe_backup_dir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _verify_config(backup_config)
-    (tmp_path / "backups/host/alpha/2026-05/good").mkdir(parents=True)
+    (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)
     monkeypatch.setattr(
         "libvirt_backup_system.verify.run_streamed",
         lambda args, check=True, env=None: CommandResult(args, 0, "", ""),

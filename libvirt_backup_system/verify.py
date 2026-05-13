@@ -7,18 +7,43 @@ from .logging_json import event
 from .paths import backup_root
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
-from .vms import is_safe_vm_name
+from .vms import is_safe_vm_name, is_safe_vm_uuid, resolve_vm_uuid
 
 __all__ = ["verify"]
 
 
-def _iter_verify_targets(root: Path, vm_name: str | None) -> tuple[list[Path], bool]:
-    if vm_name is not None:
-        if not is_safe_vm_name(vm_name):
-            event("error", "verify target name is invalid", vm=vm_name)
-            return [], False
-        return [root / vm_name], True
-    return sorted(root.glob("*")), True
+def _resolve_target(config: Config, root: Path, name_or_uuid: str) -> Path | None:
+    # ``is_safe_vm_name`` is permissive enough to also cover UUIDs (no path
+    # separators, no control chars), so we can attempt the literal-subdir
+    # match against both the new <uuid>/ and legacy <vm-name>/ layouts in one
+    # check before falling back to virsh resolution.
+    if not (is_safe_vm_name(name_or_uuid) or is_safe_vm_uuid(name_or_uuid)):
+        event("error", "verify target name is invalid", vm=name_or_uuid)
+        return None
+    candidate = root / name_or_uuid
+    if candidate.is_dir():
+        return candidate
+    # Backups created with the UUID layout live under their UUID, not their
+    # name. Resolve the current UUID for the operator-supplied name via virsh
+    # so ``verify --vm <name>`` keeps working post-rename.
+    uuid = resolve_vm_uuid(config, name_or_uuid)
+    if uuid is None:
+        return None
+    resolved = root / uuid
+    if resolved.is_dir():
+        return resolved
+    event("error", "verify target not found", vm=name_or_uuid, uuid=uuid, path=str(resolved))
+    return None
+
+
+def _iter_verify_targets(config: Config, root: Path, name_or_uuid: str | None) -> tuple[list[Path], bool]:
+    if name_or_uuid is not None:
+        target = _resolve_target(config, root, name_or_uuid)
+        return ([target], True) if target is not None else ([], False)
+    # Filter at the source so the loop body can assume every entry is a real
+    # directory: glob also matches non-dir entries (stray files, broken
+    # symlinks) the operator may have dropped under backup_root.
+    return sorted(p for p in root.glob("*") if p.is_dir()), True
 
 
 def _verify_backup_dir(backup_dir: Path) -> bool:
@@ -38,18 +63,13 @@ def _verify_backup_dir(backup_dir: Path) -> bool:
 def verify(config: Config, vm_name: str | None = None) -> int:
     root = backup_root(config)
     backup_path = config.path_value("BACKUP_PATH")
-    roots, name_ok = _iter_verify_targets(root, vm_name)
+    roots, name_ok = _iter_verify_targets(config, root, vm_name)
     ok = name_ok
     verified = 0
     for vm_root in roots:
         if not subpath_is_safe(backup_path, vm_root):
             event("error", "verify skipped because path is unsafe", path=str(vm_root))
             ok = False
-            continue
-        if not vm_root.is_dir():
-            if vm_name:
-                event("error", "verify target not found", vm=vm_name, path=str(vm_root))
-                ok = False
             continue
         for month_dir in iter_month_dirs(vm_root):
             if not subpath_is_safe(backup_path, month_dir):

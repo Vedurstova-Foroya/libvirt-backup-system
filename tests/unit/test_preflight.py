@@ -12,6 +12,7 @@ from libvirt_backup_system.preflight import (
 )
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import ALPHA_UUID
 
 
 def _preflight_config(cfg: Config) -> Config:
@@ -35,11 +36,12 @@ def patch_valid_preflight(
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.list_vms",
-        lambda config: [VM("alpha", "running")] if selected_vms is None else selected_vms,
+        lambda config: [VM("alpha", "running", ALPHA_UUID)] if selected_vms is None else selected_vms,
     )
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
     monkeypatch.setattr("libvirt_backup_system.preflight._validate_scratch_dir", list)
+    monkeypatch.setattr("libvirt_backup_system.preflight.probe_qemu_socket_bind", lambda config, vms: [])
 
 
 def test_df_helpers(tmp_path: Path, monkeypatch) -> None:
@@ -230,9 +232,10 @@ def _patch_check_preamble(monkeypatch, *, available_kb: int = 2_000_000) -> None
     # Like patch_valid_preflight but leaves _validate_scratch_dir alone.
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running")])
+    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running", ALPHA_UUID)])
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
+    monkeypatch.setattr("libvirt_backup_system.preflight.probe_qemu_socket_bind", lambda config, vms: [])
 
 
 @pytest.mark.parametrize(

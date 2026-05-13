@@ -12,6 +12,7 @@ from libvirt_backup_system.cli import build_parser, main
 from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import UNIT_SERVICE, UNIT_TIMER
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import ALPHA_UUID
 
 
 def _fake_config(tmp_path: Path) -> Config:
@@ -39,6 +40,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 0)
     assert main(["run"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 2)
@@ -46,7 +48,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(
         "libvirt_backup_system.cli.list_vms",
-        lambda config, include_blacklisted=False: [VM("alpha", "running")],
+        lambda config, include_blacklisted=False: [VM("alpha", "running", ALPHA_UUID)],
     )
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 3)
     assert main(["list-vms"]) == 3
@@ -61,18 +63,94 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
     assert main(["verify", "--vm", "alpha"]) == 0
 
+    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm, output, *, month=None, chain=None: 4)
+    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 4
+
+
+def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) -> None:
+    # Pruning failure must NOT roll back a successful backup; ``run`` returns
+    # the higher of the two codes so operators still see the failure.
+    @contextlib.contextmanager
+    def fake_lock(config: object):
+        yield Path("/tmp/fake.lock")
+
+    cfg = _fake_config(tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 1)
+    assert main(["run"]) == 1
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 2)
+    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 0)
+    assert main(["run"]) == 2
+
+
+def test_cli_run_skips_pruning_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    @contextlib.contextmanager
+    def fake_lock(config: object):
+        yield Path("/tmp/fake.lock")
+
+    cfg = _fake_config(tmp_path)
+    cfg.values["BACKUP_CLEANUP_ON_RUN"] = "false"
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.prune_old_months",
+        lambda config: (_ for _ in ()).throw(AssertionError("must not prune when disabled")),
+    )
+    assert main(["run"]) == 0
+
+
+def test_cli_restore_reports_validate_config(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 7)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.restore",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not run when validate fails")),
+    )
+    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 7
+
+
+def test_cli_restore_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Restore reads only, but a concurrent ``run`` could be writing into the
+    # latest chain dir — surface "another run in progress" rather than racing.
+    from libvirt_backup_system.lock import LockBusyError
+
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
+    )
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+
+    @contextlib.contextmanager
+    def busy(config: object):
+        raise LockBusyError(tmp_path / "run.lock")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", busy)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.restore",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("restore must not run while lock is busy")),
+    )
+    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 1
+    assert "another run in progress" in capsys.readouterr().err
+
 
 def test_cli_list_vms_json_keeps_env_override_logs_off_stdout(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("BACKUP_COMPRESS", "false")
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     monkeypatch.setattr(
         "libvirt_backup_system.cli.list_vms",
-        lambda config, include_blacklisted=False: [VM("alpha", "running")],
+        lambda config, include_blacklisted=False: [VM("alpha", "running", ALPHA_UUID)],
     )
 
     assert main(["--prefix", str(tmp_path), "list-vms", "--json"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == '[{"name": "alpha", "state": "running", "running": true}]\n'
+    assert captured.out == ('[{"name": "alpha", "uuid": "' + ALPHA_UUID + '", "state": "running", "running": true}]\n')
     assert "env override" in captured.err
 
 
@@ -209,6 +287,9 @@ def test_main_module(monkeypatch) -> None:
 
 def test_constants_and_version() -> None:
     assert __version__ == "0.1.0"
-    assert "Description=Libvirt VM backup orchestrator" in UNIT_SERVICE
+    # Description is parameterized so the same template renders both the run
+    # and check service units; the rendered string is exercised end-to-end in
+    # test_installer.test_install_and_uninstall_preserves_and_purges.
+    assert "Description={description}" in UNIT_SERVICE
     assert "OnCalendar={calendar}" in UNIT_TIMER
     assert shutil.which("python3")

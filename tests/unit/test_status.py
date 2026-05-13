@@ -13,7 +13,7 @@ def test_status_returns_one_when_systemctl_unavailable(tmp_path: Path, capsys) -
 def test_status_runs_systemctl_for_each_unit_and_returns_worst_rc(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
     calls: list[list[str]] = []
-    codes = iter([0, 3])
+    codes = iter([0, 3, 0])
 
     def fake_run(args, *, check):
         calls.append(args)

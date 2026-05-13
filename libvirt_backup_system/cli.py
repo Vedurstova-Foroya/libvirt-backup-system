@@ -5,6 +5,7 @@ import contextlib
 import json
 import sys
 import traceback
+from pathlib import Path
 
 from .backup import run_backups, verify
 from .config import Config
@@ -12,8 +13,10 @@ from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .preflight import check, validate_config
+from .restore import restore
+from .retention import prune_old_months
 from .shell import configure_default_timeout
-from .systemd_units import status
+from .systemd_units import dispatch_via_systemd, status
 from .vms import list_vms
 
 
@@ -41,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("--vm")
 
+    restore_parser = sub.add_parser("restore")
+    restore_parser.add_argument("--vm", required=True)
+    restore_parser.add_argument("--output", required=True)
+    restore_parser.add_argument("--month")
+    restore_parser.add_argument("--chain")
+
     return parser
 
 
@@ -50,7 +59,31 @@ def _run_command(config: Config) -> int:
         return preflight_code
     try:
         with acquire_run_lock(config):
-            return run_backups(config)
+            backup_code = run_backups(config)
+            # Pruning failure must not roll back successful backups, so we
+            # combine codes via ``max`` rather than short-circuiting. Disabling
+            # cleanup leaves retention entirely to operators / external tools.
+            if not config.enabled("BACKUP_CLEANUP_ON_RUN"):
+                return backup_code
+            return max(backup_code, prune_old_months(config))
+    except LockBusyError as exc:
+        event("error", "another run in progress", lock_path=str(exc.path))
+        return 1
+
+
+def _restore_command(config: Config, args: argparse.Namespace) -> int:
+    config_code = validate_config(config)
+    if config_code != 0:
+        return config_code
+    try:
+        with acquire_run_lock(config):
+            return restore(
+                config,
+                args.vm,
+                Path(args.output),
+                month=args.month,
+                chain=args.chain,
+            )
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
@@ -74,6 +107,18 @@ def main(argv: list[str] | None = None) -> int:
                 purge_logs=args.purge_logs,
             )
 
+        # Route ``run``/``check`` through the installed systemd unit so the
+        # operator's ad-hoc invocation runs in the same environment the
+        # scheduled timer will use. ``dispatch_via_systemd`` returns ``None``
+        # when dispatch is not appropriate (no INVOCATION_ID, --prefix or
+        # --config overrides, systemd missing, unit not installed), in which
+        # case we fall through and run the subcommand in-process.
+        if args.command in {"check", "preflight", "run"}:
+            mapped = "check" if args.command in {"check", "preflight"} else "run"
+            dispatched = dispatch_via_systemd(mapped, prefix=args.prefix, config_path=args.config)
+            if dispatched is not None:
+                return dispatched
+
         if args.command == "list-vms" and args.json:
             with contextlib.redirect_stdout(sys.stderr):
                 config = Config.load(config_path=args.config, prefix=args.prefix)
@@ -94,10 +139,14 @@ def main(argv: list[str] | None = None) -> int:
                 return config_code
             vms = list_vms(config, include_blacklisted=args.include_blacklisted)
             if args.json:
-                print(json.dumps([{"name": vm.name, "state": vm.state, "running": vm.running} for vm in vms]))
+                print(
+                    json.dumps(
+                        [{"name": vm.name, "uuid": vm.uuid, "state": vm.state, "running": vm.running} for vm in vms]
+                    )
+                )
             else:
                 for vm in vms:
-                    print(f"{vm.name}\t{vm.state}")
+                    print(f"{vm.name}\t{vm.state}\t{vm.uuid}")
             return 0
         if args.command == "verify":
             config_code = validate_config(config)
@@ -113,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))
                 return 1
+        if args.command == "restore":
+            return _restore_command(config, args)
     except KeyboardInterrupt:
         event("error", "interrupted")
         return 130

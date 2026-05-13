@@ -6,6 +6,7 @@ from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import ALPHA_UUID, BETA_UUID
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -20,7 +21,7 @@ def _backup_config(cfg: Config) -> Config:
 
 def test_backup_vm_refuses_existing_destination(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
-    dest = tmp_path / "backups/host/alpha/2026-05/stamp"
+    dest = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp"
     dest.mkdir(parents=True)
     (dest / "prior-backup").write_bytes(b"do-not-touch")
 
@@ -28,7 +29,7 @@ def test_backup_vm_refuses_existing_destination(tmp_path: Path, monkeypatch, cap
         raise AssertionError("backup must not run when destination exists")
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
-    assert not backup_vm(cfg, VM("alpha", "running"), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert (dest / "prior-backup").exists()
     assert "backup destination already exists" in capsys.readouterr().err
 
@@ -44,13 +45,13 @@ def test_backup_vm_uses_copy_only_for_shut_off(tmp_path: Path, monkeypatch, back
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
 
-    assert backup_vm(cfg, VM("alpha", "paused"), "2026-05", "s1")
+    assert backup_vm(cfg, VM("alpha", "paused", ALPHA_UUID), "2026-05", "s1")
     assert "full" in calls[-1]
     assert "copy" not in calls[-1]
-    paused_marker = tmp_path / "backups/host/alpha/2026-05/.inactive-copy-complete"
+    paused_marker = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/.inactive-copy-complete"
     assert not paused_marker.exists()
 
-    assert backup_vm(cfg, VM("beta", "shut off"), "2026-05", "s2")
+    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "s2")
     assert "copy" in calls[-1]
-    shutoff_marker = tmp_path / "backups/host/beta/2026-05/.inactive-copy-complete"
+    shutoff_marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     assert shutoff_marker.exists()

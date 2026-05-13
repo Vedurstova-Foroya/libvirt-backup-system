@@ -11,6 +11,7 @@ from libvirt_backup_system.config import Config
 from libvirt_backup_system.logging_json import event
 from libvirt_backup_system.shell import CommandError, CommandResult, run, run_streamed
 from libvirt_backup_system.vms import VM, list_vms
+from tests.unit.conftest import ALPHA_UUID, BETA_UUID
 
 
 def test_run_success_and_non_check_failure() -> None:
@@ -95,37 +96,33 @@ def test_event_streams(capsys) -> None:
     assert json.loads(captured.err)["level"] == "error"
 
 
-def test_vm_running_property() -> None:
-    assert VM("alpha", " running ").running
-    assert not VM("beta", "shut off").running
-
-
-def test_vm_inactive_only_for_shut_off() -> None:
-    assert VM("beta", " shut off ").inactive
-    assert not VM("alpha", "running").inactive
-    for transitional in ("paused", "in shutdown", "crashed", "pmsuspended", "blocked"):
-        assert not VM("gamma", transitional).inactive, transitional
-
-
 def test_list_vms_filters_blacklist(monkeypatch) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
     cfg.values["VM_BLACKLIST"] = "beta"
     calls: list[list[str]] = []
+    uuid_for = {"alpha": ALPHA_UUID, "beta": BETA_UUID}
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
         if "list" in args:
             return CommandResult(args, 0, "alpha\nbeta\n\n", "")
+        if "domuuid" in args:
+            return CommandResult(args, 0, uuid_for[args[-1]] + "\n", "")
         return CommandResult(args, 0, "running\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
-    assert list_vms(cfg) == [VM("alpha", "running")]
-    assert list_vms(cfg, include_blacklisted=True) == [VM("alpha", "running"), VM("beta", "running")]
+    assert list_vms(cfg) == [VM("alpha", "running", ALPHA_UUID)]
+    assert list_vms(cfg, include_blacklisted=True) == [
+        VM("alpha", "running", ALPHA_UUID),
+        VM("beta", "running", BETA_UUID),
+    ]
     assert calls[0][:3] == ["virsh", "-c", "qemu:///system"]
     domstate_calls = [call for call in calls if "domstate" in call]
-    assert domstate_calls, "expected at least one domstate call"
-    for call in domstate_calls:
+    domuuid_calls = [call for call in calls if "domuuid" in call]
+    assert domstate_calls
+    assert domuuid_calls
+    for call in domstate_calls + domuuid_calls:
         assert call[-2:-1] == ["--"]
 
 
@@ -140,13 +137,15 @@ def test_list_vms_raises_when_state_lookup_fails(monkeypatch, capsys) -> None:
             return CommandResult(args, 0, "alpha\nbeta\n", "")
         if args[-1] == "beta":
             raise CommandError(CommandResult(args, 1, "", "gone"))
+        if "domuuid" in args:
+            return CommandResult(args, 0, ALPHA_UUID + "\n", "")
         return CommandResult(args, 0, "running\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
     with pytest.raises(CommandError):
         list_vms(cfg)
     err = capsys.readouterr().err
-    assert "VM state discovery failed" in err
+    assert "VM discovery failed" in err
     assert "beta" in err
 
 

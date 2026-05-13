@@ -1,6 +1,6 @@
 # libvirt-backup-system
 
-Python CLI for backing up libvirt VMs with `virtnbdbackup` into a configured monthly backup tree.
+Python CLI for backing up libvirt VMs with `virtnbdbackup` into a configured monthly incremental backup tree.
 
 ## One-command install
 
@@ -24,11 +24,16 @@ The systemd timer is installed with the default schedule `*-*-* 02:30:00`.
 ```sh
 sudo libvirt-backup-system list-vms
 sudo libvirt-backup-system verify
+sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
 ```
 
-## Non-goals
+## Backup layout
 
-Retention and cleanup are intentionally **out of scope**. This system only writes backups; it never deletes them. There is no `cleanup` subcommand, no retention env var, and no implicit "keep N months" behavior — manage retention with an external tool or storage-side policy. See [docs/commands.md](docs/commands.md#non-goals) before adding any pruning behavior back in.
+Backups live under `BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/`. Running VMs build a per-month incremental chain: the first run each calendar month writes a full into a new chain directory, later runs in the same month add `-l inc` snapshots to the same chain. Inactive (shut-off) VMs keep their `-l copy` semantics with a per-month `.inactive-copy-complete` marker.
+
+## Retention
+
+Old month directories are pruned automatically after every successful `run`. The default `BACKUP_RETENTION_MONTHS=12` keeps roughly one year; set it to `0` to disable pruning entirely. Set `BACKUP_CLEANUP_ON_RUN=false` to keep retention manual without changing the keep window. The most recent month dir is always preserved, even if retention math would otherwise drop it.
 
 ## Docs
 

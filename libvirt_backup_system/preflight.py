@@ -10,27 +10,26 @@ from pathlib import Path
 from .config import CONFIG_KEYS, Config, float_value, int_value
 from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
+from .nbd_probe import probe_qemu_socket_bind
 from .paths import backup_root
 from .shell import CommandError, run
 from .storage import subpath_is_safe
 from .vms import VM, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
-BOOLEAN_KEYS = {"BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT"}
-INTEGER_KEYS = {"COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT"}
-FLOAT_KEYS = {"BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"}
-SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
-ALLOWED_LIBVIRT_URI_PREFIXES = (
-    "qemu:///",
-    "qemu+ssh://",
-    "qemu+tcp://",
-    "qemu+tls://",
-    "qemu+unix://",
-    "test://",
-    "test:///",
+BOOLEAN_KEYS = frozenset(
+    ("BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "INACTIVE_COPY_EVERY_RUN", "REQUIRE_ROOT", "BACKUP_CLEANUP_ON_RUN"),
 )
+INTEGER_KEYS = frozenset(("COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT", "BACKUP_RETENTION_MONTHS"))
+FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
+SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
+# fmt: off
+ALLOWED_LIBVIRT_URI_PREFIXES = (
+    "qemu:///", "qemu+ssh://", "qemu+tcp://", "qemu+tls://", "qemu+unix://", "test://", "test:///",
+)
+# fmt: on
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
-SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - virtnbdbackup's default; mirrored in systemd ReadWritePaths.
+SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - virtnbdbackup's default scratch dir.
 
 
 def validate_libvirt_uri(uri: str) -> bool:
@@ -282,6 +281,7 @@ def check(config: Config) -> int:
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
         vms = []
+    failures.extend(probe_qemu_socket_bind(config, vms))
     required_kb = _estimate_required_kb(config, vms)
     backup_path = config.path_value("BACKUP_PATH")
     if config.get("BACKUP_PATH").strip() and backup_path.exists() and backup_path.is_dir():

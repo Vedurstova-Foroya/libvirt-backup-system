@@ -16,6 +16,7 @@ from libvirt_backup_system.preflight import (
 )
 from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
+from tests.unit.conftest import ALPHA_UUID
 
 from .test_preflight import _preflight_config, patch_valid_preflight
 
@@ -37,7 +38,7 @@ def test_vm_estimated_bytes_falls_back_for_remote_uri_without_local_probe(monkey
         "libvirt_backup_system.preflight._disk_virtual_size_bytes",
         lambda path: pytest.fail("qemu-img must not run on remote disk paths"),
     )
-    assert _vm_estimated_bytes("qemu+ssh://host/system", VM("alpha", "running"), 11) == 11
+    assert _vm_estimated_bytes("qemu+ssh://host/system", VM("alpha", "running", ALPHA_UUID), 11) == 11
     assert "skipping local disk introspection for remote URI" in capsys.readouterr().err
 
 
@@ -46,7 +47,7 @@ def test_vm_estimated_bytes_uses_fallback_when_virsh_fails(monkeypatch, capsys) 
         "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: (_ for _ in ()).throw(CommandError(CommandResult([], 1, "", "no virsh"))),
     )
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 5) == 5
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 5) == 5
     assert "disk list failed for VM" in capsys.readouterr().err
 
 
@@ -59,7 +60,7 @@ def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(monkeypatch, capsy
         "libvirt_backup_system.preflight._disk_virtual_size_bytes",
         lambda path: (_ for _ in ()).throw(ValueError("bad json")),
     )
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 7
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 7) == 7
     assert "qemu-img info failed for disk" in capsys.readouterr().err
 
 
@@ -80,7 +81,7 @@ def test_vm_estimated_bytes_adds_fallback_per_failed_disk(monkeypatch, capsys) -
         return 100
 
     monkeypatch.setattr("libvirt_backup_system.preflight._disk_virtual_size_bytes", fake_disk_size)
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 7) == 107
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 7) == 107
     assert "qemu-img info failed for disk" in capsys.readouterr().err
 
 
@@ -94,7 +95,7 @@ def test_vm_estimated_bytes_adds_fallback_for_each_failed_disk(monkeypatch) -> N
         lambda path: (_ for _ in ()).throw(ValueError("bad json")),
     )
 
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 11) == 33
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 11) == 33
 
 
 def test_vm_estimated_bytes_sums_disks(monkeypatch) -> None:
@@ -107,7 +108,7 @@ def test_vm_estimated_bytes_sums_disks(monkeypatch) -> None:
         "libvirt_backup_system.preflight._disk_virtual_size_bytes",
         lambda path: next(sizes),
     )
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 99) == 3500
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 99) == 3500
 
 
 def test_vm_estimated_bytes_empty_disk_list_falls_back(monkeypatch) -> None:
@@ -115,23 +116,23 @@ def test_vm_estimated_bytes_empty_disk_list_falls_back(monkeypatch) -> None:
         "libvirt_backup_system.preflight.vm_disk_paths",
         lambda uri, name: [],
     )
-    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running"), 42) == 42
+    assert _vm_estimated_bytes("qemu:///system", VM("alpha", "running", ALPHA_UUID), 42) == 42
 
 
 def test_estimate_required_kb_handles_bad_floats(backup_config) -> None:
     cfg = backup_config
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "bad"
-    assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
+    assert _estimate_required_kb(cfg, [VM("alpha", "running", ALPHA_UUID)]) == 0
 
 
 def test_estimate_required_kb_handles_non_finite_floats(backup_config) -> None:
     cfg = backup_config
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "nan"
-    assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
+    assert _estimate_required_kb(cfg, [VM("alpha", "running", ALPHA_UUID)]) == 0
 
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "1"
     cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = "inf"
-    assert _estimate_required_kb(cfg, [VM("alpha", "running")]) == 0
+    assert _estimate_required_kb(cfg, [VM("alpha", "running", ALPHA_UUID)]) == 0
 
 
 def test_validate_libvirt_uri_accepts_known_schemes_and_rejects_others() -> None:

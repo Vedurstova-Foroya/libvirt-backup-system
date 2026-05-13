@@ -71,9 +71,21 @@ The installer creates:
 When `BACKUP_PATH` is configured, it also creates:
 
 - `/etc/systemd/system/libvirt-backup-system.service`
+- `/etc/systemd/system/libvirt-backup-system-check.service`
 - `/etc/systemd/system/libvirt-backup-system.timer`
 
 The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
+
+When the systemd units are installed, `sudo libvirt-backup-system run` and `sudo libvirt-backup-system check` dispatch through the corresponding `.service` unit (via `systemctl start --wait`) so the ad-hoc invocation runs in the exact environment the scheduled timer uses — same `EnvironmentFile=`, `RequiresMountsFor=`, `StateDirectory=`, and hardening directives. The unit's output is replayed to the operator's terminal by filtering the journal on the run's `InvocationID`.
+
+Dispatch is automatically skipped (the subcommand runs in-process instead) when any of these hold:
+
+- `--prefix` is passed (install rooted elsewhere)
+- `--config` is passed (the unit's `ExecStart` has the config path baked in)
+- The unit file is not on disk yet (fresh checkout, package not deployed)
+- `systemctl` is unavailable on the host
+- `INVOCATION_ID` is set in the environment — this is what systemd sets when the unit itself is running, so the orchestrator does not recurse into a second dispatch
+- `LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH=1` is set in the environment (explicit operator opt-out for development or recovery)
 
 ## Uninstall
 

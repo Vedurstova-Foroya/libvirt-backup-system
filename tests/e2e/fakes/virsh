@@ -16,6 +16,17 @@ if "domstate" in args:
     else:
         raise SystemExit(1)
     raise SystemExit(0)
+if "domuuid" in args:
+    name = args[-1]
+    uuids = {
+        "alpha": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "beta": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "ignore-me": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    }
+    if name not in uuids:
+        raise SystemExit(1)
+    print(uuids[name])
+    raise SystemExit(0)
 if "dumpxml" in args:
     name = args[-1]
     if name not in {"alpha", "beta", "ignore-me"}:

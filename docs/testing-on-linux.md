@@ -194,10 +194,11 @@ skipped with a clear reason instead of failing the suite.
 > What this **still does not** prove, and therefore must be exercised manually
 > before any production deploy:
 >
-> - The systemd sandbox (`ProtectSystem=strict`, `ReadWritePaths`, scratch dir
->   under `/var/tmp`) — only the scheduled run path goes through the sandbox.
->   Manual invocations on the unsandboxed shell can mask a unit that would fail
->   in service mode.
+> - The systemd unit environment (kernel-tunable/module restrictions,
+>   `StateDirectory=`, `RequiresMountsFor=BACKUP_PATH`, scratch dir under
+>   `/var/tmp`) — only the scheduled run path exercises these. Manual
+>   invocations on the interactive shell can mask a unit that would fail in
+>   service mode.
 > - Behavior under real production disk layouts (LVM, RBD, iSCSI block-backed
 >   disks). The real-KVM case uses tiny qcow2 files.
 > - Inactive-VM marker freshness across real disk mtime semantics on NFS, ext4,
