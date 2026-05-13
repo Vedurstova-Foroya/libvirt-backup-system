@@ -84,6 +84,18 @@ def test_cli_reports_invalid_command_timeout(tmp_path: Path, monkeypatch, capsys
     assert "command timeout must be greater than 0" in capsys.readouterr().err
 
 
+def test_cli_status_dispatches_to_systemd_units(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_status(prefix: str | None) -> int:
+        captured["prefix"] = prefix
+        return 7
+
+    monkeypatch.setattr("libvirt_backup_system.cli.status", fake_status)
+    assert main(["--prefix", "/x", "status"]) == 7
+    assert captured["prefix"] == "/x"
+
+
 def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 

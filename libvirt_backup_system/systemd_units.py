@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
-from .config import prefixed
+from .config import prefixed, root_prefix
 from .logging_json import event
 from .shell import run
+
+STATUS_UNITS = ("libvirt-backup-system.timer", "libvirt-backup-system.service")
 
 
 def systemctl_available(root: Path) -> bool:
     return root == Path("/") and Path("/run/systemd/system").exists() and bool(shutil.which("systemctl"))
+
+
+def status(prefix: str | None = None) -> int:
+    root = root_prefix(prefix)
+    if not systemctl_available(root):
+        event("error", "systemctl unavailable; install systemd or run on a systemd host")
+        return 1
+    # No capture: ``status`` is a human-facing summary, not a logged event,
+    # so let systemctl's pager-less output flow straight to the user's tty.
+    worst = 0
+    for unit in STATUS_UNITS:
+        result = subprocess.run(["systemctl", "status", "--no-pager", unit], check=False)
+        worst = max(worst, result.returncode)
+    return worst
 
 
 def run_systemctl(root: Path, commands: list[list[str]]) -> bool:

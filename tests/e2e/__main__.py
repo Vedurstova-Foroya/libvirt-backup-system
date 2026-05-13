@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from tests.e2e.real_kvm_case import real_kvm_skip_reason
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "tests" / "e2e" / "docker-compose.yml"
@@ -49,43 +50,19 @@ def run_mac_safe() -> int:
         run_cmd([*compose_args(), "-f", str(COMPOSE), "down", "-v"], check=False)
 
 
-def kvm_skip_reason() -> str | None:
-    if platform.system() != "Linux":
-        return "host is not Linux"
-    if not Path("/dev/kvm").exists():
-        return "/dev/kvm is missing"
-    if not docker_available():
-        return "Docker is unavailable"
-    probe = run_cmd(
-        ["docker", "run", "--rm", "--privileged", "--device", "/dev/kvm", "alpine:3.20", "test", "-r", "/dev/kvm"],
-        check=False,
-    )
-    if probe.returncode != 0:
-        return "privileged Docker probe cannot access /dev/kvm"
-    return None
-
-
 def run_real_kvm_if_available(*, require: bool) -> int:
-    reason = kvm_skip_reason()
+    reason = real_kvm_skip_reason()
     if reason:
         if require:
             print(f"FAIL --require-real-kvm: {reason}", file=sys.stderr)
             return 1
         print(f"SKIP real KVM e2e: {reason}")
         return 0
-    # The real-KVM scenario (boot a real domain under qemu:///system, run
-    # virtnbdbackup against it, restore-verify the result) is not implemented
-    # in this portable suite — it needs a guest image, libvirt config, and
-    # nested-KVM infra that varies per host. ``--require-real-kvm`` makes a
-    # production CI gate fail loudly here rather than silently passing on a
-    # scaffolded code path; without the flag the default is to print a notice
-    # and continue so contributors without KVM don't see false failures.
-    message = "Real KVM e2e capability detected, but the real-domain scenario is scaffolded only."
-    if require:
-        print(f"FAIL --require-real-kvm: {message}", file=sys.stderr)
-        return 1
-    print(message)
-    return 0
+    # The capability probe passed, so a failure below is a real failure: the
+    # host has KVM + libvirt + virtnbdbackup but the backup/verify path is
+    # broken. ``--require-real-kvm`` only changes the SKIP-on-missing-capability
+    # path; once the probe succeeds the result is binding either way.
+    return run_cmd([sys.executable, "-m", "tests.e2e.real_kvm_case"], check=False).returncode
 
 
 def main(argv: list[str] | None = None) -> int:

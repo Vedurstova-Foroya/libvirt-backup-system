@@ -47,7 +47,8 @@ def _df_available_kb(path: Path) -> int:
 
 
 def _disk_virtual_size_bytes(path: str) -> int:
-    result = run(["qemu-img", "info", "--output=json", "--", path])
+    # ``-U`` allows inspecting images held open by a running qemu; ``info`` is read-only.
+    result = run(["qemu-img", "info", "--output=json", "-U", "--", path])
     info = json.loads(result.stdout)
     return int(info["virtual-size"])
 
@@ -83,7 +84,8 @@ def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
         try:
             total += _disk_virtual_size_bytes(disk)
         except (CommandError, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
-            event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc))
+            stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
+            event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc), stderr=stderr)
             # Per-disk allowance: ``max(total, fallback)`` would let a failed disk count as zero.
             total += fallback_bytes
     return total or fallback_bytes

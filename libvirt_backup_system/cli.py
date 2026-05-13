@@ -13,6 +13,7 @@ from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .preflight import check, validate_config
 from .shell import configure_default_timeout
+from .systemd_units import status
 from .vms import list_vms
 
 
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("check", aliases=["preflight"])
     sub.add_parser("run")
+    sub.add_parser("status")
 
     list_parser = sub.add_parser("list-vms")
     list_parser.add_argument("--json", action="store_true")
@@ -61,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "install":
             return install(args.prefix, config_path=args.config)
+        if args.command == "status":
+            return status(args.prefix)
         if args.command == "uninstall":
             return uninstall(
                 args.prefix,

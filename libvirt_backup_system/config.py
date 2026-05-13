@@ -96,10 +96,9 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Re-run install or edit/reload the timer if this changes after install.",
     "SYSTEMD_ON_CALENDAR",
     None,
-    "# Retention and cleanup are intentionally out of scope for this system: it",
-    "# only writes backups and never deletes them. Use an external tool (or",
-    '# storage-side policy) to manage retention. See README "Non-goals".',
-    None,
+    # Retention and cleanup are intentionally out of scope for this system: it
+    # only writes backups and never deletes them. Use an external tool (or
+    # storage-side policy) to manage retention. See README "Non-goals".
     "# Extra free-space margin added to preflight's backup size estimate.",
     "SPACE_MARGIN_PERCENT",
     None,

@@ -39,6 +39,14 @@ Runs preflight, acquires the run lock, and backs up selected VMs. The run never 
 sudo libvirt-backup-system run
 ```
 
+## `status`
+
+Prints `systemctl status` for the installed timer and service. Output is the raw human-readable systemctl output (not JSON), so the next-fire time, last-run result, and any recent journal lines are visible at a glance. Exit code is the worst (highest) systemctl return code across the two units, so unloaded units propagate as failure.
+
+```sh
+sudo libvirt-backup-system status
+```
+
 ## `list-vms`
 
 Lists selected VMs after applying `VM_BLACKLIST`.
