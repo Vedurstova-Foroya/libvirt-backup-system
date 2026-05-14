@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .backup import run_backups, verify
 from .config import Config
+from .doctor import doctor
 from .installer import install, uninstall
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--purge-logs", action="store_true")
 
     sub.add_parser("check", aliases=["preflight"])
+    sub.add_parser("doctor")
     sub.add_parser("run")
     sub.add_parser("status")
 
@@ -47,18 +49,29 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser = sub.add_parser("restore")
     restore_parser.add_argument("--vm", required=True)
     restore_parser.add_argument("--output", required=True)
-    restore_parser.add_argument("--month")
-    restore_parser.add_argument("--chain")
+    restore_parser.add_argument(
+        "--at",
+        help="Target time (e.g. 2026-05-07, 2026-05-07T10:11, 20260507T101112). "
+        "Restores to the latest backup run at-or-before this. Chains backed "
+        "up by this version record each run's checkpoint and restore stops "
+        "exactly there (``virtnbdrestore --until``); legacy chains without "
+        "per-run records replay the whole chain so the recovered state may "
+        "include later incrementals. Omit for the latest snapshot.",
+    )
 
     return parser
 
 
 def _run_command(config: Config) -> int:
-    preflight_code = check(config)
-    if preflight_code != 0:
-        return preflight_code
+    # Acquire the run lock BEFORE preflight: the NBD probe drives QEMU's HMP
+    # nbd_server_start/stop, so running it outside the lock could disrupt a
+    # concurrent backup. ``check(..., lock_held=True)`` skips the duplicate
+    # lock acquisition inside the probe.
     try:
         with acquire_run_lock(config):
+            preflight_code = check(config, lock_held=True)
+            if preflight_code != 0:
+                return preflight_code
             backup_code = run_backups(config)
             # Pruning failure must not roll back successful backups, so we
             # combine codes via ``max`` rather than short-circuiting. Disabling
@@ -77,13 +90,7 @@ def _restore_command(config: Config, args: argparse.Namespace) -> int:
         return config_code
     try:
         with acquire_run_lock(config):
-            return restore(
-                config,
-                args.vm,
-                Path(args.output),
-                month=args.month,
-                chain=args.chain,
-            )
+            return restore(config, args.vm, Path(args.output), at=args.at)
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
@@ -131,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command in {"check", "preflight"}:
             return check(config)
+        if args.command == "doctor":
+            return doctor(config)
         if args.command == "run":
             return _run_command(config)
         if args.command == "list-vms":

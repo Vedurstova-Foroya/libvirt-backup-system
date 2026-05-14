@@ -31,6 +31,7 @@ def patch_valid_preflight(
     *,
     available_kb: int = 2_000_000,
     selected_vms: list[VM] | None = None,
+    patch_probe: bool = True,
 ) -> None:
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
@@ -41,7 +42,11 @@ def patch_valid_preflight(
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
     monkeypatch.setattr("libvirt_backup_system.preflight._validate_scratch_dir", list)
-    monkeypatch.setattr("libvirt_backup_system.preflight.probe_qemu_socket_bind", lambda config, vms: [])
+    if patch_probe:
+        monkeypatch.setattr(
+            "libvirt_backup_system.preflight.probe_qemu_socket_bind_with_lock",
+            lambda config, vms, *, lock_held: [],
+        )
 
 
 def test_df_helpers(tmp_path: Path, monkeypatch) -> None:
@@ -235,7 +240,10 @@ def _patch_check_preamble(monkeypatch, *, available_kb: int = 2_000_000) -> None
     monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [VM("alpha", "running", ALPHA_UUID)])
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
-    monkeypatch.setattr("libvirt_backup_system.preflight.probe_qemu_socket_bind", lambda config, vms: [])
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.probe_qemu_socket_bind_with_lock",
+        lambda config, vms, *, lock_held: [],
+    )
 
 
 @pytest.mark.parametrize(

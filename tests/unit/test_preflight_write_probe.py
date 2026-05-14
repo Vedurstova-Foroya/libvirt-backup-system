@@ -30,7 +30,13 @@ def _patch_valid_preflight(monkeypatch, *, available_kb: int = 2_000_000) -> Non
     monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
     monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
     monkeypatch.setattr("libvirt_backup_system.preflight._validate_scratch_dir", list)
-    monkeypatch.setattr("libvirt_backup_system.preflight.probe_qemu_socket_bind", lambda config, vms: [])
+    # The probe wrapper acquires the run lock when called without ``lock_held``.
+    # Bypass it here so tests exercising the write probe in isolation are not
+    # forced to also model lock-file open/close.
+    monkeypatch.setattr(
+        "libvirt_backup_system.preflight.probe_qemu_socket_bind_with_lock",
+        lambda config, vms, *, lock_held: [],
+    )
 
 
 def test_check_rejects_host_root_becoming_unsafe_after_mkdir(

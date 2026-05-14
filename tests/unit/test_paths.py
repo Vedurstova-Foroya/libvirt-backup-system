@@ -23,9 +23,11 @@ def test_write_name_marker_logs_warning_when_touch_fails(tmp_path: Path, monkeyp
     assert "vm-name marker not written" in capsys.readouterr().err
 
 
-def test_write_name_marker_refuses_to_overwrite(tmp_path: Path, capsys) -> None:
-    # exist_ok=False keeps the per-run marker from being silently rewritten;
-    # an existing marker means the destination was reused or operator-edited.
+def test_write_name_marker_is_idempotent_when_marker_exists(tmp_path: Path, capsys) -> None:
+    # Incremental backups reuse the chain's destination directory, so the
+    # marker written by the full backup is already present. Re-creating it
+    # must be silent rather than emitting a warning per-increment.
     (tmp_path / "vm-0.name").touch()
     write_name_marker(tmp_path, "vm-0")
-    assert "vm-name marker not written" in capsys.readouterr().err
+    assert (tmp_path / "vm-0.name").is_file()
+    assert "vm-name marker not written" not in capsys.readouterr().err

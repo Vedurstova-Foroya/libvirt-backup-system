@@ -88,7 +88,7 @@ def main() -> int:
     assert (BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).is_dir(), "backup month missing"
 
     for vm_name in ("alpha", "beta"):
-        timestamps = sorted((BACKUP_PATH / "e2e-host" / VM_UUID[vm_name] / month).glob("*T*Z"))
+        timestamps = sorted((BACKUP_PATH / "e2e-host" / VM_UUID[vm_name] / month).glob("[0-9]*T[0-9]*"))
         assert timestamps, f"no timestamped backup directory for {vm_name}"
         metadata_path = timestamps[-1] / "metadata.json"
         assert metadata_path.is_file(), f"metadata.json missing for {vm_name}"

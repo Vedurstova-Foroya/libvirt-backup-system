@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import Config
 from .disks import libvirt_uri_uses_remote_transport
+from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .shell import CommandResult, run
 from .vms import VM
@@ -141,12 +142,16 @@ def _classify_probe_result(result: CommandResult, vm_name: str, socket_path: Pat
     return []
 
 
-def _cleanup(uri: str, vm_name: str, socket_path: Path) -> None:
-    # Best-effort: tear down the NBD server we started and remove the socket
-    # left by QEMU. Probe failures must not leave a running NBD server on the
-    # target VM, so we attempt stop even when start reported an error.
-    with suppress(OSError):
-        _virsh_hmp(uri, vm_name, "nbd_server_stop")
+def _cleanup(uri: str, vm_name: str, socket_path: Path, *, started: bool) -> None:
+    # nbd_server_stop must only run when our nbd_server_start succeeded. If a
+    # concurrent virtnbdbackup is already driving QEMU's NBD server on this
+    # VM, our start fails (the slot is single-shot) and issuing stop here
+    # would tear that backup's server out from under it. ``started`` is keyed
+    # off ``rc==0`` from our start call, so this branch only fires when we
+    # know we own the server.
+    if started:
+        with suppress(OSError):
+            _virsh_hmp(uri, vm_name, "nbd_server_stop")
     with suppress(OSError):
         socket_path.unlink(missing_ok=True)
 
@@ -158,6 +163,10 @@ def probe_qemu_socket_bind(config: Config, vms: list[VM]) -> list[str]:
     libvirt domain directory when discoverable, otherwise virtnbdbackup's
     ``/var/tmp`` default. Skipped when there is no suitable probe target
     (no running VMs, remote libvirt transport, or the test driver).
+
+    Caller must hold the run lock: the probe drives QEMU's HMP
+    ``nbd_server_start``/``nbd_server_stop`` directly, which would clash with
+    a concurrent ``virtnbdbackup`` using the same slot.
     """
     uri = config.get("LIBVIRT_URI")
     if any(uri.startswith(prefix) for prefix in SKIP_PROBE_URI_PREFIXES):
@@ -183,5 +192,20 @@ def probe_qemu_socket_bind(config: Config, vms: list[VM]) -> list[str]:
     except OSError as exc:
         return [f"QEMU NBD socket bind probe failed to invoke virsh: {exc}"]
     failures = _classify_probe_result(result, target.name, socket_path)
-    _cleanup(uri, target.name, socket_path)
+    _cleanup(uri, target.name, socket_path, started=result.returncode == 0)
     return failures
+
+
+def probe_qemu_socket_bind_with_lock(config: Config, vms: list[VM], *, lock_held: bool) -> list[str]:
+    # Lock-gated wrapper around ``probe_qemu_socket_bind``: the probe drives
+    # QEMU HMP nbd_server_start/stop directly and would tear down a concurrent
+    # virtnbdbackup's NBD server. ``run`` already holds the lock; standalone
+    # check/doctor try-acquire and skip on busy.
+    if lock_held:
+        return probe_qemu_socket_bind(config, vms)
+    try:
+        with acquire_run_lock(config):
+            return probe_qemu_socket_bind(config, vms)
+    except LockBusyError as exc:
+        event("info", "QEMU NBD socket bind probe skipped (another run in progress)", lock_path=str(exc.path))
+        return []

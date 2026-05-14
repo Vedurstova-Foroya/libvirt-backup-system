@@ -190,6 +190,13 @@ def split_words(value: str) -> list[str]:
     return [item.strip() for item in value.replace(",", " ").split() if item.strip()]
 
 
+# ``frozen=True`` here protects the three attribute bindings (``values``,
+# ``path``, ``prefix``) from rebind after construction — it does NOT freeze the
+# ``values`` dict's contents. ``installer.install`` deliberately mutates
+# ``values`` in-place to apply ``INSTALL_TIME_ENV_KEYS`` from the process
+# environment on a first install, and the unit tests rely on the same pattern.
+# If you need a true immutable view, copy ``values`` at the boundary; do not
+# remove ``frozen=True`` without auditing every install/test path.
 @dataclass(frozen=True)
 class Config:
     values: dict[str, str]

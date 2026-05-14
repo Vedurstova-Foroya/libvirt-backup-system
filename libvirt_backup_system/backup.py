@@ -13,6 +13,7 @@ from .inactive_markers import marked_backup_dir, marker_is_regular, remove_finge
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
 from .paths import backup_root, runtime_backup_path_ok, write_name_marker
+from .run_records import list_checkpoints, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
@@ -39,10 +40,12 @@ def current_month(now: dt.datetime | None = None) -> str:
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
-    # Microsecond precision avoids collisions on rapid back-to-back runs.
-    # An existence check in backup_vm still guards against clock jumps.
+    # Second precision in UTC. The run lock (acquire_run_lock) serializes
+    # whole runs, so collisions only matter for sequential runs landing in the
+    # same second; ``_prepare_dest`` catches the rare overlap and errors out
+    # rather than overwriting an existing chain dir.
     now = now or dt.datetime.now(dt.timezone.utc)
-    return now.strftime("%Y%m%dT%H%M%S_%fZ")
+    return now.strftime("%Y%m%dT%H%M%S")
 
 
 def backup_subpath_is_safe(config: Config, path: Path) -> bool:
@@ -222,8 +225,10 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
         destination=str(resolution.chain_dir),
         chain_id=resolution.chain_dir.name,
     )
+    checkpoints_before = list_checkpoints(resolution.chain_dir)
     if not _run_virtnbdbackup(config, vm, cmd, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
         return False
+    record_run(resolution.chain_dir, stamp, checkpoints_before)
     write_name_marker(resolution.chain_dir, vm.name)
     if resolution.is_new_chain and not write_chain_state(
         month_dir, resolution.chain_dir.name, pre_fingerprint, vm.name

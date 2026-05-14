@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import CONFIG_KEYS, Config, float_value, int_value
 from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
-from .nbd_probe import probe_qemu_socket_bind
+from .nbd_probe import probe_qemu_socket_bind_with_lock
 from .paths import backup_root
 from .shell import CommandError, run
 from .storage import subpath_is_safe
@@ -220,9 +220,8 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
     backup_path = config.path_value("BACKUP_PATH")
     try:
         host_root = backup_root(config)
-        # Re-check mount before mkdir and again before the write probe: an NFS
-        # drop between phases would otherwise pollute the underlying local
-        # mountpoint instead of failing.
+        # Re-check the mount before mkdir and again before the write probe; an NFS
+        # drop between phases would otherwise pollute the local mountpoint silently.
         mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
         if mount_required and not backup_path.is_mount():
             return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
@@ -246,9 +245,8 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    # require_writable=False for read-only commands (list-vms/verify) so they
-    # do not create BACKUP_PATH/HOST_ID or probe-write on a temporarily-down
-    # backup mount.
+    # require_writable=False on read-only paths (list-vms/verify); avoid
+    # creating BACKUP_PATH/HOST_ID or probe-writing a temporarily-down mount.
     if require_writable:
         failures.extend(_validate_backup_path_writable(config))
     else:
@@ -258,14 +256,12 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
 
 def validate_config(config: Config) -> int:
     failures = _validate_env_values(config, require_writable=False)
-    if failures:
-        for failure in failures:
-            event("error", "config validation failed", reason=failure)
-        return 1
-    return 0
+    for failure in failures:
+        event("error", "config validation failed", reason=failure)
+    return 1 if failures else 0
 
 
-def check(config: Config) -> int:
+def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[list[str], int, int]:
     failures = _validate_env_values(config, require_writable=True)
     for binary in REQUIRED_BINARIES:
         if not shutil.which(binary):
@@ -281,7 +277,7 @@ def check(config: Config) -> int:
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
         vms = []
-    failures.extend(probe_qemu_socket_bind(config, vms))
+    failures.extend(probe_qemu_socket_bind_with_lock(config, vms, lock_held=lock_held))
     required_kb = _estimate_required_kb(config, vms)
     backup_path = config.path_value("BACKUP_PATH")
     if config.get("BACKUP_PATH").strip() and backup_path.exists() and backup_path.is_dir():
@@ -291,9 +287,14 @@ def check(config: Config) -> int:
                 failures.append(f"insufficient backup space: available_kb={available} required_kb={required_kb}")
         except Exception as exc:
             failures.append(f"backup space check failed: {exc}")
+    return failures, len(vms), required_kb
+
+
+def check(config: Config, *, lock_held: bool = False) -> int:
+    failures, vm_count, required_kb = collect_check_failures(config, lock_held=lock_held)
+    for failure in failures:
+        event("error", "preflight failed", reason=failure)
     if failures:
-        for failure in failures:
-            event("error", "preflight failed", reason=failure)
         return 1
-    event("info", "preflight passed", vm_count=len(vms), required_kb=required_kb)
+    event("info", "preflight passed", vm_count=vm_count, required_kb=required_kb)
     return 0

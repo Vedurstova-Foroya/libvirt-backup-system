@@ -105,7 +105,9 @@ def test_probe_detects_permission_denied(backup_config: Config, monkeypatch, tmp
     assert "QEMU cannot bind NBD socket" in failures[0]
     assert str(socket_path) in failures[0]
     assert "AppArmor" in failures[0] or "SELinux" in failures[0]
-    assert any("nbd_server_stop" in arg for call in recorder.calls for arg in call)
+    # nbd_server_stop must NOT run when our start failed: a concurrent backup
+    # may own the NBD slot and our stop would tear it down.
+    assert not any("nbd_server_stop" in arg for call in recorder.calls for arg in call)
 
 
 def test_probe_reports_other_virsh_failure(backup_config: Config, monkeypatch, tmp_path: Path) -> None:

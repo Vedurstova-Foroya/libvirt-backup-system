@@ -29,7 +29,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
     )
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     assert main(["check"]) == 0
     assert main(["preflight"]) == 0
@@ -43,7 +43,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 0)
     assert main(["run"]) == 0
 
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 2)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 2)
     assert main(["run"]) == 2
 
     monkeypatch.setattr(
@@ -63,7 +63,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
     assert main(["verify", "--vm", "alpha"]) == 0
 
-    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm, output, *, month=None, chain=None: 4)
+    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm, output, *, at=None: 4)
     assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 4
 
 
@@ -76,7 +76,7 @@ def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) 
 
     cfg = _fake_config(tmp_path)
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 1)
@@ -94,7 +94,7 @@ def test_cli_run_skips_pruning_when_disabled(tmp_path: Path, monkeypatch) -> Non
     cfg = _fake_config(tmp_path)
     cfg.values["BACKUP_CLEANUP_ON_RUN"] = "false"
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
     monkeypatch.setattr(
@@ -203,7 +203,7 @@ def test_cli_run_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         "libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: _fake_config(tmp_path)
     )
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
 
     @contextlib.contextmanager
     def busy(config: object):

@@ -140,7 +140,7 @@ def _assert_backup_layout(backup_path: Path, host_id: str, vm_name: str, vm_uuid
     vm_root = backup_path / host_id / vm_uuid
     months = list(vm_root.glob("????-??"))
     assert months, f"no month directory under {vm_root}"
-    stamps = sorted(months[0].glob("*T*Z"))
+    stamps = sorted(months[0].glob("[0-9]*T[0-9]*"))
     assert stamps, f"no chain directory under {months[0]}"
     backup = stamps[-1]
     data_files = list(backup.glob("vda.*.data"))
@@ -205,16 +205,16 @@ def _run_scenario(work: Path, running_name: str, inactive_name: str) -> None:
     # Running VMs append a ``-l inc`` snapshot into the SAME chain dir, so
     # the chain dir count stays at 1 across the month; only the incremental
     # checkpoint files inside it grow.
-    inactive_stamps_before = sorted(backup_dir_inactive.parent.glob("*T*Z"))
-    running_stamps_before = sorted(backup_dir_running.parent.glob("*T*Z"))
+    inactive_stamps_before = sorted(backup_dir_inactive.parent.glob("[0-9]*T[0-9]*"))
+    running_stamps_before = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
     # virtnbdbackup writes per-backup data files (vda.full.data, vda.inc.virtnbdbackup.N.data)
     # plus a checkpoints/<name>.xml entry per backup. Either grows monotonically
     # across full+inc within one chain, so use both as independent witnesses.
     running_data_before = sorted(backup_dir_running.glob("*.data"))
     running_checkpoint_xml_before = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
     _run([str(bin_path), "run"])
-    inactive_stamps_after = sorted(backup_dir_inactive.parent.glob("*T*Z"))
-    running_stamps_after = sorted(backup_dir_running.parent.glob("*T*Z"))
+    inactive_stamps_after = sorted(backup_dir_inactive.parent.glob("[0-9]*T[0-9]*"))
+    running_stamps_after = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
     running_data_after = sorted(backup_dir_running.glob("*.data"))
     running_checkpoint_xml_after = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
     assert (

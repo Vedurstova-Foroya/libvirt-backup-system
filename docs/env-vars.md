@@ -39,6 +39,15 @@ BACKUP_PATH=
 # Number of most-recent calendar months of backups to keep per VM. 0 disables
 # pruning entirely; the default of 12 retains roughly one year. Retention is
 # applied at the end of every successful run when BACKUP_CLEANUP_ON_RUN is true.
+#
+# Caveat for frequent libvirt XML edits: pruning is per *month* directory, not
+# per chain. A mid-month fingerprint change (disk added, NIC swapped, ...)
+# starts a fresh chain directory alongside the old one inside the same
+# YYYY-MM/ folder. Both chains survive until the whole month falls out of the
+# retention window, so frequent XML edits can accumulate intra-month chain
+# dirs that stick around for the full retention horizon. This is a deliberate
+# tradeoff to keep retention reasoning at month granularity; size your backup
+# capacity accordingly if you expect many fingerprint changes per month.
 # BACKUP_RETENTION_MONTHS=12
 
 # Run the monthly retention pass at the end of every successful ``run``.

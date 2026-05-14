@@ -168,8 +168,10 @@ uv run --locked --extra dev python -m tests.e2e
 The runner always executes the Docker Compose orchestration scenario. That path
 uses a runner container, a mounted backup volume, and fake libvirt tools to test
 install/uninstall behavior, preflight checks, backup orchestration, structured
-logging, and failure handling. Retention is not exercised because the system
-deliberately does not implement retention — see [Non-goals](../docs/commands.md#non-goals).
+logging, and failure handling. Retention behavior is covered by the unit suite
+(`tests/unit/test_retention.py`) — the Compose scenario keeps `BACKUP_RETENTION_MONTHS`
+at the default and focuses on the install/run/uninstall flow rather than
+exercising the pruning code path.
 
 On Linux hosts with `/dev/kvm`, libvirt, and `virtnbdbackup`/`virtnbdrestore`
 available, the runner also executes `tests/e2e/real_kvm_case.py`. That

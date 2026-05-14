@@ -30,13 +30,13 @@ def _backup_config(cfg: Config) -> Config:
 
 def test_time_helpers() -> None:
     # 2026-05-07 is May 2026: calendar-month bucket ``2026-05``. The timestamp
-    # helper retains microsecond precision so rapid back-to-back runs cannot
-    # collide on the same chain dir name.
+    # is second-precision UTC; the run lock serializes runs so finer precision
+    # is not needed to keep chain dir names unique.
     now = dt.datetime(2026, 5, 7, 10, 11, 12, 345678, tzinfo=dt.timezone.utc)
     assert current_month(now) == "2026-05"
-    assert timestamp(now) == "20260507T101112_345678Z"
+    assert timestamp(now) == "20260507T101112"
     assert len(current_month()) == 7
-    assert timestamp().endswith("Z")
+    assert len(timestamp()) == 15
 
 
 def test_current_month_rolls_on_calendar_boundary() -> None:

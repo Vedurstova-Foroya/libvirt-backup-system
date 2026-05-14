@@ -116,11 +116,21 @@ def validate_systemd_path(value: str | Path, label: str) -> str:
     return path
 
 
-def _quote_systemd_path(path: str, *, escape_dollar: bool = False) -> str:
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    if escape_dollar:
-        escaped = escaped.replace("$", "$$")
+def _quote_systemd_path(path: str) -> str:
+    # For ExecStart= (the only command-line directive we render), systemd parses
+    # with quote handling, so wrap the value in double quotes and escape %
+    # (specifier expansion) and $ (env-var expansion when EnvironmentFile= is
+    # loaded).
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
     return f'"{escaped}"'
+
+
+def _escape_systemd_path(path: str) -> str:
+    # For path-typed directives (EnvironmentFile=, RequiresMountsFor=), systemd
+    # does not strip surrounding quotes — a quoted value is rejected as
+    # "path is not absolute". Emit unquoted, backslash-escape whitespace, and
+    # double % to dodge specifier expansion.
+    return path.replace("\\", "\\\\").replace("%", "%%").replace("\t", "\\\t").replace(" ", "\\ ")
 
 
 def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run") -> str:
@@ -135,13 +145,13 @@ def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, 
     # net; a static systemd timeout would either kill legitimate multi-VM runs
     # or be so large it adds no value.
     validate_systemd_path(backup_path, "BACKUP_PATH")
-    requires = f"RequiresMountsFor={_quote_systemd_path(backup_path)}\n" if backup_path else ""
+    requires = f"RequiresMountsFor={_escape_systemd_path(backup_path)}\n" if backup_path else ""
     return UNIT_SERVICE.format(
         description=UNIT_DESCRIPTIONS[subcommand],
         requires_mounts_for=requires,
-        bin_path=_quote_systemd_path(binary, escape_dollar=True),
-        environment_file=_quote_systemd_path(config),
-        config_arg=_quote_systemd_path(config, escape_dollar=True),
+        bin_path=_quote_systemd_path(binary),
+        environment_file=_escape_systemd_path(config),
+        config_arg=_quote_systemd_path(config),
         subcommand=subcommand,
     )
 

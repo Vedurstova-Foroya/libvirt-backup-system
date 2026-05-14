@@ -56,6 +56,13 @@ def _verify_backup_dir(backup_dir: Path) -> bool:
     except CommandError as exc:
         event("error", "verify failed", backup=str(backup_dir), stderr=exc.result.stderr.strip())
         return False
+    except OSError as exc:
+        # FileNotFoundError / PermissionError from Popen — virtnbdrestore is
+        # missing on this host. Surface it as a clean operator error rather
+        # than the cli's generic fatal-traceback path so a recovery-host
+        # operator who skipped ``check`` gets a useful message.
+        event("error", "verify failed: virtnbdrestore unavailable", backup=str(backup_dir), error=str(exc))
+        return False
     event("info", "verify passed", backup=str(backup_dir))
     return True
 
