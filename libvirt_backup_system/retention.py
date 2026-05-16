@@ -111,7 +111,7 @@ _FULL_BACKUP_TOKENS = (".full.", ".copy.")
 _BACKUP_DATA_SUFFIX = ".data"
 
 
-def _chain_has_full_backup_file(chain_dir: Path) -> bool:
+def chain_has_full_backup_file(chain_dir: Path) -> bool:
     try:
         for entry in chain_dir.iterdir():
             if not entry.is_file() or not entry.name.endswith(_BACKUP_DATA_SUFFIX):
@@ -140,7 +140,7 @@ def _has_full_backup(month_dir: Path) -> bool:
     for chain in chains:
         if not chain.is_dir():
             continue
-        if _chain_has_full_backup_file(chain):
+        if chain_has_full_backup_file(chain):
             return True
     return False
 

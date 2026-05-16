@@ -5,7 +5,7 @@ from pathlib import Path
 
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.restore import restore
-from libvirt_backup_system.run_records import RUNS_FILE
+from libvirt_backup_system.run_records import RUNS_FILE, poison_chain
 from libvirt_backup_system.shell import CommandResult
 from tests.unit.conftest import ALPHA_UUID
 
@@ -16,8 +16,10 @@ def _stamp(month: str, day: int, hour: int = 12) -> str:
 
 def _seed_chain(cfg: Config, chain: str) -> Path:
     vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
-    (vm_dir / "2026-05" / chain).mkdir(parents=True)
-    return vm_dir / "2026-05" / chain
+    chain_dir = vm_dir / "2026-05" / chain
+    chain_dir.mkdir(parents=True)
+    (chain_dir / "vda.full.data").write_bytes(b"x")
+    return chain_dir
 
 
 def _write_runs_jsonl(chain_dir: Path, records: list[tuple[str, str]]) -> None:
@@ -143,3 +145,44 @@ def test_restore_without_at_never_passes_until(tmp_path: Path, monkeypatch, back
 
     assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 0
     assert "-u" not in captured[0]
+
+
+def test_restore_without_at_refuses_poisoned_chain_end(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    cfg = _disable_mount(backup_config)
+    chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
+    _write_runs_jsonl(chain_dir, [("20260501T080000", "virtnbdbackup.0")])
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+    captured = _capture_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
+    assert captured == []
+    assert "restore refused poisoned chain end" in capsys.readouterr().err
+
+
+def test_restore_at_after_last_record_refuses_poisoned_chain_end(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    cfg = _disable_mount(backup_config)
+    chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
+    _write_runs_jsonl(chain_dir, [("20260501T080000", "virtnbdbackup.0")])
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+    captured = _capture_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-02T00:00:00") == 1
+    assert captured == []
+    assert "restore --at would replay poisoned chain end" in capsys.readouterr().err
+
+
+def test_restore_at_exact_last_record_on_poisoned_chain_uses_until(
+    tmp_path: Path, monkeypatch, backup_config: Config
+) -> None:
+    cfg = _disable_mount(backup_config)
+    chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
+    _write_runs_jsonl(chain_dir, [("20260501T080000", "virtnbdbackup.0")])
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+    captured = _capture_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-01T08:00:00") == 0
+    assert captured[0][captured[0].index("-u") + 1] == "virtnbdbackup.0"

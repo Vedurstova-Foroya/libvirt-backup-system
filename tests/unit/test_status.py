@@ -18,19 +18,45 @@ def test_status_returns_one_when_systemctl_unavailable(tmp_path: Path, capsys) -
     assert "systemctl unavailable" in capsys.readouterr().err
 
 
-def test_status_runs_systemctl_for_each_unit_and_returns_worst_rc(monkeypatch) -> None:
+def test_status_ignores_loaded_inactive_units(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
     calls: list[list[str]] = []
     codes = iter([0, 3, 0])
 
-    def fake_run(args, *, check):
+    def fake_run(args, *, check, **kwargs):
         calls.append(args)
+        if args[:2] == ["systemctl", "show"]:
+            return type("R", (), {"returncode": 0, "stdout": "loaded\ninactive\n"})()
+        return type("R", (), {"returncode": next(codes)})()
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.subprocess.run", fake_run)
+    assert status() == 0
+    status_calls = [c for c in calls if c[:3] == ["systemctl", "status", "--no-pager"]]
+    assert [c[-1] for c in status_calls] == list(STATUS_UNITS)
+
+
+def test_status_preserves_real_systemctl_failures(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
+    codes = iter([0, 4, 0])
+
+    def fake_run(args, *, check, **kwargs):
+        return type("R", (), {"returncode": next(codes)})()
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.subprocess.run", fake_run)
+    assert status() == 4
+
+
+def test_status_preserves_failed_loaded_units(monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
+    codes = iter([0, 3, 0])
+
+    def fake_run(args, *, check, **kwargs):
+        if args[:2] == ["systemctl", "show"]:
+            return type("R", (), {"returncode": 0, "stdout": "loaded\nfailed\n"})()
         return type("R", (), {"returncode": next(codes)})()
 
     monkeypatch.setattr("libvirt_backup_system.systemd_units.subprocess.run", fake_run)
     assert status() == 3
-    assert [c[-1] for c in calls] == list(STATUS_UNITS)
-    assert all(c[:3] == ["systemctl", "status", "--no-pager"] for c in calls)
 
 
 def test_start_returns_one_when_systemctl_unavailable(tmp_path: Path, capsys) -> None:
@@ -111,6 +137,41 @@ def test_start_installs_units_enables_and_starts_timer(tmp_path: Path, monkeypat
     out = capsys.readouterr().out
     assert "installed systemd units" in out
     assert "started systemd timer" in out
+
+
+def test_start_configures_timeout_before_calendar_validation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+    config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    config.parent.mkdir(parents=True)
+    config.write_text(f"BACKUP_PATH={backup_dir}\nCOMMAND_TIMEOUT_SECONDS=7\n", encoding="utf-8")
+    configured: list[str] = []
+
+    def fake_configure(value: str) -> None:
+        configured.append(value)
+
+    def fake_render_timer(root: Path, calendar: str) -> str:
+        assert configured == ["7"]
+        return "[Timer]\n"
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.configure_default_timeout", fake_configure)
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.render_unit_timer", fake_render_timer)
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.run_systemctl", lambda root, commands: True)
+
+    assert start(str(tmp_path)) == 0
+
+
+def test_start_rejects_invalid_command_timeout(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+    config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    config.parent.mkdir(parents=True)
+    config.write_text(f"BACKUP_PATH={backup_dir}\nCOMMAND_TIMEOUT_SECONDS=0\n", encoding="utf-8")
+
+    assert start(str(tmp_path)) == 1
+    assert "command timeout must be greater than 0" in capsys.readouterr().err
 
 
 def test_start_returns_one_when_systemctl_fails(tmp_path: Path, monkeypatch, capsys) -> None:

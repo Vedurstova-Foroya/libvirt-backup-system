@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import Config, prefixed
 from .logging_json import event
-from .preflight import collect_check_failures
+from .preflight import collect_check_failures, host_id_drift_failures
 from .shell import run
 from .systemd_units import (
     CHECK_UNIT_NAME,
@@ -153,6 +153,7 @@ def doctor(config: Config) -> int:
     failures.extend(_check_package(config.prefix))
     failures.extend(_check_units(config))
     failures.extend(_check_runtime_state(config.prefix))
+    failures.extend(host_id_drift_failures(config))
     if failures:
         for failure in failures:
             event("error", "doctor failed", reason=failure)

@@ -6,7 +6,7 @@ from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID, BETA_UUID
+from tests.unit.conftest import ALPHA_UUID, BETA_UUID, virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -66,13 +66,7 @@ def test_backup_vm_proceeds_when_required_nfs_mount_present(tmp_path: Path, monk
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
     cfg.path_value("BACKUP_PATH").mkdir()
     monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: True)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
 
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
 
@@ -233,13 +227,7 @@ def test_backup_vm_running_revalidates_nfs_after_copy(tmp_path: Path, monkeypatc
     # Pre-copy checks pass; the post-copy revalidation sees the mount gone.
     checks = iter([True, True, False])
     monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: next(checks, False))
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
 
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     err = capsys.readouterr().err

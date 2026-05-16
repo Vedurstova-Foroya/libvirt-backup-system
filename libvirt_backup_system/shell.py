@@ -84,10 +84,14 @@ def run(
         args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True
     )
     try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid
+    try:
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         event("error", "command timed out", command=command, timeout_seconds=timeout_seconds)
-        _kill_process_group(proc)
+        _kill_process_group(proc, pgid)
         try:
             stdout, stderr = proc.communicate(timeout=TERMINATE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
@@ -98,7 +102,7 @@ def run(
             raise CommandError(result) from exc
         return result
     except BaseException:
-        _kill_process_group(proc)
+        _kill_process_group(proc, pgid)
         raise
     result = CommandResult(args=args, returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "")
     if check and proc.returncode != 0:
@@ -128,20 +132,9 @@ def _tee_stream(
         stream.close()
 
 
-def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+def _kill_process_group(proc: subprocess.Popen[str], pgid: int) -> None:
     if proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except OSError:
-        # PID-reuse race (very narrow): if the child has just exited and the
-        # kernel recycled its PID into an unrelated process group between
-        # ``proc.poll()`` above and ``getpgid`` here, the fallback would signal
-        # the wrong group. ``start_new_session=True`` at Popen time plus the
-        # poll guard make the window extremely small; POSIX gives no way to
-        # close it cleanly without pidfd. Accept the residual risk rather than
-        # leave the child untracked.
-        pgid = proc.pid
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
@@ -255,7 +248,7 @@ def run_streamed(
     stderr_stream = proc.stderr
     # Defensive: Popen always opens both streams when PIPE is requested.
     if stdout_stream is None or stderr_stream is None:  # pragma: no cover
-        _kill_process_group(proc)
+        _kill_process_group(proc, pgid)
         raise RuntimeError("subprocess did not open both stdout and stderr")
     streams: tuple[IO[str], ...] = (stdout_stream, stderr_stream)
     threads: list[Thread] = [
@@ -269,10 +262,10 @@ def run_streamed(
             returncode = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             event("error", "command timed out", command=command, timeout_seconds=timeout_seconds)
-            _kill_process_group(proc)
+            _kill_process_group(proc, pgid)
             returncode = TIMEOUT_RETURN_CODE
         except BaseException:
-            _kill_process_group(proc)
+            _kill_process_group(proc, pgid)
             raise
         finally:
             _drain_stream_threads(threads, pgid, streams, command)

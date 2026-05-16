@@ -54,8 +54,7 @@ def test_backup_vm_running_success(tmp_path: Path, monkeypatch, backup_config) -
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
-        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
-        return CommandResult(args, 0, "", "")
+        return virtnbdbackup_fake_success(args, check=check, env=env)
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
@@ -252,7 +251,7 @@ def test_backup_vm_fails_when_record_run_cannot_persist(tmp_path: Path, monkeypa
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
     monkeypatch.setattr("libvirt_backup_system.backup.record_run", lambda *args, **kwargs: False)
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
-    assert "run record write failed; failing backup" in capsys.readouterr().err
+    assert "run record write failed; dangling checkpoints" in capsys.readouterr().err
 
 
 def test_backup_vm_rejects_unsafe_vm_name(backup_config) -> None:

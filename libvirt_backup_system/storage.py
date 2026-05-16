@@ -16,6 +16,8 @@ def subpath_is_safe(root: Path, path: Path) -> bool:
         relative_parts = path.relative_to(root).parts
     except ValueError:
         return False
+    if not relative_parts:
+        return False
 
     current = root
     for part in relative_parts:

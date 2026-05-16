@@ -40,6 +40,10 @@ SUN_PATH_MAX = 107
 SKIP_PROBE_URI_PREFIXES = ("test://", "test:///")
 
 
+def _uses_local_system_qemu(uri: str) -> bool:
+    return uri in {"qemu:///system", "qemu+unix:///system"}
+
+
 def _virsh_hmp(uri: str, vm_name: str, command: str) -> CommandResult:
     return run(
         ["virsh", "-c", uri, "qemu-monitor-command", "--hmp", "--", vm_name, command],
@@ -57,7 +61,7 @@ def domain_socket_path(uri: str, vm_name: str, *, basename: str = BACKUP_SOCKET_
     any host policy change — unlike the ``/var/tmp/virtnbdbackup.*`` default
     which is DAC-open but AppArmor-blocked.
 
-    Restricted to ``qemu:///system``: the session URI keeps its per-VM dirs
+    Restricted to local system qemu URIs: the session URI keeps its per-VM dirs
     under the user's XDG cache, not ``/var/lib/libvirt/qemu/``, so the system
     path we would compute does not even exist for session domains.
 
@@ -69,7 +73,7 @@ def domain_socket_path(uri: str, vm_name: str, *, basename: str = BACKUP_SOCKET_
     Linux's ``sun_path`` limit (108 bytes incl. NUL) where ``bind()`` would
     fail at runtime.
     """
-    if uri != "qemu:///system":
+    if not _uses_local_system_qemu(uri):
         return None
     try:
         result = run(["virsh", "-c", uri, "domid", "--", vm_name], check=False)

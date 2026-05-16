@@ -11,7 +11,9 @@ from tests.unit.conftest import ALPHA_UUID
 
 def _seed_chain(cfg: Config, month: str, chain: str) -> Path:
     vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
-    (vm_dir / month / chain).mkdir(parents=True)
+    chain_dir = vm_dir / month / chain
+    chain_dir.mkdir(parents=True)
+    (chain_dir / "vda.full.data").write_bytes(b"x")
     return vm_dir
 
 

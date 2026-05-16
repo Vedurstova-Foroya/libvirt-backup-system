@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from libvirt_backup_system.backup import backup_vm
+from libvirt_backup_system.chains import CHAIN_STATE_NAME
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.run_records import CHAIN_POISON_NAME, CheckpointReadError
 from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID
+from tests.unit.conftest import ALPHA_UUID, virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -23,8 +25,7 @@ def test_backup_vm_running_second_run_is_incremental(tmp_path: Path, monkeypatch
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
-        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
-        return CommandResult(args, 0, "", "")
+        return virtnbdbackup_fake_success(args, check=check, env=env)
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-a")
@@ -50,8 +51,7 @@ def test_backup_vm_running_fingerprint_change_starts_new_chain(tmp_path: Path, m
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
-        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
-        return CommandResult(args, 0, "", "")
+        return virtnbdbackup_fake_success(args, check=check, env=env)
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-a")
@@ -89,13 +89,7 @@ def test_backup_vm_running_fails_when_chain_state_write_fails(
     # fail the VM: the next run would otherwise see "no chain" and start a
     # fresh full into a different chain dir, orphaning the data we just wrote.
     cfg = _backup_config(backup_config)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.write_chain_state",
         lambda month_dir, chain_id, fingerprint, vm: False,
@@ -122,8 +116,7 @@ def test_backup_vm_incremental_failure_preserves_chain_dir(
         level = args[args.index("-l") + 1]
         seen.append(level)
         if level == "full":
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
-            return CommandResult(args, 0, "", "")
+            return virtnbdbackup_fake_success(args, check=check, env=env)
         raise CommandError(CommandResult(args, 9, "", "incremental boom"))
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
@@ -136,3 +129,79 @@ def test_backup_vm_incremental_failure_preserves_chain_dir(
     assert "backup failed" in err
     assert "removed partial backup" not in err
     assert seen == ["full", "inc"]
+
+
+def test_backup_vm_record_run_failure_reports_dangling_checkpoints(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
+    monkeypatch.setattr("libvirt_backup_system.backup.record_run", lambda *args, **kwargs: False)
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    assert "dangling checkpoints" in capsys.readouterr().err
+    month_dir = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05"
+    assert not (month_dir / CHAIN_STATE_NAME).exists()
+    assert not (month_dir / "stamp").exists()
+
+
+def test_backup_vm_record_run_failure_with_unreadable_checkpoints(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
+    monkeypatch.setattr("libvirt_backup_system.backup.record_run", lambda *args, **kwargs: False)
+    from libvirt_backup_system.run_records import list_checkpoints as real_list
+
+    calls = {"n": 0}
+
+    def fail_on_second(chain_dir, vm_name=None):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise CheckpointReadError("permission denied")
+        return real_list(chain_dir, vm_name)
+
+    monkeypatch.setattr("libvirt_backup_system.backup.list_checkpoints", fail_on_second)
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    err = capsys.readouterr().err
+    assert "run record write failed" in err
+    assert "dangling checkpoints" not in err
+    assert not (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp").exists()
+
+
+def test_incremental_record_run_failure_poisons_chain_and_next_run_starts_full(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    cfg = _backup_config(backup_config)
+    calls: list[list[str]] = []
+    record_calls = {"n": 0}
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        calls.append(args)
+        return virtnbdbackup_fake_success(args, check=check, env=env)
+
+    def fake_record(*args, **kwargs) -> bool:
+        record_calls["n"] += 1
+        return record_calls["n"] != 2
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
+    monkeypatch.setattr("libvirt_backup_system.backup.record_run", fake_record)
+
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-a")
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-b")
+    chain_a = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp-a"
+    assert (chain_a / CHAIN_POISON_NAME).is_file()
+
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-c")
+    chain_c = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp-c"
+    assert calls[-1][calls[-1].index("-l") + 1] == "full"
+    assert calls[-1][calls[-1].index("-o") + 1] == str(chain_c)
+    assert "current chain is poisoned; starting new chain" in capsys.readouterr().out

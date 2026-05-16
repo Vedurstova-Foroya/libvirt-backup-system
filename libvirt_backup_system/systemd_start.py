@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
+from .shell import configure_default_timeout
 from .systemd_units import (
     CHECK_UNIT_NAME,
     RUN_UNIT_NAME,
@@ -24,6 +25,11 @@ def _render_installed_units(root: Path, config_path: str | None) -> tuple[Path, 
         event("error", "invalid systemd unit path", error=str(exc))
         return None
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
+    try:
+        configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
+    except ValueError as exc:
+        event("error", "invalid command timeout", error=str(exc))
+        return None
     backup_path = cfg.get("BACKUP_PATH").strip()
     if not backup_path:
         event(

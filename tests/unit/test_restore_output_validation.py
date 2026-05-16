@@ -11,7 +11,9 @@ def _seed_chain(cfg: Config) -> Path:
     vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
     vm_dir.mkdir(parents=True, exist_ok=True)
     (vm_dir / "2026-01").mkdir()
-    (vm_dir / "2026-01" / "20260105T120000").mkdir()
+    chain_dir = vm_dir / "2026-01" / "20260105T120000"
+    chain_dir.mkdir()
+    (chain_dir / "vda.full.data").write_bytes(b"x")
     return vm_dir
 
 
@@ -139,3 +141,102 @@ def test_restore_output_iterdir_failure_is_reported(tmp_path: Path, monkeypatch,
 
     assert restore(cfg, ALPHA_UUID, output) == 1
     assert "restore output is not a usable directory" in capsys.readouterr().err
+
+
+def test_restore_rejects_output_that_resolves_inside_backup_path_after_mkdir(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    cfg = _restore_config(backup_config)
+    _seed_chain(cfg)
+    output = tmp_path / "new-out"
+    call_count = {"n": 0}
+    backup_path = cfg.path_value("BACKUP_PATH")
+
+    def flip_on_second(parent: Path, path: Path) -> bool:
+        call_count["n"] += 1
+        if parent == backup_path and path == output:
+            return call_count["n"] > 1
+        from libvirt_backup_system.storage import resolved_path_is_within as real
+
+        return real(parent, path)
+
+    monkeypatch.setattr("libvirt_backup_system.restore.resolved_path_is_within", flip_on_second)
+    _refuse_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, output) == 1
+    assert not output.exists()
+    assert "restore output resolved inside BACKUP_PATH after mkdir" in capsys.readouterr().err
+
+
+def test_restore_rejects_output_when_post_mkdir_resolution_raises(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    cfg = _restore_config(backup_config)
+    _seed_chain(cfg)
+    output = tmp_path / "new-out"
+    call_count = {"n": 0}
+    backup_path = cfg.path_value("BACKUP_PATH")
+
+    def fail_on_second(parent: Path, path: Path) -> bool:
+        call_count["n"] += 1
+        if parent == backup_path and path == output and call_count["n"] > 1:
+            raise OSError("resolution denied")
+        from libvirt_backup_system.storage import resolved_path_is_within as real
+
+        return real(parent, path)
+
+    monkeypatch.setattr("libvirt_backup_system.restore.resolved_path_is_within", fail_on_second)
+    _refuse_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, output) == 1
+    assert not output.exists()
+    assert "restore output resolved inside BACKUP_PATH after mkdir" in capsys.readouterr().err
+
+
+def test_restore_output_creation_failure(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
+    cfg = _restore_config(backup_config)
+    _seed_chain(cfg)
+
+    def fail(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("denied")
+
+    monkeypatch.setattr("libvirt_backup_system.restore.Path.mkdir", fail)
+    assert restore(cfg, ALPHA_UUID, tmp_path / "deep" / "out") == 1
+    assert "restore output directory creation failed" in capsys.readouterr().err
+
+
+def test_restore_output_not_a_directory(tmp_path: Path, backup_config: Config, capsys) -> None:
+    cfg = _restore_config(backup_config)
+    _seed_chain(cfg)
+    output = tmp_path / "file-not-dir"
+    output.write_bytes(b"data")
+    assert restore(cfg, ALPHA_UUID, output) == 1
+    assert "restore output is not a directory" in capsys.readouterr().err
+
+
+def test_restore_chain_path_unsafe(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
+    cfg = _restore_config(backup_config)
+    vm_dir = _seed_chain(cfg)
+    host_root = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")
+    safe_paths = {host_root, vm_dir}
+
+    def fake_safe(root: Path, path: Path) -> bool:
+        return path in safe_paths
+
+    monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", fake_safe)
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
+    assert "restore skipped because chain path is unsafe" in capsys.readouterr().err
+
+
+def test_restore_vm_root_path_unsafe(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
+    cfg = _restore_config(backup_config)
+    vm_dir = _seed_chain(cfg)
+    host_root = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")
+
+    def fake_safe(root: Path, path: Path) -> bool:
+        return path == host_root
+
+    monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", fake_safe)
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
+    assert "restore skipped because VM root is unsafe" in capsys.readouterr().err
+    assert vm_dir.is_dir()

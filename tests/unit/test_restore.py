@@ -15,7 +15,9 @@ def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]]) -> Path:
     for month, chains in months_and_chains.items():
         (vm_dir / month).mkdir(exist_ok=True)
         for chain in chains:
-            (vm_dir / month / chain).mkdir()
+            chain_dir = vm_dir / month / chain
+            chain_dir.mkdir()
+            (chain_dir / "vda.full.data").write_bytes(b"x")
     return vm_dir
 
 
@@ -45,6 +47,25 @@ def test_restore_picks_latest_snapshot_across_months(tmp_path: Path, monkeypatch
     expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / newer
     assert captured == [["virtnbdrestore", "-a", "restore", "-i", str(expected), "-o", str(output)]]
     assert output.is_dir()
+
+
+def test_restore_skips_newer_chain_without_standalone_data(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
+    cfg = _restore_config(backup_config)
+    older = _stamp("2026-01", 3, 9)
+    newer = _stamp("2026-01", 4, 9)
+    vm_dir = _seed_chain(cfg, {"2026-01": [older]})
+    partial = vm_dir / "2026-01" / newer
+    partial.mkdir()
+    (partial / "vda.inc.virtnbdbackup.1.data").write_bytes(b"x")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.restore.run_streamed",
+        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
+    )
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 0
+    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / older
+    assert captured[0][captured[0].index("-i") + 1] == str(expected)
 
 
 def test_restore_at_picks_closest_snapshot_going_backwards(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
@@ -243,52 +264,3 @@ def test_restore_refuses_unsafe_backup_root(tmp_path: Path, monkeypatch, backup_
     monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", lambda root, path: False)
     assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
     assert "restore skipped because backup root is unsafe" in capsys.readouterr().err
-
-
-def test_restore_output_creation_failure(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-
-    def fail(self: Path, *args: object, **kwargs: object) -> None:
-        raise OSError("denied")
-
-    monkeypatch.setattr("libvirt_backup_system.restore.Path.mkdir", fail)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "deep" / "out") == 1
-    assert "restore output directory creation failed" in capsys.readouterr().err
-
-
-def test_restore_output_not_a_directory(tmp_path: Path, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    output = tmp_path / "file-not-dir"
-    output.write_bytes(b"data")
-    assert restore(cfg, ALPHA_UUID, output) == 1
-    assert "restore output is not a directory" in capsys.readouterr().err
-
-
-def test_restore_chain_path_unsafe(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    vm_dir = _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    host_root = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")
-    safe_paths = {host_root, vm_dir}
-
-    def fake_safe(root: Path, path: Path) -> bool:
-        return path in safe_paths
-
-    monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", fake_safe)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
-    assert "restore skipped because chain path is unsafe" in capsys.readouterr().err
-
-
-def test_restore_vm_root_path_unsafe(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    vm_dir = _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    host_root = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")
-
-    def fake_safe(root: Path, path: Path) -> bool:
-        return path == host_root
-
-    monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", fake_safe)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
-    assert "restore skipped because VM root is unsafe" in capsys.readouterr().err
-    assert vm_dir.is_dir()

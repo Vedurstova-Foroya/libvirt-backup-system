@@ -7,7 +7,9 @@ from pathlib import Path
 from libvirt_backup_system.run_records import (
     RUNS_FILE,
     SelectStatus,
+    chain_is_poisoned,
     list_checkpoints,
+    poison_chain,
     record_run,
     select_checkpoint,
 )
@@ -21,84 +23,6 @@ def _at(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> dt.d
 
 def _write_checkpoint(chain_dir: Path, name: str) -> None:
     (chain_dir / f"{name}.checkpoint").write_text("payload\n", encoding="utf-8")
-
-
-def test_list_checkpoints_only_returns_checkpoint_basenames(tmp_path: Path) -> None:
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
-    _write_checkpoint(chain_dir, "virtnbdbackup.1")
-    (chain_dir / "vda.full.data").write_bytes(b"x")
-    (chain_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (chain_dir / "nested").mkdir()
-    assert list_checkpoints(chain_dir) == {"virtnbdbackup.0", "virtnbdbackup.1"}
-
-
-def test_list_checkpoints_handles_missing_dir(tmp_path: Path) -> None:
-    assert list_checkpoints(tmp_path / "not-there") == set()
-
-
-def test_list_checkpoints_reads_cpt_file_first(tmp_path: Path) -> None:
-    # Real virtnbdbackup writes the authoritative checkpoint list to
-    # <chain>/<domain>.cpt as JSON. When that file is present, list_checkpoints
-    # must trust it over any leftover legacy .checkpoint files.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    (chain_dir / "alpha.cpt").write_text(
-        json.dumps(["virtnbdbackup.0", "virtnbdbackup.1"]),
-        encoding="utf-8",
-    )
-    # A stray legacy file from a previous tool version: must be ignored once
-    # the authoritative .cpt is present.
-    (chain_dir / "stale.checkpoint").write_text("ignored\n", encoding="utf-8")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0", "virtnbdbackup.1"}
-
-
-def test_list_checkpoints_falls_back_to_checkpoint_xml_dir(tmp_path: Path) -> None:
-    # virtnbdbackup also drops per-checkpoint XML under <chain>/checkpoints/.
-    # If the .cpt JSON is unreadable but the XML dir is present, use the XMLs
-    # as the secondary witness before falling back to the legacy layout.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    (chain_dir / "checkpoints").mkdir()
-    (chain_dir / "checkpoints" / "virtnbdbackup.0.xml").write_text("<x/>", encoding="utf-8")
-    (chain_dir / "checkpoints" / "virtnbdbackup.1.xml").write_text("<x/>", encoding="utf-8")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0", "virtnbdbackup.1"}
-
-
-def test_list_checkpoints_falls_back_to_legacy_when_no_real_state(tmp_path: Path) -> None:
-    # Older fixtures and pre-feature chain dirs only have top-level *.checkpoint
-    # markers — list_checkpoints must still return them so record_run keeps
-    # working through the migration window.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0"}
-
-
-def test_list_checkpoints_falls_through_on_corrupt_cpt_file(tmp_path: Path) -> None:
-    # A truncated/hand-edited .cpt file (invalid JSON or wrong shape) must not
-    # poison the read — fall through to the next witness.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    (chain_dir / "alpha.cpt").write_text("not-json", encoding="utf-8")
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0"}
-    # Non-list JSON (someone wrote a dict): still fall through.
-    (chain_dir / "alpha.cpt").write_text('{"name":"v0"}', encoding="utf-8")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0"}
-
-
-def test_list_checkpoints_xml_dir_empty_falls_through(tmp_path: Path) -> None:
-    # The XML dir exists but contains no .xml files (a partially-migrated
-    # chain). _read_checkpoint_xml_dir returns None so the reader falls
-    # through to the legacy layout.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    (chain_dir / "checkpoints").mkdir()
-    (chain_dir / "checkpoints" / "stray.txt").write_text("not xml\n", encoding="utf-8")
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0"}
 
 
 def test_select_checkpoint_handles_runs_jsonl_read_failure(tmp_path: Path, monkeypatch) -> None:
@@ -208,6 +132,24 @@ def test_select_checkpoint_returns_none_at_or_after_last_run(tmp_path: Path) -> 
     assert selected_after.status is SelectStatus.CHAIN_END
 
 
+def test_select_checkpoint_refuses_chain_end_on_poisoned_chain(tmp_path: Path) -> None:
+    chain_dir = tmp_path / "chain"
+    chain_dir.mkdir()
+    (chain_dir / RUNS_FILE).write_text(
+        json.dumps({"ts": "20260101T080000", "checkpoint": "virtnbdbackup.0"}) + "\n",
+        encoding="utf-8",
+    )
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+
+    selected_exact = select_checkpoint(chain_dir, _at(2026, 1, 1, 8))
+    assert selected_exact.checkpoint == "virtnbdbackup.0"
+    assert selected_exact.status is SelectStatus.FOUND
+
+    selected_after = select_checkpoint(chain_dir, _at(2026, 1, 2))
+    assert selected_after.checkpoint is None
+    assert selected_after.status is SelectStatus.POISONED
+
+
 def test_select_checkpoint_returns_legacy_status_when_runs_jsonl_missing(tmp_path: Path) -> None:
     chain_dir = tmp_path / "chain"
     chain_dir.mkdir()
@@ -216,6 +158,17 @@ def test_select_checkpoint_returns_legacy_status_when_runs_jsonl_missing(tmp_pat
     selected = select_checkpoint(chain_dir, _at(2026, 1, 1))
     assert selected.checkpoint is None
     assert selected.status is SelectStatus.LEGACY
+
+
+def test_select_checkpoint_refuses_poisoned_legacy_chain(tmp_path: Path) -> None:
+    chain_dir = tmp_path / "chain"
+    chain_dir.mkdir()
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+
+    selected = select_checkpoint(chain_dir, _at(2026, 1, 1))
+
+    assert selected.checkpoint is None
+    assert selected.status is SelectStatus.POISONED
 
 
 def test_record_run_swallows_fsync_directory_failure(tmp_path: Path, monkeypatch) -> None:
@@ -278,3 +231,25 @@ def test_select_checkpoint_skips_corrupt_lines(tmp_path: Path) -> None:
     (chain_dir / RUNS_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert select_checkpoint(chain_dir, _at(2026, 1, 7)).checkpoint == "virtnbdbackup.0"
     assert select_checkpoint(chain_dir, _at(2026, 1, 9)).checkpoint == "virtnbdbackup.0"
+
+
+def test_record_run_fails_when_expect_new_and_no_checkpoint(tmp_path: Path, capsys) -> None:
+    chain_dir = tmp_path / "chain"
+    chain_dir.mkdir()
+    _write_checkpoint(chain_dir, "virtnbdbackup.0")
+    before = list_checkpoints(chain_dir)
+    assert record_run(chain_dir, "20260105T120000", before, expect_new=True) is False
+    assert not (chain_dir / RUNS_FILE).exists()
+    assert "expected new checkpoint but none appeared" in capsys.readouterr().err
+
+
+def test_chain_is_poisoned_fails_closed_on_stat_error(tmp_path: Path, monkeypatch, capsys) -> None:
+    chain_dir = tmp_path / "chain"
+    chain_dir.mkdir()
+
+    def fail_lstat(self: Path) -> object:
+        raise OSError("stale handle")
+
+    monkeypatch.setattr(Path, "lstat", fail_lstat)
+    assert chain_is_poisoned(chain_dir) is True
+    assert "chain poison sentinel check failed" in capsys.readouterr().err

@@ -41,9 +41,7 @@ def _fake_systemd_root(tmp_path: Path, monkeypatch) -> None:
     fake_prefixed = lambda path, root: tmp_path / str(path).lstrip("/")  # noqa: E731
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
     monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
-    # systemd_units.run_systemctl uses its own ``prefixed`` import to resolve
-    # the unit-file location for the "unit file absent => skip" check, so it
-    # must be patched in the systemd_units namespace too.
+    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.default_config_path",
@@ -224,14 +222,10 @@ def test_uninstall_is_idempotent_when_units_are_absent(tmp_path: Path, monkeypat
         return True if str(self) == "/run/systemd/system" else original_exists(self)
 
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
-    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
-    # systemd_units.run_systemctl computes the unit-file path through its own
-    # ``prefixed`` import, not installer's; without redirecting that too, the
-    # absent-unit-file check stats the real /etc/systemd/system and falsely
-    # passes on any developer host that has libvirt-backup-system installed.
-    monkeypatch.setattr(
-        "libvirt_backup_system.systemd_units.prefixed", lambda path, root: tmp_path / str(path).lstrip("/")
-    )
+    fake_prefixed = lambda path, root: tmp_path / str(path).lstrip("/")  # noqa: E731
+    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
     monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)

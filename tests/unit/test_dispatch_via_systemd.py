@@ -18,11 +18,6 @@ from libvirt_backup_system.systemd_units import (
 
 
 def _fake_systemd_host(tmp_path: Path, monkeypatch) -> Path:
-    """Wire dispatch_via_systemd to a tmp-rooted "real" install layout.
-
-    Returns the systemd unit directory under tmp_path so the caller can drop in
-    or omit unit files to exercise the "unit present" / "unit absent" branches.
-    """
     systemd_dir = tmp_path / "etc/systemd/system"
     systemd_dir.mkdir(parents=True)
     monkeypatch.setattr("libvirt_backup_system.systemd_units.root_prefix", lambda prefix=None: Path("/"))
@@ -41,12 +36,6 @@ def _fake_systemd_host(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _record_subprocess(monkeypatch, *, start_returncode: int = 0, invocation_id: str = "deadbeef") -> list[list[str]]:
-    """Stub subprocess.run inside systemd_units so dispatch_via_systemd is hermetic.
-
-    Records every command observed; for ``systemctl start`` returns
-    ``start_returncode``, for ``systemctl show -p InvocationID`` returns
-    ``invocation_id`` so the follow-up journalctl call fires.
-    """
     calls: list[list[str]] = []
 
     class _Result:
@@ -84,6 +73,16 @@ def test_dispatch_skipped_when_opt_out_env_set(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv(DISPATCH_OPT_OUT_ENV, "1")
 
     assert dispatch_via_systemd("run", prefix=None, config_path=None) is None
+
+
+def test_dispatch_opt_out_env_zero_does_not_skip(tmp_path: Path, monkeypatch) -> None:
+    systemd_dir = _fake_systemd_host(tmp_path, monkeypatch)
+    (systemd_dir / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
+    monkeypatch.setenv(DISPATCH_OPT_OUT_ENV, "0")
+    calls = _record_subprocess(monkeypatch)
+
+    assert dispatch_via_systemd("run", prefix=None, config_path=None) == 0
+    assert calls[0] == ["systemctl", "start", "--wait", RUN_UNIT_NAME]
 
 
 def test_dispatch_skipped_when_prefix_passed(tmp_path: Path, monkeypatch) -> None:

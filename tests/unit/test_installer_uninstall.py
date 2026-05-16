@@ -2,19 +2,49 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import uninstall
+from libvirt_backup_system.shell import CommandResult
 
 
-def test_uninstall_purges_file_path(tmp_path: Path) -> None:
-    state_file = tmp_path / "var/lib/libvirt-backup-system"
-    state_file.parent.mkdir(parents=True)
-    state_file.write_text("state\n", encoding="utf-8")
-    assert uninstall(str(tmp_path), purge_state=True) == 0
-    assert not state_file.exists()
+def _patch_prefixed_to_tmp(monkeypatch, tmp_path: Path) -> None:
+    fake_prefixed = lambda path, root: tmp_path / str(path).lstrip("/")  # noqa: E731
+    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
+
+
+def _fake_config_factory(tmp_path: Path) -> object:
+    def fake_config(
+        config_path: str | None = None,
+        prefix: str | None = None,
+        *,
+        apply_env_overrides: bool = True,
+    ) -> Config:
+        return Config(values=dict(DEFAULTS), path=tmp_path / "etc/config.env", prefix=tmp_path)
+
+    return fake_config
+
+
+def test_uninstall_purges_log_file_path(tmp_path: Path) -> None:
+    log_file = tmp_path / "var/log/libvirt-backup-system"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("log\n", encoding="utf-8")
+    assert uninstall(str(tmp_path), purge_logs=True) == 0
+    assert not log_file.exists()
 
 
 def test_uninstall_ignores_missing_purge_path(tmp_path: Path) -> None:
     assert uninstall(str(tmp_path), purge_logs=True) == 0
+
+
+def test_uninstall_reports_lock_busy(tmp_path: Path, capsys) -> None:
+    from libvirt_backup_system.lock import acquire_run_lock
+
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    with acquire_run_lock(cfg):
+        assert uninstall(str(tmp_path)) == 1
+    assert "another run in progress" in capsys.readouterr().err
 
 
 def test_uninstall_continues_through_invalid_command_timeout(tmp_path: Path, capsys) -> None:
@@ -100,19 +130,14 @@ def test_uninstall_returns_nonzero_when_purge_unlink_fails(tmp_path: Path, monke
 
 
 def test_uninstall_returns_nonzero_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:
-    from libvirt_backup_system.shell import CommandResult
-
     original_exists = Path.exists
 
     def fake_exists(self: Path) -> bool:
         return True if str(self) == "/run/systemd/system" else original_exists(self)
 
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
-    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
-    monkeypatch.setattr(
-        "libvirt_backup_system.systemd_units.prefixed",
-        lambda path, root: tmp_path / str(path).lstrip("/"),
-    )
+    _patch_prefixed_to_tmp(monkeypatch, tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.lock.prefixed", lambda path, root: tmp_path / str(path).lstrip("/"))
     # Pinning installer.root_prefix to "/" bypasses the conftest-wide
     # LIBVIRT_BACKUP_ROOT_PREFIX isolation, so Config.load() inside uninstall
     # would otherwise try to read the host's /etc/libvirt-backup-system file.
@@ -129,6 +154,31 @@ def test_uninstall_returns_nonzero_when_systemctl_fails(tmp_path: Path, monkeypa
         lambda args, check=True, env=None: CommandResult(args, 1, "", "boom"),
     )
     assert uninstall(None) == 1
+
+
+def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypatch) -> None:
+    original_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        return True if str(self) == "/run/systemd/system" else original_exists(self)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
+    _patch_prefixed_to_tmp(monkeypatch, tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
+    monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.systemd_units.run",
+        lambda args, check=True, env=None: calls.append(args) or CommandResult(args, 0, "", ""),
+    )
+    systemd_dir = tmp_path / "etc/systemd/system"
+    systemd_dir.mkdir(parents=True)
+    (systemd_dir / "libvirt-backup-system.timer").write_text("stale timer\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system.service").write_text("stale service\n", encoding="utf-8")
+    assert uninstall(None) == 0
+    assert calls[0] == ["systemctl", "disable", "--now", "libvirt-backup-system.timer"]
+    assert calls[-1] == ["systemctl", "daemon-reload"]
 
 
 def test_uninstall_continues_when_unlink_raises_permission_error(

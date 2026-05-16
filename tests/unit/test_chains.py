@@ -11,6 +11,7 @@ from libvirt_backup_system.chains import (
     write_chain_state,
 )
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.run_records import poison_chain
 
 
 def _cfg(cfg: Config) -> Config:
@@ -97,6 +98,23 @@ def test_resolve_chain_reuses_existing_chain(tmp_path: Path, backup_config) -> N
     assert not resolution.is_new_chain
     assert resolution.level == "inc"
     assert resolution.chain_dir == month_dir / "stamp-a"
+
+
+def test_resolve_chain_starts_new_when_current_chain_is_poisoned(tmp_path: Path, backup_config, capsys) -> None:
+    cfg = _cfg(backup_config)
+    month_dir = cfg.path_value("BACKUP_PATH") / "host" / "vm" / "2026-05"
+    month_dir.mkdir(parents=True)
+    chain_dir = month_dir / "stamp-a"
+    chain_dir.mkdir()
+    assert write_chain_state(month_dir, "stamp-a", "fp", "alpha")
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+
+    resolution = resolve_chain(cfg, "alpha", month_dir, "stamp-b", "fp")
+
+    assert resolution.is_new_chain
+    assert resolution.level == "full"
+    assert resolution.chain_dir == month_dir / "stamp-b"
+    assert "current chain is poisoned; starting new chain" in capsys.readouterr().out
 
 
 def test_resolve_chain_starts_new_on_fingerprint_change(tmp_path: Path, backup_config, capsys) -> None:

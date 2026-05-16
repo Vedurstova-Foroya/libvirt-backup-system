@@ -1,33 +1,4 @@
-"""Per-run checkpoint records for chain-internal point-in-time restore.
-
-Each successful backup run appends one JSON line to ``runs.jsonl`` in its
-chain directory: ``{"ts": "<YYYYMMDDTHHMMSS>", "checkpoint": "<name>"}``.
-``restore`` reads this file to resolve ``--at`` to a specific
-``virtnbdrestore --until <checkpoint>`` target inside the selected chain,
-so a target between the chain start and the latest incremental restores to
-exactly that intermediate state instead of replaying through to chain end.
-
-The new checkpoint name is observed by diffing the chain dir's checkpoint
-state before vs. after each virtnbdbackup invocation: whichever name
-appeared is the one virtnbdbackup just created. ``list_checkpoints``
-inspects three sources, in order:
-
-1. ``<chain>/<vm-name>.cpt`` — the JSON list virtnbdbackup itself maintains
-   (libvirtnbdbackup/virt/checkpoint.py ``save``). Authoritative when present.
-2. ``<chain>/checkpoints/*.xml`` — the per-checkpoint libvirt XML the same
-   binary writes alongside ``.cpt``. Used when ``.cpt`` is unreadable but
-   the XML dir exists (matches the layout the real-KVM e2e asserts on).
-3. ``<chain>/*.checkpoint`` — legacy/synthetic layout used by fixtures
-   that pre-date the real-binary integration; kept for back-compat so older
-   chain dirs and unit fixtures still work.
-
-This avoids hard-coding the ``virtnbdbackup.N`` naming convention and
-survives a virtnbdbackup version change that renumbers checkpoints.
-
-A chain dir without ``runs.jsonl`` (legacy backups, or backups taken on a
-host that predates this feature) falls back to chain-end semantics:
-``select_checkpoint`` reports ``LEGACY`` and restore omits ``--until``.
-"""
+"""Per-run checkpoint records for chain-internal point-in-time restore."""
 
 from __future__ import annotations
 
@@ -35,13 +6,16 @@ import datetime as dt
 import enum
 import json
 import os
+import stat
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from .inactive_markers import atomic_write
 from .logging_json import event
 
 RUNS_FILE = "runs.jsonl"
+CHAIN_POISON_NAME = ".chain-poisoned"
 CHECKPOINT_SUFFIX = ".checkpoint"
 CPT_SUFFIX = ".cpt"
 CHECKPOINTS_SUBDIR = "checkpoints"
@@ -60,6 +34,29 @@ class CheckpointReadError(OSError):
     distinct error event and fails the run so the operator sees the problem
     at backup time instead of weeks later at restore time.
     """
+
+
+def chain_poison_path(chain_dir: Path) -> Path:
+    return chain_dir / CHAIN_POISON_NAME
+
+
+def chain_is_poisoned(chain_dir: Path) -> bool:
+    try:
+        return stat.S_ISREG(chain_poison_path(chain_dir).lstat().st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        event("error", "chain poison sentinel check failed", chain_dir=str(chain_dir), error=str(exc))
+        return True
+
+
+def poison_chain(chain_dir: Path, vm_name: str, reason: str) -> bool:
+    return atomic_write(
+        chain_poison_path(chain_dir),
+        reason.rstrip() + "\n",
+        vm_name,
+        "chain poison sentinel write failed",
+    )
 
 
 def _read_cpt_file(cpt_path: Path) -> set[str] | None:
@@ -151,7 +148,9 @@ def _fsync_directory(directory: Path) -> None:
         os.close(dir_fd)
 
 
-def record_run(chain_dir: Path, stamp: str, before: set[str], vm_name: str | None = None) -> bool:
+def record_run(
+    chain_dir: Path, stamp: str, before: set[str], vm_name: str | None = None, *, expect_new: bool = False
+) -> bool:
     """Append a ``{ts, checkpoint}`` record for the checkpoint added by this run.
 
     ``before`` is the checkpoint set captured immediately prior to running
@@ -173,10 +172,9 @@ def record_run(chain_dir: Path, stamp: str, before: set[str], vm_name: str | Non
         return False
     new = sorted(current - before)
     if not new:
-        # virtnbdbackup did not add a checkpoint. That is anomalous (full/inc
-        # both create one) but ``select_checkpoint`` does the right thing for
-        # any ``--at`` in this case — there is no run record to disagree with
-        # the chain contents — so the run itself can continue.
+        if expect_new:
+            event("error", "expected new checkpoint but none appeared", chain_dir=str(chain_dir))
+            return False
         event("info", "run recorded no new checkpoint", chain_dir=str(chain_dir))
         return True
     runs_path = chain_dir / RUNS_FILE
@@ -230,6 +228,8 @@ class SelectStatus(enum.Enum):
     ``FOUND``: a matching checkpoint was found; use ``virtnbdrestore --until``.
     ``CHAIN_END``: ``at`` is at-or-after the last recorded run; omit ``--until``.
     ``LEGACY``: chain has no ``runs.jsonl``; omit ``--until`` (back-compat).
+    ``POISONED``: the chain has an unrecorded later checkpoint, so chain-end
+        replay is unsafe.
     ``MISSING``: ``runs.jsonl`` exists but has no record at-or-before ``at`` —
         either every record is in the future, or the older records are
         corrupt/truncated. Callers should refuse the restore rather than
@@ -240,6 +240,7 @@ class SelectStatus(enum.Enum):
     FOUND = "found"
     CHAIN_END = "chain_end"
     LEGACY = "legacy"
+    POISONED = "poisoned"
     MISSING = "missing"
 
 
@@ -256,14 +257,21 @@ def select_checkpoint(chain_dir: Path, at: dt.datetime) -> Selection:
     cases from a genuine "no matching record" so the caller can refuse the
     restore for the latter rather than silently restoring chain end.
     """
+    poisoned = chain_is_poisoned(chain_dir)
     if not (chain_dir / RUNS_FILE).is_file():
+        if poisoned:
+            return Selection(None, SelectStatus.POISONED)
         return Selection(None, SelectStatus.LEGACY)
     records = _parse_records(chain_dir)
     if not records:
         # File present but unreadable / every line corrupt: cannot prove
         # what was captured here, so refuse rather than guess.
         return Selection(None, SelectStatus.MISSING)
+    if at == records[-1][0] and poisoned:
+        return Selection(records[-1][1], SelectStatus.FOUND)
     if at >= records[-1][0]:
+        if poisoned:
+            return Selection(None, SelectStatus.POISONED)
         return Selection(None, SelectStatus.CHAIN_END)
     for stamp, checkpoint in reversed(records):
         if stamp <= at:

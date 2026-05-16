@@ -8,11 +8,12 @@ import sys
 from pathlib import Path
 
 from .config import Config, default_config_path, prefixed, root_prefix
+from .installer_uninstall import purge_paths, remove_installed_files, resolve_purge_paths
+from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .shell import configure_default_timeout
+from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 from .systemd_units import (
-    UNIT_SERVICE,
-    UNIT_TIMER,
     render_unit_service,
     render_unit_timer,
     run_systemctl,
@@ -25,6 +26,21 @@ __all__ = ["UNIT_SERVICE", "UNIT_TIMER", "install", "uninstall"]
 # Only BACKUP_PATH is honored from the process env on first install: other
 # keys render as commented defaults and would desync from the systemd unit.
 INSTALL_TIME_ENV_KEYS = ("BACKUP_PATH",)
+
+
+def _install_time_env_keys_present() -> list[str]:
+    return [key for key in INSTALL_TIME_ENV_KEYS if os.environ.get(key) is not None]
+
+
+def _log_dropped_install_time_env(path: Path) -> None:
+    dropped = _install_time_env_keys_present()
+    if dropped:
+        event(
+            "info",
+            "existing config kept; install-time environment ignored",
+            path=str(path),
+            keys=",".join(dropped),
+        )
 
 
 def _install_package(package_src: Path, package_dst: Path) -> None:
@@ -104,6 +120,7 @@ def _write_initial_config(path: Path, content: str) -> None:
     try:
         fd = os.open(path, flags, 0o600)
     except FileExistsError:
+        _log_dropped_install_time_env(path)
         return
     try:
         os.write(fd, content.encode("utf-8"))
@@ -147,6 +164,15 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     # Env file wins once it exists; first install still honors INSTALL_TIME_ENV_KEYS
     # so the documented `BACKUP_PATH=... install` one-shot works.
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
+    try:
+        with acquire_run_lock(cfg):
+            return _install_locked(root, resolved_config, cfg)
+    except LockBusyError as exc:
+        event("error", "another run in progress", lock_path=str(exc.path))
+        return 1
+
+
+def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     if not resolved_config.exists():
         for env_key in INSTALL_TIME_ENV_KEYS:
             env_value = os.environ.get(env_key)
@@ -186,6 +212,8 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     resolved_config.parent.mkdir(parents=True, exist_ok=True)
     if not resolved_config.exists():
         _write_initial_config(resolved_config, cfg.render_env())
+    else:
+        _log_dropped_install_time_env(resolved_config)
 
     _print_install_next_steps(resolved_config, bin_path)
     if not backup_path:
@@ -203,63 +231,6 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     return 0 if run_systemctl(root, [["systemctl", "daemon-reload"]]) else 1
 
 
-def _remove_installed_files(root: Path) -> bool:
-    ok = True
-    for path in [
-        prefixed("/usr/local/bin/libvirt-backup-system", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system.service", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system-check.service", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system.timer", root),
-    ]:
-        try:
-            path.unlink()
-            event("info", "removed file", path=str(path))
-        except FileNotFoundError:
-            pass
-        except (PermissionError, OSError) as exc:
-            event("error", "failed to remove file", path=str(path), error=str(exc))
-            ok = False
-    opt_dir = prefixed("/opt/libvirt-backup-system", root)
-    if opt_dir.exists():
-        try:
-            shutil.rmtree(opt_dir)
-            event("info", "removed directory", path=str(opt_dir))
-        except OSError as exc:
-            event("error", "failed to remove directory", path=str(opt_dir), error=str(exc))
-            ok = False
-    return ok
-
-
-def _resolve_purge_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list[Path]:
-    paths: list[Path] = []
-    if flags["config"]:
-        # Env file only — the parent dir may hold operator-dropped siblings
-        # (drop-ins, notes) that an rmtree would silently wipe.
-        paths.append(cfg.path)
-    if flags["state"]:
-        paths.append(prefixed("/var/lib/libvirt-backup-system", root))
-    if flags["logs"]:
-        paths.append(prefixed("/var/log/libvirt-backup-system", root))
-    return paths
-
-
-def _purge_paths(paths: list[Path]) -> bool:
-    ok = True
-    for path in paths:
-        if not path.exists():
-            continue
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-            event("info", "purged", path=str(path))
-        except OSError as exc:
-            event("error", "purge failed", path=str(path), error=str(exc))
-            ok = False
-    return ok
-
-
 def uninstall(
     prefix: str | None = None,
     *,
@@ -270,6 +241,28 @@ def uninstall(
 ) -> int:
     root = root_prefix(prefix)
     cfg = Config.load(config_path=config_path, prefix=str(root), apply_env_overrides=False)
+    try:
+        with acquire_run_lock(cfg):
+            return _uninstall_locked(
+                root,
+                cfg,
+                purge_config=purge_config,
+                purge_state=purge_state,
+                purge_logs=purge_logs,
+            )
+    except LockBusyError as exc:
+        event("error", "another run in progress", lock_path=str(exc.path))
+        return 1
+
+
+def _uninstall_locked(
+    root: Path,
+    cfg: Config,
+    *,
+    purge_config: bool,
+    purge_state: bool,
+    purge_logs: bool,
+) -> int:
     # A broken COMMAND_TIMEOUT_SECONDS must not abort the very uninstall
     # (especially `--purge-config`) meant to clean it up — log and continue.
     try:
@@ -283,8 +276,8 @@ def uninstall(
             ["systemctl", "stop", "libvirt-backup-system.service"],
         ],
     )
-    ok = _remove_installed_files(root) and ok
+    ok = remove_installed_files(root) and ok
     flags = {"config": purge_config, "state": purge_state, "logs": purge_logs}
-    ok = _purge_paths(_resolve_purge_paths(root, cfg, flags)) and ok
+    ok = purge_paths(resolve_purge_paths(root, cfg, flags)) and ok
     ok = run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
     return 0 if ok else 1

@@ -13,7 +13,7 @@ from .inactive_markers import marked_backup_dir, marker_is_regular, remove_finge
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
 from .paths import backup_root, runtime_backup_path_ok, write_name_marker
-from .run_records import CheckpointReadError, list_checkpoints, record_run
+from .run_records import CheckpointReadError, list_checkpoints, poison_chain, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
@@ -32,16 +32,11 @@ __all__ = [
 
 
 def current_month(now: dt.datetime | None = None) -> str:
-    # Calendar-month bucket keyed by wall-clock year+month: Dec 31 → YYYY-12,
-    # Jan 1 → YYYY+1-01, no ISO-week year-boundary edge cases.
     now = now or dt.datetime.now(dt.timezone.utc)
     return f"{now.year:04d}-{now.month:02d}"
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
-    # Second precision UTC. acquire_run_lock serializes whole runs; same-second
-    # collisions only matter for new chain dir creation, where _prepare_dest
-    # refuses overwrite rather than clobber prior data.
     now = now or dt.datetime.now(dt.timezone.utc)
     return now.strftime("%Y%m%dT%H%M%S")
 
@@ -97,26 +92,27 @@ def _finalize_inactive_marker(  # noqa: PLR0913
     dest: Path,
     pre_copy_time: float,
 ) -> bool:
+    def fail_with_cleanup() -> bool:
+        _attempt_partial_cleanup(config, dest, vm.name)
+        return False
+
     if not runtime_backup_path_ok(config):
         return False
     if not _ensure_safe(config, month_dir, "inactive marker skipped because destination became unsafe"):
         return False
-    # Re-check VM state after virtnbdbackup -l copy: backup_vm chose the copy
-    # path from a pre-run state snapshot, so a VM started mid-copy would
-    # otherwise be marked as a trusted full/copy when the data is live-state.
     post_state = domain_state(config, vm.name)
     if post_state is None or post_state.strip().lower() != "shut off":
         event("error", "inactive backup not trusted: VM is no longer shut off", vm=vm.name, post_state=post_state or "")
-        return False
+        return fail_with_cleanup()
     post_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
     if post_fingerprint is None:
         event("error", "inactive fingerprint computation failed", vm=vm.name)
-        return False
+        return fail_with_cleanup()
     if post_fingerprint != pre_fingerprint:
         event("error", "domain XML changed during inactive backup; backup not trusted", vm=vm.name)
-        return False
+        return fail_with_cleanup()
     if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
-        return False
+        return fail_with_cleanup()
     # Backdate to pre-copy time so any mid- or post-copy disk write has a
     # newer mtime than the marker and forces a recopy.
     try:
@@ -124,7 +120,7 @@ def _finalize_inactive_marker(  # noqa: PLR0913
     except OSError as exc:
         event("error", "inactive marker backdate failed; rolling back marker", vm=vm.name, error=str(exc))
         remove_marker(inactive_marker, vm.name)
-        return False
+        return fail_with_cleanup()
     remove_fingerprint(inactive_marker, vm.name)
     event("info", "backup completed", vm=vm.name, destination=str(dest))
     return True
@@ -219,9 +215,6 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
     try:
         checkpoints_before = list_checkpoints(resolution.chain_dir, vm.name)
     except CheckpointReadError as exc:
-        # Chain dir exists but checkpoint metadata is unreadable: virtnbdbackup
-        # would either compute the wrong diff (stale baseline) or succeed with
-        # no recordable name. Fail before touching the chain.
         event(
             "error",
             "checkpoint metadata read failed",
@@ -232,12 +225,19 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
         return False
     if not _run_virtnbdbackup(config, vm, cmd, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
         return False
-    if not record_run(resolution.chain_dir, stamp, checkpoints_before, vm.name):
-        # Restore --at would silently fall back to chain end (newer state than
-        # asked for) without a durable run record; fail loudly instead.
-        event("error", "run record write failed; failing backup", vm=vm.name, chain_dir=str(resolution.chain_dir))
-        return False
     write_name_marker(resolution.chain_dir, vm.name)
+    if not record_run(resolution.chain_dir, stamp, checkpoints_before, vm.name, expect_new=True):
+        try:
+            dangling = sorted(list_checkpoints(resolution.chain_dir, vm.name) - checkpoints_before)
+        except CheckpointReadError:
+            dangling = []
+        msg = "run record write failed; dangling checkpoints" if dangling else "run record write failed"
+        event("error", msg, vm=vm.name, chain_dir=str(resolution.chain_dir))
+        if resolution.is_new_chain:
+            _attempt_partial_cleanup(config, resolution.chain_dir, vm.name)
+        else:
+            poison_chain(resolution.chain_dir, vm.name, "record_run failed after incremental backup")
+        return False
     if resolution.is_new_chain and not write_chain_state(
         month_dir, resolution.chain_dir.name, pre_fingerprint, vm.name
     ):

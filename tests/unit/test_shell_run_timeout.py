@@ -42,7 +42,7 @@ def test_run_timeout_check_false_returns_result(monkeypatch) -> None:
         "libvirt_backup_system.shell.subprocess.Popen",
         lambda *a, **k: _StubPopen(output=b"out", stderr=b"err"),
     )
-    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc: None)
+    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc, pgid: None)
     result = run(["cmd"], check=False)
     assert result.returncode == shell.TIMEOUT_RETURN_CODE
     assert result.stdout == "out"
@@ -54,7 +54,7 @@ def test_run_timeout_preserves_string_output(monkeypatch) -> None:
         "libvirt_backup_system.shell.subprocess.Popen",
         lambda *a, **k: _StubPopen(output="out", stderr=None),
     )
-    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc: None)
+    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc, pgid: None)
     result = run(["cmd"], check=False)
     assert result.stdout == "out"
     assert result.stderr == ""
@@ -81,7 +81,7 @@ def test_run_kills_process_group_on_keyboard_interrupt(monkeypatch) -> None:
             return self.returncode
 
     monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *a, **k: _InterruptedPopen())
-    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc: killed.append(proc))
+    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc, pgid: killed.append(proc))
     with pytest.raises(KeyboardInterrupt):
         run(["cmd"], check=False)
     assert killed
@@ -109,7 +109,7 @@ def test_run_timeout_falls_back_to_exception_output_when_drain_hangs(monkeypatch
             return self.returncode
 
     monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *a, **k: _DoubleTimeoutPopen())
-    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc: None)
+    monkeypatch.setattr("libvirt_backup_system.shell._kill_process_group", lambda proc, pgid: None)
     result = run(["cmd"], check=False)
     assert result.returncode == shell.TIMEOUT_RETURN_CODE
     assert result.stdout == "partial"

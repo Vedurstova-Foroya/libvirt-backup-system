@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
 import shutil
 from pathlib import Path
 
-from .config import CONFIG_KEYS, Config, float_value, int_value
-from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
+from .config import CONFIG_KEYS, Config, float_value, int_value, prefixed, split_words
 from .logging_json import event
 from .nbd_probe import probe_qemu_socket_bind_with_lock
 from .paths import backup_root
-from .shell import CommandError, run
+from .preflight_estimate import df_available_kb as _df_available_kb
+from .preflight_estimate import estimate_required_kb as _estimate_required_kb
+from .shell import run
 from .storage import subpath_is_safe
-from .vms import VM, list_vms
+from .vms import is_safe_vm_name, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 BOOLEAN_KEYS = frozenset(
@@ -24,32 +24,15 @@ INTEGER_KEYS = frozenset(("COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT", "BA
 FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
 SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
 # fmt: off
-ALLOWED_LIBVIRT_URI_PREFIXES = (
-    "qemu:///", "qemu+ssh://", "qemu+tcp://", "qemu+tls://", "qemu+unix://", "test://", "test:///",
-)
+ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+ssh:// qemu+tcp:// qemu+tls:// qemu+unix:// test:// test:///".split())
 # fmt: on
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - virtnbdbackup's default scratch dir.
+HOST_ID_STATE_FILE = "host-id"
 
 
 def validate_libvirt_uri(uri: str) -> bool:
     return uri.startswith(ALLOWED_LIBVIRT_URI_PREFIXES)
-
-
-def _df_available_kb(path: Path) -> int:
-    result = run(["df", "-Pk", "--", str(path)])
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    if len(lines) < 2:
-        raise RuntimeError("df output did not include a data row")
-    parts = lines[-1].split()
-    return int(parts[3])
-
-
-def _disk_virtual_size_bytes(path: str) -> int:
-    # ``-U`` allows inspecting images held open by a running qemu.
-    result = run(["qemu-img", "info", "--output=json", "-U", "--", path])
-    info = json.loads(result.stdout)
-    return int(info["virtual-size"])
 
 
 def _write_probe(path: Path) -> None:
@@ -68,48 +51,8 @@ def _write_probe(path: Path) -> None:
             path.unlink(missing_ok=True)
 
 
-def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
-    # qemu-img runs locally; remote URI disk paths live on the hypervisor.
-    if libvirt_uri_uses_remote_transport(uri):
-        event("warning", "skipping local disk introspection for remote URI", vm=vm.name, uri=uri)
-        return fallback_bytes
-    try:
-        disks = vm_disk_paths(uri, vm.name)
-    except (CommandError, OSError, ValueError) as exc:
-        event("warning", "disk list failed for VM", vm=vm.name, error=str(exc))
-        return fallback_bytes
-    total = 0
-    for disk in disks:
-        try:
-            total += _disk_virtual_size_bytes(disk)
-        except (CommandError, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
-            stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
-            event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc), stderr=stderr)
-            total += fallback_bytes  # per-disk; ``max(total, fb)`` would zero a failed disk
-    return total or fallback_bytes
-
-
-def _estimate_required_kb(config: Config, vms: list[VM]) -> int:
-    try:
-        fallback_per_vm_gb = float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM")
-        multiplier = float_value(config.values, "BACKUP_INCREMENTAL_MULTIPLIER")
-        margin = 1 + int_value(config.values, "SPACE_MARGIN_PERCENT") / 100
-    except ValueError:
-        return 0
-    if not math.isfinite(fallback_per_vm_gb) or not math.isfinite(multiplier):
-        return 0
-    fallback_per_vm_bytes = int(fallback_per_vm_gb * 1024 * 1024 * 1024)
-    uri = config.get("LIBVIRT_URI")
-    total_bytes = 0
-    for vm in vms:
-        total_bytes += _vm_estimated_bytes(uri, vm, fallback_per_vm_bytes)
-    return int(total_bytes * multiplier * margin / 1024)
-
-
 def _validate_required_present(config: Config) -> list[str]:
     failures = [f"{k} must not be empty" for k in sorted(CONFIG_KEYS - {"VM_BLACKLIST"}) if not config.get(k).strip()]
-    # HOST_ID flows into Path(); reject shapes that crash Path() or shift the
-    # on-disk BACKUP_PATH/<host_id>/ away from the operator's source string.
     host_id = config.get("HOST_ID")
     if host_id.strip():
         if host_id in {".", ".."} or "/" in host_id or "\\" in host_id:
@@ -119,6 +62,11 @@ def _validate_required_present(config: Config) -> list[str]:
         elif host_id != host_id.strip():
             failures.append("HOST_ID must not have leading or trailing whitespace")
     return failures
+
+
+def _validate_vm_blacklist(config: Config) -> list[str]:
+    bad = [name for name in split_words(config.get("VM_BLACKLIST")) if not is_safe_vm_name(name)]
+    return [f"VM_BLACKLIST contains unsafe VM name: {name!r}" for name in bad]
 
 
 def _validate_booleans(config: Config) -> list[str]:
@@ -169,8 +117,6 @@ def _virtnbdbackup_version_failures() -> list[str]:
     if not shutil.which("virtnbdbackup"):
         return []  # already reported by the missing-binary check
     try:
-        # 10s cap so a wedged ``--version`` cannot pin the run lock under the
-        # 24h default command timeout.
         result = run(["virtnbdbackup", "--version"], check=False, timeout=10)
     except OSError as exc:
         return [f"virtnbdbackup version probe failed: {exc}"]
@@ -196,6 +142,49 @@ def _validate_scratch_dir() -> list[str]:
     return []
 
 
+def _backup_path_is_mount(backup_path: Path) -> tuple[bool, str | None]:
+    try:
+        return backup_path.is_mount(), None
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _host_id_state_path(config: Config) -> Path:
+    return prefixed("/var/lib/libvirt-backup-system", config.prefix) / HOST_ID_STATE_FILE
+
+
+def stamp_host_id_on_first_run(config: Config) -> list[str]:
+    path = _host_id_state_path(config)
+    host_id = config.get("HOST_ID")
+    try:
+        if path.exists():
+            stamped = path.read_text(encoding="utf-8").strip()
+            if stamped and stamped != host_id:
+                return [f"HOST_ID drift detected: state has {stamped!r}, config has {host_id!r}"]
+            if not stamped:
+                path.write_text(host_id + "\n", encoding="utf-8")
+            return []
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(host_id + "\n", encoding="utf-8")
+        event("info", "stamped HOST_ID state", path=str(path), host_id=host_id)
+    except OSError as exc:
+        return [f"HOST_ID state check failed: {exc}"]
+    return []
+
+
+def host_id_drift_failures(config: Config) -> list[str]:
+    path = _host_id_state_path(config)
+    try:
+        if not path.exists():
+            return []
+        stamped = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        return [f"HOST_ID state check failed: {exc}"]
+    if stamped and stamped != config.get("HOST_ID"):
+        return [f"HOST_ID drift detected: state has {stamped!r}, config has {config.get('HOST_ID')!r}"]
+    return []
+
+
 def _validate_backup_path_readonly(config: Config) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
@@ -206,8 +195,12 @@ def _validate_backup_path_readonly(config: Config) -> list[str]:
         return ["BACKUP_PATH must exist"]
     if not backup_path.is_dir():
         return ["BACKUP_PATH must be a directory"]
-    if config.enabled("BACKUP_REQUIRE_NFS_MOUNT") and not backup_path.is_mount():
-        return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
+    if config.enabled("BACKUP_REQUIRE_NFS_MOUNT"):
+        mounted, error = _backup_path_is_mount(backup_path)
+        if error is not None:
+            return [f"BACKUP_PATH mount probe failed: {error}"]
+        if not mounted:
+            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
     if not subpath_is_safe(backup_path, backup_root(config)):
         return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
     return []
@@ -220,17 +213,23 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
     backup_path = config.path_value("BACKUP_PATH")
     mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
     mount_msg = "BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"
-    # Re-check the mount before mkdir AND the write probe so an NFS drop
-    # between phases cannot silently pollute the local mountpoint.
     try:
         host_root = backup_root(config)
-        if mount_required and not backup_path.is_mount():
-            return [mount_msg]
+        if mount_required:
+            mounted, error = _backup_path_is_mount(backup_path)
+            if error is not None:
+                return [f"BACKUP_PATH mount probe failed: {error}"]
+            if not mounted:
+                return [mount_msg]
         host_root.mkdir(parents=True, exist_ok=True)
         if not subpath_is_safe(backup_path, host_root):
             return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
-        if mount_required and not backup_path.is_mount():
-            return [mount_msg]
+        if mount_required:
+            mounted, error = _backup_path_is_mount(backup_path)
+            if error is not None:
+                return [f"BACKUP_PATH mount probe failed: {error}"]
+            if not mounted:
+                return [mount_msg]
         _write_probe(host_root / WRITE_PROBE_NAME)
     except OSError as exc:
         return [f"BACKUP_PATH must be writable: {exc}"]
@@ -239,6 +238,7 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
 
 def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]:
     failures: list[str] = list(_validate_required_present(config))
+    failures.extend(_validate_vm_blacklist(config))
     bool_failures = _validate_booleans(config)
     failures.extend(bool_failures)
     failures.extend(_validate_integers(config))
@@ -246,9 +246,6 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    # Skip the writable probe when any boolean is invalid: a typo'd
-    # BACKUP_REQUIRE_NFS_MOUNT silently degrades to False and would let the
-    # writable check create BACKUP_PATH/HOST_ID before reporting the error.
     check = _validate_backup_path_writable if require_writable and not bool_failures else _validate_backup_path_readonly
     failures.extend(check(config))
     return failures
@@ -263,6 +260,8 @@ def validate_config(config: Config) -> int:
 
 def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[list[str], int, int]:
     failures = _validate_env_values(config, require_writable=True)
+    if lock_held and not failures:
+        failures.extend(stamp_host_id_on_first_run(config))
     for binary in REQUIRED_BINARIES:
         if not shutil.which(binary):
             failures.append(f"missing binary: {binary}")

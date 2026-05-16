@@ -8,9 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import prefixed, root_prefix
+from .config import bool_value, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
+from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 
 RUN_UNIT_NAME = "libvirt-backup-system.service"
 CHECK_UNIT_NAME = "libvirt-backup-system-check.service"
@@ -34,8 +35,23 @@ def status(prefix: str | None = None) -> int:
     worst = 0
     for unit in STATUS_UNITS:
         result = subprocess.run(["systemctl", "status", "--no-pager", unit], check=False)
-        worst = max(worst, result.returncode)
+        worst = max(worst, _status_returncode(unit, result.returncode))
     return worst
+
+
+def _status_returncode(unit: str, status_returncode: int) -> int:
+    if status_returncode != 3:
+        return status_returncode
+    result = subprocess.run(
+        ["systemctl", "show", unit, "--property=LoadState", "--property=ActiveState", "--value"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    values = result.stdout.splitlines()
+    if result.returncode == 0 and values[:2] == ["loaded", "inactive"]:
+        return 0
+    return status_returncode
 
 
 def run_systemctl(root: Path, commands: list[list[str]]) -> bool:
@@ -69,44 +85,6 @@ def run_systemctl(root: Path, commands: list[list[str]]) -> bool:
             )
             all_ok = False
     return all_ok
-
-
-UNIT_SERVICE = """[Unit]
-Description={description}
-Wants=network-online.target
-After=network-online.target libvirtd.service
-{requires_mounts_for}
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity
-EnvironmentFile={environment_file}
-ExecStart={bin_path} --config {config_arg} {subcommand}
-# Defense-in-depth hardening. The service runs as root because it shells out to
-# virsh/virtnbdbackup against qemu:///system; the remaining directives close
-# the easy kernel-surface escalation paths without sandboxing the filesystem,
-# which would hide VM disk roots and backup destinations placed under /home.
-# StateDirectory= creates /var/lib/libvirt-backup-system at service start so
-# lock.py's run-lock mkdir succeeds on a fresh install.
-StateDirectory=libvirt-backup-system
-NoNewPrivileges=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-LockPersonality=yes
-RestrictRealtime=yes
-RestrictSUIDSGID=yes
-"""
-
-UNIT_TIMER = """[Unit]
-Description=Run libvirt VM backups on schedule
-
-[Timer]
-OnCalendar={calendar}
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-"""
 
 
 _SYSTEMD_PATH_FORBIDDEN_CHARS = frozenset("`'\"\\")
@@ -240,7 +218,7 @@ def dispatch_via_systemd(
     """
     if os.environ.get("INVOCATION_ID"):
         return None
-    if os.environ.get(DISPATCH_OPT_OUT_ENV):
+    if bool_value(os.environ.get(DISPATCH_OPT_OUT_ENV, "")):
         return None
     if prefix is not None or config_path is not None:
         return None

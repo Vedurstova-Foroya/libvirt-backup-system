@@ -8,6 +8,7 @@ from pathlib import Path
 from .config import Config
 from .inactive_markers import atomic_write, marker_is_regular, stamp_is_safe
 from .logging_json import event
+from .run_records import chain_is_poisoned
 from .storage import subpath_is_safe
 
 # Single-file state lives directly under the month dir alongside the inactive
@@ -179,6 +180,15 @@ def resolve_chain(
         event(
             "info",
             "previous chain dir missing; starting new chain",
+            vm=vm_name,
+            month=month_dir.name,
+            previous_chain=pointer,
+        )
+        return ChainResolution(month_dir / stamp, "full", is_new_chain=True)
+    if chain_is_poisoned(existing):
+        event(
+            "info",
+            "current chain is poisoned; starting new chain",
             vm=vm_name,
             month=month_dir.name,
             previous_chain=pointer,

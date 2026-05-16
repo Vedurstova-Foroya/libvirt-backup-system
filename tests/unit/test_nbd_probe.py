@@ -213,6 +213,21 @@ def test_domain_socket_path_returns_path_when_dir_exists(monkeypatch, tmp_path: 
     assert result == tmp_path / "domain-2-alpha" / "vnbd.sock"
 
 
+def test_domain_socket_path_treats_qemu_unix_system_as_local(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("libvirt_backup_system.nbd_probe.LIBVIRT_QEMU_RUNTIME_ROOT", tmp_path)
+    (tmp_path / "domain-2-alpha").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        calls.append(args)
+        return CommandResult(args, 0, "2\n", "")
+
+    monkeypatch.setattr("libvirt_backup_system.nbd_probe.run", fake_run)
+    result = domain_socket_path("qemu+unix:///system", "alpha")
+    assert result == tmp_path / "domain-2-alpha" / "vnbd.sock"
+    assert calls[0][2] == "qemu+unix:///system"
+
+
 def test_domain_socket_path_truncates_long_vm_name(monkeypatch, tmp_path: Path) -> None:
     # Mirrors libvirt's VIR_DOMAIN_SHORT_NAME_MAX=20 so the resolved path lines
     # up with the directory libvirt actually creates and the AppArmor rule the

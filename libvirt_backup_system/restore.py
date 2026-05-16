@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import datetime as dt
 import stat
+from contextlib import suppress
 from pathlib import Path
 
 from .config import Config, is_month_dir_name
 from .inactive_markers import stamp_is_safe
 from .logging_json import event
 from .paths import backup_root, runtime_backup_path_ok
-from .run_records import SelectStatus, select_checkpoint
+from .retention import chain_has_full_backup_file
+from .run_records import SelectStatus, chain_is_poisoned, select_checkpoint
 from .shell import CommandError, run_streamed
 from .storage import resolved_path_is_within, subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid, resolve_vm_uuid
@@ -94,12 +96,13 @@ def _enumerate_snapshots(vm_root: Path) -> list[tuple[dt.datetime, Path]]:
 
 
 def _pick_snapshot(snapshots: list[tuple[dt.datetime, Path]], at: dt.datetime | None) -> Path | None:
+    restorable = [(stamp, chain_dir) for stamp, chain_dir in snapshots if chain_has_full_backup_file(chain_dir)]
     if at is None:
-        return snapshots[-1][1] if snapshots else None
+        return restorable[-1][1] if restorable else None
     # Latest snapshot at-or-before ``at``: walking in reverse stops at the
     # first hit. An ``at`` earlier than every snapshot returns None so the
     # operator gets an explicit error rather than the unrelated latest dir.
-    for stamp, chain_dir in reversed(snapshots):
+    for stamp, chain_dir in reversed(restorable):
         if stamp <= at:
             return chain_dir
     return None
@@ -142,14 +145,22 @@ def _validate_output(output: Path, backup_path: Path) -> bool:
             event("error", "restore output is not empty", output=str(output))
             return False
         return True
-    # Path is absent: create it with restricted permissions so virtnbdrestore
-    # writes into a directory we own. ``parents=True`` keeps the operator
-    # ergonomics of pointing at a nested staging path; ``exist_ok=False``
-    # closes the TOCTOU window between the lstat above and the mkdir.
     try:
         output.mkdir(parents=True, exist_ok=False, mode=0o700)
     except OSError as exc:
         event("error", "restore output directory creation failed", output=str(output), error=str(exc))
+        return False
+    # Re-verify after mkdir: a symlink swap on an intermediate parent between
+    # the initial lstat/resolve and mkdir(parents=True) could land the new
+    # directory inside BACKUP_PATH.
+    try:
+        post_inside = resolved_path_is_within(backup_path, output)
+    except (OSError, RuntimeError):
+        post_inside = True
+    if post_inside:
+        with suppress(OSError):
+            output.rmdir()
+        event("error", "restore output resolved inside BACKUP_PATH after mkdir", output=str(output))
         return False
     return True
 
@@ -213,7 +224,15 @@ def restore(
     if not _validate_output(output, backup_path):
         return 1
     checkpoint: str | None = None
-    if target is not None:
+    if target is None:
+        if chain_is_poisoned(chain_dir):
+            event(
+                "error",
+                "restore refused poisoned chain end",
+                chain_dir=str(chain_dir),
+            )
+            return 1
+    else:
         selection = select_checkpoint(chain_dir, target)
         if selection.status is SelectStatus.MISSING:
             # ``runs.jsonl`` is present but has no record at-or-before ``at``
@@ -223,6 +242,14 @@ def restore(
             event(
                 "error",
                 "restore --at has no matching run record",
+                at=at,
+                chain_dir=str(chain_dir),
+            )
+            return 1
+        if selection.status is SelectStatus.POISONED:
+            event(
+                "error",
+                "restore --at would replay poisoned chain end",
                 at=at,
                 chain_dir=str(chain_dir),
             )

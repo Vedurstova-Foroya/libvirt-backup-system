@@ -23,12 +23,6 @@ from tests.unit.conftest import ALPHA_UUID
 
 
 def _install_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
-    """Install a real layout under tmp_path and return its Config.
-
-    Rewrites the env file to set BACKUP_REQUIRE_NFS_MOUNT=false / REQUIRE_ROOT=false
-    so doctor's preflight layer passes against a plain tmp dir and a non-root
-    test process. Unit-file rendering does not depend on either key.
-    """
     backup_path = tmp_path / "backups"
     backup_path.mkdir()
     monkeypatch.setenv("BACKUP_PATH", str(backup_path))
@@ -45,14 +39,6 @@ def _install_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
 
 
 def _patch_check_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the preflight portion of doctor pass without real binaries or VMs.
-
-    Mirrors ``patch_valid_preflight`` in test_preflight.py: stubs out the bits
-    doctor inherits from ``check`` (binary discovery, virtnbdbackup version,
-    scratch dir probe, libvirt VM listing, NBD socket probe, df). Tests that
-    want a specific check-side failure to surface just skip the relevant stub
-    or override it inline.
-    """
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.list_vms",
@@ -113,6 +99,18 @@ def test_doctor_reports_need_daemon_reload(tmp_path: Path, monkeypatch, capsys) 
     _fake_systemctl(monkeypatch, need_daemon_reload="yes")
     assert doctor(cfg) == 1
     assert "systemd needs daemon-reload" in capsys.readouterr().err
+
+
+def test_doctor_reports_host_id_drift(tmp_path: Path, monkeypatch, capsys) -> None:
+    cfg = _install_layout(tmp_path, monkeypatch)
+    _patch_check_pass(monkeypatch)
+    _fake_systemctl(monkeypatch)
+    state = tmp_path / "var/lib/libvirt-backup-system/host-id"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("old-host\n", encoding="utf-8")
+
+    assert doctor(cfg) == 1
+    assert "HOST_ID drift detected" in capsys.readouterr().err
 
 
 def test_doctor_reports_timer_never_fired_without_next_elapse(tmp_path: Path, monkeypatch, capsys) -> None:

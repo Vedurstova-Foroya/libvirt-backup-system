@@ -6,7 +6,7 @@ from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID, BETA_UUID
+from tests.unit.conftest import ALPHA_UUID, BETA_UUID, virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
@@ -40,8 +40,7 @@ def test_backup_vm_uses_copy_only_for_shut_off(tmp_path: Path, monkeypatch, back
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
-        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
-        return CommandResult(args, 0, "", "")
+        return virtnbdbackup_fake_success(args, check=check, env=env)
 
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
 
