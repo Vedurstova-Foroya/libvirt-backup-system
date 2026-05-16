@@ -123,6 +123,50 @@ def test_verify_skips_unsafe_month_dir(tmp_path: Path, monkeypatch, capsys, back
     assert "verify skipped because month path is unsafe" in capsys.readouterr().err
 
 
+def test_verify_reports_tmpdir_creation_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    # tempfile.mkdtemp() can fail with ENOSPC / EROFS / permission errors on
+    # an unhealthy host. verify must surface that as a clean error rather
+    # than crashing — the operator can still re-run after fixing the disk.
+    cfg = _verify_config(backup_config)
+    (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)
+
+    def fail(*args: object, **kwargs: object) -> str:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("libvirt_backup_system.verify.tempfile.mkdtemp", fail)
+    monkeypatch.setattr(
+        "libvirt_backup_system.verify.run_streamed",
+        lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    assert verify(cfg, vm_name=ALPHA_UUID) == 1
+    assert "verify staging dir creation failed" in capsys.readouterr().err
+
+
+def test_verify_passes_distinct_tmpdir_to_virtnbdrestore(tmp_path: Path, monkeypatch, backup_config) -> None:
+    # virtnbdrestore -a verify takes a required -o output dir but does not
+    # write to it in v2.x. We still pass a fresh tempdir (not the backup dir)
+    # so a future upstream that introduced writes could not silently mutate
+    # the source backup.
+    cfg = _verify_config(backup_config)
+    backup_dir = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good"
+    backup_dir.mkdir(parents=True)
+    seen: list[tuple[str, str]] = []
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        seen.append((args[args.index("-i") + 1], args[args.index("-o") + 1]))
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr("libvirt_backup_system.verify.run_streamed", fake_run)
+    assert verify(cfg, vm_name=ALPHA_UUID) == 0
+    assert len(seen) == 1
+    input_path, output_path = seen[0]
+    assert input_path == str(backup_dir)
+    assert output_path != str(backup_dir)
+    # Tempdir lives outside the backup tree so a stray write could not land
+    # inside the source backup hierarchy.
+    assert not output_path.startswith(str(tmp_path / "backups"))
+
+
 def test_verify_skips_unsafe_backup_dir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _verify_config(backup_config)
     (tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/good").mkdir(parents=True)

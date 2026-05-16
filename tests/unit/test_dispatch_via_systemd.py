@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from libvirt_backup_system.systemd_units import (
     CHECK_UNIT_NAME,
     DISPATCH_OPT_OUT_ENV,
     RUN_UNIT_NAME,
+    _await_unit,
     dispatch_via_systemd,
 )
 
@@ -154,6 +156,86 @@ def test_dispatch_skips_journalctl_when_invocation_id_missing(tmp_path: Path, mo
 
     assert dispatch_via_systemd("check", prefix=None, config_path=None) == 0
     assert not any(args[:1] == ["journalctl"] for args in calls)
+
+
+def test_await_unit_forwards_sigint_to_systemctl_stop(monkeypatch, capsys) -> None:
+    # The signal handler installed by _await_unit must issue ``systemctl stop
+    # --no-block`` so the operator's Ctrl-C reaches the unit rather than only
+    # the wait-on-start helper, which would otherwise return 130 to the shell
+    # while the unit + run lock keep running. Simulate the handler firing
+    # mid-wait by calling the installed handler directly.
+    handler_holder: dict[str, Any] = {}
+    real_signal = signal.signal
+
+    def capture_signal(signum: int, handler: Any) -> Any:
+        if signum == signal.SIGINT and callable(handler):
+            handler_holder["handler"] = handler
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.signal.signal", capture_signal)
+
+    stop_calls: list[list[str]] = []
+    start_calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, returncode: int) -> None:
+            self.returncode = returncode
+
+    def fake_run(args: list[str], **kwargs: object) -> _Result:
+        if args[:2] == ["systemctl", "start"]:
+            start_calls.append(args)
+            # While "blocking" on start, fire the captured SIGINT handler.
+            handler = handler_holder.get("handler")
+            if callable(handler):
+                handler(signal.SIGINT, None)
+            return _Result(143)
+        if args[:2] == ["systemctl", "stop"]:
+            stop_calls.append(args)
+            return _Result(0)
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    rc = _await_unit(RUN_UNIT_NAME)
+    assert rc == 143
+    assert start_calls == [["systemctl", "start", "--wait", RUN_UNIT_NAME]]
+    assert stop_calls == [["systemctl", "stop", "--no-block", RUN_UNIT_NAME]]
+    assert "forwarded SIGINT to systemd unit" in capsys.readouterr().out
+
+
+def test_await_unit_signal_handler_swallows_oserror(monkeypatch, capsys) -> None:
+    # ``systemctl stop`` itself can fail to spawn (binary disappeared, ENOMEM
+    # mid-shutdown). The handler must not let that re-raise out of the
+    # SIGINT path, which would corrupt the interpreter's signal delivery.
+    handler_holder: dict[str, Any] = {}
+    real_signal = signal.signal
+
+    def capture_signal(signum: int, handler: Any) -> Any:
+        if signum == signal.SIGINT and callable(handler):
+            handler_holder["handler"] = handler
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.signal.signal", capture_signal)
+
+    class _Result:
+        def __init__(self, returncode: int) -> None:
+            self.returncode = returncode
+
+    def fake_run(args: list[str], **kwargs: object) -> _Result:
+        if args[:2] == ["systemctl", "start"]:
+            handler = handler_holder.get("handler")
+            if callable(handler):
+                handler(signal.SIGINT, None)
+            return _Result(0)
+        if args[:2] == ["systemctl", "stop"]:
+            raise OSError("ENOMEM")
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _await_unit(RUN_UNIT_NAME) == 0
+    # The "forwarded" event still fires after the suppressed OSError so the
+    # operator sees the attempt in the journal.
+    assert "forwarded SIGINT to systemd unit" in capsys.readouterr().out
 
 
 def test_unit_name_for_rejects_unknown_subcommand() -> None:

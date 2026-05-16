@@ -16,7 +16,7 @@ Backups are stored as:
 BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
 ```
 
-The `<chain-id>` is the timestamp of the first backup in the monthly incremental chain. Running VMs accumulate per-run incrementals into the same chain directory; each run also appends its `{ts, checkpoint}` entry to `runs.jsonl` inside the chain dir. To restore a specific intermediate run by hand, pass `virtnbdrestore --until <checkpoint>` with the matching name; without `--until` the whole chain replays.
+The `<chain-id>` is the timestamp of the first backup in the monthly incremental chain. Running VMs accumulate per-run incrementals into the same chain directory; each run also appends its `{ts, checkpoint}` entry to `runs.jsonl` inside the chain dir (see [Command reference — How chains map to snapshots](commands.md#how-chains-map-to-snapshots) for the exact JSON-line schema). To restore a specific intermediate run by hand, read any line's `checkpoint` field from `runs.jsonl` and pass it to `virtnbdrestore --until <checkpoint>`; without `--until` the whole chain replays.
 
 ## Recovery outline
 

@@ -102,12 +102,55 @@ def test_prune_old_months_rmtree_failure(tmp_path: Path, backup_config: Config, 
     cfg = _enable_pruning(backup_config, 1)
     _seed(cfg, ALPHA_UUID, ["2025-10", "2026-01"])
 
-    def fail(path: Path) -> None:
+    def fail(path: Path, **kwargs: object) -> None:
         raise OSError("denied")
 
     monkeypatch.setattr("libvirt_backup_system.retention.shutil.rmtree", fail)
     assert prune_old_months(cfg) == 1
     assert "prune failed" in capsys.readouterr().err
+
+
+def test_format_rmtree_error_handles_both_callback_shapes() -> None:
+    # shutil.rmtree's onerror signature changed at Python 3.12: pre-3.12 it
+    # passes ``(exc_type, exc_value, exc_traceback)``; 3.12+ passes the bare
+    # exception. Both must format to the same human-readable string.
+    from libvirt_backup_system.retention import _format_rmtree_error
+
+    err = OSError("EACCES")
+    assert _format_rmtree_error(err) == "EACCES"
+    assert _format_rmtree_error((type(err), err, None)) == "EACCES"
+
+
+def test_prune_old_months_rmtree_partial_left_residue(
+    tmp_path: Path, backup_config: Config, monkeypatch, capsys
+) -> None:
+    # Per-entry onerror swallows the OSError so rmtree returns normally even
+    # though the month dir is still on disk. Retention must then catch the
+    # residue and surface a failure exit code so operators see the incomplete
+    # cleanup. Without this, an ACL-blocked subentry would silently turn
+    # retention into "tried but did nothing useful".
+    cfg = _enable_pruning(backup_config, 1)
+    _seed(cfg, ALPHA_UUID, ["2025-10", "2026-01"])
+    vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
+
+    def partial_rmtree(path: Path, **kwargs: object) -> None:
+        onerror = kwargs.get("onerror")
+        if callable(onerror):
+            # Python <3.12 passes ``(exc_type, exc_value, exc_traceback)``
+            # to onerror; pass the tuple here to exercise that branch of
+            # _format_rmtree_error and the per-entry log path.
+            err = OSError("EACCES")
+            onerror(None, str(path / "stuck"), (type(err), err, None))
+        # Month dir intentionally left in place to simulate the post-onerror
+        # state. The retention layer must catch the survivor and fail.
+
+    monkeypatch.setattr("libvirt_backup_system.retention.shutil.rmtree", partial_rmtree)
+    assert prune_old_months(cfg) == 1
+    err = capsys.readouterr().err
+    assert "prune entry failed" in err
+    assert "prune left residue" in err
+    # Both month dirs survive because onerror left them on disk.
+    assert (vm_dir / "2025-10").is_dir()
 
 
 def test_prune_old_months_mount_required_but_missing(tmp_path: Path, backup_config: Config, capsys) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import secrets
 from pathlib import Path
 
 import pytest
@@ -31,16 +33,30 @@ def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
 
 
 def virtnbdbackup_fake_success(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-    """Mock virtnbdbackup that also produces the output directory.
+    """Mock virtnbdbackup that also produces the output directory and a new checkpoint.
 
     Production-side, backup_vm() now refuses to mark a backup successful unless
     the destination directory exists when virtnbdbackup returns 0 (a defense
-    against hollow successes). Bare ``lambda: CommandResult(...)`` mocks no
-    longer model real virtnbdbackup behavior; tests that want the success path
-    should route through this helper.
+    against hollow successes), and run_records.record_run treats a missing new
+    checkpoint as benign while a write failure aborts the backup. To exercise
+    the success path with the same semantics as the e2e fake, append a new
+    checkpoint entry to ``<vm>.cpt`` so ``list_checkpoints`` sees a delta and
+    ``record_run`` writes a meaningful entry.
     """
-    if args and args[0] == "virtnbdbackup" and "-o" in args:
-        Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True)
+    if not args or args[0] != "virtnbdbackup" or "-o" not in args or "-d" not in args:
+        return CommandResult(args, 0, "", "")
+    dest = Path(args[args.index("-o") + 1])
+    vm_name = args[args.index("-d") + 1]
+    dest.mkdir(parents=True, exist_ok=True)
+    cpt_path = dest / f"{vm_name}.cpt"
+    try:
+        existing = json.loads(cpt_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, list):
+            existing = []
+    except (OSError, json.JSONDecodeError):
+        existing = []
+    existing.append(f"virtnbdbackup.{vm_name}.{secrets.token_hex(4)}")
+    cpt_path.write_text(json.dumps(existing), encoding="utf-8")
     return CommandResult(args, 0, "", "")
 
 
@@ -55,6 +71,15 @@ def backup_config(tmp_path: Path) -> Config:
         }
     )
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def _stub_domain_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    # _finalize_inactive_marker re-reads virsh domstate after the copy to
+    # confirm the VM is still shut off. Default to a stub that matches the
+    # original VM state expectation so unit tests don't shell out; tests
+    # that exercise the mid-copy state drift override this explicitly.
+    monkeypatch.setattr("libvirt_backup_system.backup.domain_state", lambda cfg, name: "shut off")
 
 
 @pytest.fixture(autouse=True)

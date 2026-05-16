@@ -221,6 +221,40 @@ def test_run_backups_success_and_failures(tmp_path: Path, monkeypatch, backup_co
     assert run_backups(cfg) == 0
 
 
+def test_run_backups_uses_per_vm_timestamp(monkeypatch, backup_config) -> None:
+    # Each VM must get its own ``stamp`` because a sequential run over many
+    # VMs can take minutes-to-hours; reusing a single run-start stamp would
+    # tag every later VM as if captured at run start, and restore --at would
+    # then pick a backup actually captured well after the requested time.
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.list_vms",
+        lambda config: [VM("alpha", "running", ALPHA_UUID), VM("beta", "running", BETA_UUID)],
+    )
+    stamps = iter(["20260507T100000", "20260507T103000"])
+    monkeypatch.setattr("libvirt_backup_system.backup.timestamp", lambda: next(stamps))
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.backup_vm",
+        lambda config, vm, month, stamp: (seen.append((vm.name, stamp)) or True),
+    )
+
+    assert run_backups(cfg) == 0
+    assert seen == [("alpha", "20260507T100000"), ("beta", "20260507T103000")]
+
+
+def test_backup_vm_fails_when_record_run_cannot_persist(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
+    # If virtnbdbackup wrote the data but the per-run checkpoint record cannot
+    # be durably stored, restore --at would silently fall back to chain end
+    # (a newer state than the operator asked for). backup_vm must fail loudly
+    # so the operator can re-run instead of believing the chain is restorable.
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
+    monkeypatch.setattr("libvirt_backup_system.backup.record_run", lambda *args, **kwargs: False)
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    assert "run record write failed; failing backup" in capsys.readouterr().err
+
+
 def test_backup_vm_rejects_unsafe_vm_name(backup_config) -> None:
     cfg = _backup_config(backup_config)
     import pytest

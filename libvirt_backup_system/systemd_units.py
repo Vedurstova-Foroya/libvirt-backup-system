@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -107,12 +109,26 @@ WantedBy=timers.target
 """
 
 
+_SYSTEMD_PATH_FORBIDDEN_CHARS = frozenset("`'\"\\")
+
+
 def validate_systemd_path(value: str | Path, label: str) -> str:
     path = str(value)
     if not Path(path).is_absolute():
         raise ValueError(f"{label} must be an absolute path for systemd units: {path}")
     if any(ord(char) < 32 or ord(char) == 127 for char in path):
         raise ValueError(f"{label} must not contain control characters for systemd units")
+    # Reject characters that change the shape of ExecStart= rendering even
+    # under _quote_systemd_path: backticks (no shell expansion at exec time,
+    # but operator scripts and logging pipelines often re-render the line
+    # through a shell), backslashes (continuation/escape), and the quote
+    # characters we use to wrap the value. ``$`` and ``%`` are still handled
+    # by _quote_systemd_path's $$/%% escapes because we own that escape path;
+    # the chars listed here are ones we refuse outright at install time so a
+    # quoting bug can never silently expand them.
+    bad = sorted({char for char in path if char in _SYSTEMD_PATH_FORBIDDEN_CHARS})
+    if bad:
+        raise ValueError(f"{label} must not contain {''.join(bad)!r} for systemd units")
     return path
 
 
@@ -235,7 +251,7 @@ def dispatch_via_systemd(
     if not (prefixed("/etc/systemd/system", root) / unit).exists():
         return None
     event("info", "dispatching to systemd unit", unit=unit, subcommand=subcommand)
-    rc = subprocess.run(["systemctl", "start", "--wait", unit], check=False).returncode
+    rc = _await_unit(unit)
     # ``systemctl show`` returns the most-recent invocation id even after the
     # unit has finished — filter the journal to just this run's output so the
     # operator sees exactly what the unit logged, with no surrounding noise.
@@ -253,3 +269,28 @@ def dispatch_via_systemd(
             stdout=sys.stderr,
         )
     return rc
+
+
+def _await_unit(unit: str) -> int:
+    """Run ``systemctl start --wait`` and forward Ctrl-C to the unit.
+
+    A bare ``systemctl start --wait`` propagates SIGINT to its own process but
+    not to the unit it is waiting on — the operator's Ctrl-C returns 130 to
+    the shell while the unit and the held run lock keep running. Install a
+    handler that issues ``systemctl stop --no-block`` so the unit is asked to
+    stop in the background; we then keep waiting until systemctl returns so
+    the exit code reflects the unit's real outcome (stopped, killed, etc.)
+    instead of the partial 130.
+    """
+    previous = signal.getsignal(signal.SIGINT)
+
+    def _forward(_signum: int, _frame: object) -> None:
+        with contextlib.suppress(OSError):
+            subprocess.run(["systemctl", "stop", "--no-block", unit], check=False)
+        event("info", "forwarded SIGINT to systemd unit via stop --no-block", unit=unit)
+
+    signal.signal(signal.SIGINT, _forward)
+    try:
+        return subprocess.run(["systemctl", "start", "--wait", unit], check=False).returncode
+    finally:
+        signal.signal(signal.SIGINT, previous)

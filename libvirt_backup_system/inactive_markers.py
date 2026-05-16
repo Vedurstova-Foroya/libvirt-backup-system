@@ -11,6 +11,12 @@ from .logging_json import event
 from .storage import subpath_is_safe
 
 LEGACY_FINGERPRINT_FILE_NAME = ".inactive-copy-fingerprint"
+# SHA-256 hexdigest length. The fingerprint we write is ``hashlib.sha256(...
+# ).hexdigest()`` so anything that doesn't match the 64-char-lowercase-hex
+# shape is corruption (truncated write, hand-edit, partial restore from a
+# different format) that must force a safe recopy rather than silently match.
+_FINGERPRINT_HEX_LEN = 64
+_FINGERPRINT_HEX_CHARS = frozenset("0123456789abcdef")
 
 
 def stamp_is_safe(stamp: str) -> bool:
@@ -84,12 +90,25 @@ def _read_marker_lines(marker: Path) -> list[str] | None:
         return None
 
 
+def _is_well_formed_fingerprint(value: str) -> bool:
+    return len(value) == _FINGERPRINT_HEX_LEN and all(c in _FINGERPRINT_HEX_CHARS for c in value)
+
+
 def read_fingerprint(marker: Path) -> str | None:
     lines = _read_marker_lines(marker)
     if lines is None or len(lines) < 2:
         return None
     value = lines[1].strip()
-    return value or None
+    if not value:
+        return None
+    if not _is_well_formed_fingerprint(value):
+        # A truncated write or a hand-edited marker can leave bytes that are
+        # not a valid 64-char hex SHA-256. Returning the malformed string
+        # would happen to mismatch a freshly-computed fingerprint and force
+        # a recopy by accident; returning None makes the intent explicit so
+        # the caller's "no fingerprint => stale" branch fires deterministically.
+        return None
+    return value
 
 
 def _open_excl_nofollow(path: Path) -> int:

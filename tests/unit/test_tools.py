@@ -31,6 +31,12 @@ def test_text_files_filters_dirs_files_and_binary(tmp_path: Path, monkeypatch) -
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git/ignored").write_text("ignored\n", encoding="utf-8")
     (tmp_path / "binary.bin").write_bytes(b"\xff")
+    # ``.egg-info`` trees are produced by ``pip install -e .`` and only exist on
+    # dev hosts. The LOC gate must skip them so CI (fresh clone) and a
+    # locally-installed checkout produce the same result.
+    egg = tmp_path / "libvirt_backup_system.egg-info"
+    egg.mkdir()
+    (egg / "SOURCES.txt").write_text("ignored\n", encoding="utf-8")
     assert [path.name for path in gates.text_files()] == ["ok.py"]
 
 

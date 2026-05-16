@@ -23,7 +23,11 @@ def _write_marker(marker: Path, stamp: str, fingerprint: str) -> None:
     marker.write_text(f"{stamp}\n{fingerprint}\n", encoding="utf-8")
 
 
-def _stub_matching_fingerprint(monkeypatch, marker: Path, value: str = "deadbeef") -> None:
+def _stub_matching_fingerprint(monkeypatch, marker: Path, value: str = "de" * 32) -> None:
+    # ``read_fingerprint`` now validates the marker's second line as a 64-char
+    # hex SHA-256, so test fingerprints must satisfy the same shape — a short
+    # placeholder like ``deadbeef`` is rejected as corrupt and the marker is
+    # then treated as stale.
     existing = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else ["stamp"]
     stamp = existing[0] if existing else "stamp"
     _write_marker(marker, stamp, value)
@@ -269,3 +273,26 @@ def test_domain_xml_fingerprint_returns_none_when_dumpxml_fails(monkeypatch) -> 
         lambda args: (_ for _ in ()).throw(CommandError(CommandResult(args, 1, "", "boom"))),
     )
     assert domain_xml_fingerprint("qemu:///system", "alpha") is None
+
+
+_BASE_XML = "<domain><name>a</name><devices><interface type='network'><source network='default'/></interface></devices></domain>"  # noqa: E501
+_ENRICHED_XML = "<domain><name>a</name><currentMemory unit='KiB'>1</currentMemory><seclabel type='d'/><devices><interface type='network'><mac address='52:54:00:de:ad:be'/><source network='default'/></interface></devices></domain>"  # noqa: E501
+
+
+@pytest.mark.parametrize(
+    ("first_xml", "second_xml"),
+    [
+        # libvirtd re-renders <currentMemory>/<mac>/<seclabel>; canonicalize them.
+        (_BASE_XML, _ENRICHED_XML),
+        # Indentation differs across point releases.
+        ("<domain><name>a</name></domain>", "<domain>\n  <name>a</name>\n</domain>"),
+        # Unparseable XML must still round-trip to a stable fingerprint.
+        ("not-xml", "not-xml"),
+    ],
+)
+def test_domain_xml_fingerprint_canonicalization(monkeypatch, first_xml: str, second_xml: str) -> None:
+    seen = iter([first_xml, second_xml])
+    monkeypatch.setattr("libvirt_backup_system.disks.run", lambda args: _xml_result(next(seen)))
+    first = domain_xml_fingerprint("qemu:///system", "alpha")
+    assert first is not None
+    assert first == domain_xml_fingerprint("qemu:///system", "alpha")

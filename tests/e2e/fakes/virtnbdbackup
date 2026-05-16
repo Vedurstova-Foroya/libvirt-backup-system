@@ -39,7 +39,14 @@ dest = pathlib.Path(args.o)
 dest.mkdir(parents=True, exist_ok=True)
 
 disk_payload = f"disk-data:{args.d}:{args.l}:{secrets.token_hex(4)}".encode()
-disk_file = dest / f"{args.d}.sda.qcow2.data"
+# Real virtnbdbackup encodes the backup level into the data filename
+# (``vda.full.data``, ``vda.inc.virtnbdbackup.<N>.data``, ``vda.copy.data``).
+# Mirror that here so retention's full-backup gate sees the right shape.
+existing_incs = len(list(dest.glob("vda.inc.virtnbdbackup.*.data")))
+if args.l == "inc":
+    disk_file = dest / f"vda.inc.virtnbdbackup.{existing_incs}.data"
+else:
+    disk_file = dest / f"vda.{args.l}.data"
 disk_file.write_bytes(disk_payload)
 
 checkpoint_name = f"virtnbdbackup.{args.d}.{secrets.token_hex(4)}"
@@ -58,5 +65,24 @@ metadata = {
     ],
 }
 (dest / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+# Mirror real virtnbdbackup's authoritative checkpoint state: append the new
+# checkpoint to <domain>.cpt (JSON list, see
+# libvirtnbdbackup/virt/checkpoint.py:save) and drop the per-checkpoint XML
+# under <output>/checkpoints/. The legacy ``<name>.checkpoint`` file is kept
+# as a third witness so back-compat reads still resolve.
+cpt_path = dest / f"{args.d}.cpt"
+try:
+    existing_checkpoints = json.loads(cpt_path.read_text(encoding="utf-8"))
+    if not isinstance(existing_checkpoints, list):
+        existing_checkpoints = []
+except (OSError, json.JSONDecodeError):
+    existing_checkpoints = []
+existing_checkpoints.append(checkpoint_name)
+cpt_path.write_text(json.dumps(existing_checkpoints), encoding="utf-8")
+(dest / "checkpoints").mkdir(exist_ok=True)
+(dest / "checkpoints" / f"{checkpoint_name}.xml").write_text(
+    f"<domaincheckpoint><name>{checkpoint_name}</name></domaincheckpoint>\n",
+    encoding="utf-8",
+)
 (dest / f"{checkpoint_name}.checkpoint").write_text(args.d + "\n", encoding="utf-8")
 print(f"backed up {args.d} level={args.l} to {dest}")

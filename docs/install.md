@@ -49,18 +49,19 @@ For a one-command install from a checkout:
 sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install
 ```
 
-Or install first, edit the environment file, and re-run install:
+Or install first, edit the environment file, validate it, and then start the timer:
 
 ```sh
 sudo python3 -m libvirt_backup_system install
 sudoedit /etc/libvirt-backup-system/libvirt-backup.env
-sudo python3 -m libvirt_backup_system install
 sudo libvirt-backup-system check
+sudo libvirt-backup-system start
+sudo libvirt-backup-system doctor
 ```
 
-The first install leaves `BACKUP_PATH` blank unless it is supplied in the environment. When `BACKUP_PATH` is blank, systemd unit installation is skipped. Re-run `install` after setting it so the service gets the matching `RequiresMountsFor=` dependency.
+The first install leaves `BACKUP_PATH` blank unless it is supplied in the environment. When `BACKUP_PATH` is blank, systemd unit installation is skipped. Run `start` after setting it so the service gets the matching `RequiresMountsFor=` dependency and the timer is activated.
 
-Only `BACKUP_PATH` is honored from the process environment during a first install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`, `BACKUP_COMPRESS`) are written as commented defaults in `libvirt-backup.env` and are silently ignored at install time, because the systemd unit only reads the env file. Set those by editing `libvirt-backup.env` and re-running `install`.
+Only `BACKUP_PATH` is honored from the process environment during a first install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`, `BACKUP_COMPRESS`) are written as commented defaults in `libvirt-backup.env` and are silently ignored at install time, because the systemd unit only reads the env file. Set those by editing `libvirt-backup.env`; run `start` after changing values that affect unit rendering, such as `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR`.
 
 The installer creates:
 
@@ -74,7 +75,7 @@ When `BACKUP_PATH` is configured, it also creates:
 - `/etc/systemd/system/libvirt-backup-system-check.service`
 - `/etc/systemd/system/libvirt-backup-system.timer`
 
-The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
+The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`. `install` writes the units when `BACKUP_PATH` is already configured, but does not enable the timer. `start` re-renders the units from the current environment file, reloads systemd, and enables/starts the timer after `check` has passed.
 
 When the systemd units are installed, `sudo libvirt-backup-system run` and `sudo libvirt-backup-system check` dispatch through the corresponding `.service` unit (via `systemctl start --wait`) so the ad-hoc invocation runs in the exact environment the scheduled timer uses — same `EnvironmentFile=`, `RequiresMountsFor=`, `StateDirectory=`, and hardening directives. The unit's output is replayed to the operator's terminal by filtering the journal on the run's `InvocationID`.
 

@@ -23,14 +23,11 @@ from tests.unit.conftest import ALPHA_UUID
 
 
 def _install_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
-    """Install a real layout under ``tmp_path`` and return a loaded Config.
+    """Install a real layout under tmp_path and return its Config.
 
-    The default env file ships ``BACKUP_REQUIRE_NFS_MOUNT=true`` and
-    ``REQUIRE_ROOT=true`` commented in. Both would make doctor's preflight pass
-    reject a plain tmp directory running as a non-root test process. We rewrite
-    the env file to set both to ``false`` so doctor's check layer succeeds.
-    Unit-file rendering does not depend on either key, so the on-disk units
-    still match what doctor re-renders.
+    Rewrites the env file to set BACKUP_REQUIRE_NFS_MOUNT=false / REQUIRE_ROOT=false
+    so doctor's preflight layer passes against a plain tmp dir and a non-root
+    test process. Unit-file rendering does not depend on either key.
     """
     backup_path = tmp_path / "backups"
     backup_path.mkdir()
@@ -70,19 +67,25 @@ def _patch_check_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _fake_systemctl(
+def _fake_systemctl(  # noqa: PLR0913 - one keyword per systemctl property by design
     monkeypatch: pytest.MonkeyPatch,
     *,
     enabled: str = "enabled",
     active: str = "active",
     result: str = "success",
+    last_trigger: str = "1700000000000000",
+    next_elapse: str = "1700000060000000",
+    need_daemon_reload: str = "no",
     returncode: int = 0,
 ) -> None:
     monkeypatch.setattr("libvirt_backup_system.doctor.systemctl_available", lambda root: True)
     values = {
         (TIMER_UNIT_NAME, "UnitFileState"): enabled,
         (TIMER_UNIT_NAME, "ActiveState"): active,
+        (TIMER_UNIT_NAME, "LastTriggerUSec"): last_trigger,
+        (TIMER_UNIT_NAME, "NextElapseUSecRealtime"): next_elapse,
         (RUN_UNIT_NAME, "Result"): result,
+        (RUN_UNIT_NAME, "NeedDaemonReload"): need_daemon_reload,
     }
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
@@ -99,6 +102,34 @@ def test_doctor_passes_for_healthy_install(tmp_path: Path, monkeypatch, capsys) 
     _patch_check_pass(monkeypatch)
     _fake_systemctl(monkeypatch)
 
+    assert doctor(cfg) == 0
+    assert "doctor passed" in capsys.readouterr().out
+
+
+def test_doctor_reports_need_daemon_reload(tmp_path: Path, monkeypatch, capsys) -> None:
+    # NeedDaemonReload=yes: unit file changed since systemd cached its parse.
+    cfg = _install_layout(tmp_path, monkeypatch)
+    _patch_check_pass(monkeypatch)
+    _fake_systemctl(monkeypatch, need_daemon_reload="yes")
+    assert doctor(cfg) == 1
+    assert "systemd needs daemon-reload" in capsys.readouterr().err
+
+
+def test_doctor_reports_timer_never_fired_without_next_elapse(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Freshly installed host: LastTriggerUSec=0, NextElapseUSecRealtime=0.
+    # Cross-check distinguishes "never fired" from Result=success default.
+    cfg = _install_layout(tmp_path, monkeypatch)
+    _patch_check_pass(monkeypatch)
+    _fake_systemctl(monkeypatch, last_trigger="0", next_elapse="0")
+    assert doctor(cfg) == 1
+    assert "timer has not fired and no next elapse scheduled" in capsys.readouterr().err
+
+
+def test_doctor_treats_never_fired_with_scheduled_next_elapse_as_healthy(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Post-install steady state: never fired yet but a future trigger is set.
+    cfg = _install_layout(tmp_path, monkeypatch)
+    _patch_check_pass(monkeypatch)
+    _fake_systemctl(monkeypatch, last_trigger="0", next_elapse="1700000060000000")
     assert doctor(cfg) == 0
     assert "doctor passed" in capsys.readouterr().out
 
@@ -177,10 +208,10 @@ def test_doctor_skips_unit_checks_when_backup_path_empty_and_units_absent(tmp_pa
 
 
 def test_doctor_reports_stale_units_when_backup_path_emptied(tmp_path: Path, monkeypatch, capsys) -> None:
-    # Operator hand-edited BACKUP_PATH= back to empty without re-running
-    # install. validate_config flags the empty value, but the previously
-    # installed unit files stay on disk. doctor should hint that install
-    # needs to be re-run to bring registration back in sync with config.
+    # Operator hand-edited BACKUP_PATH= back to empty without running start.
+    # validate_config flags the empty value, but the previously installed unit
+    # files stay on disk. doctor should hint that start needs to refresh
+    # registration after the config is fixed.
     cfg = _install_layout(tmp_path, monkeypatch)
     _patch_check_pass(monkeypatch)
     _fake_systemctl(monkeypatch)
@@ -189,7 +220,7 @@ def test_doctor_reports_stale_units_when_backup_path_emptied(tmp_path: Path, mon
     failures = _check_units(cfg)
     assert len(failures) == 1
     assert "systemd units present but BACKUP_PATH is empty" in failures[0]
-    assert "re-run install" in failures[0]
+    assert "run start" in failures[0]
 
 
 def test_systemctl_value_strips_stdout(tmp_path: Path, monkeypatch) -> None:

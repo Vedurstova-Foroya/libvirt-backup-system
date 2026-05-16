@@ -52,7 +52,12 @@ def _timeout_output(value: str | bytes | None) -> str:
 
 def configure_default_timeout(value: str) -> None:
     global _default_timeout_seconds  # noqa: PLW0603
-    parsed = int(value)
+    # ``int(value)`` rejected operator-edited values like ``86400.0``; parse
+    # through ``float`` first so any finite numeric form works.
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"command timeout must be a number: {value!r}") from exc
     if parsed <= 0:
         raise ValueError("command timeout must be greater than 0")
     _default_timeout_seconds = parsed
@@ -69,28 +74,33 @@ def run(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
 ) -> CommandResult:
-    # ``env=None`` means subprocess inherits the parent process environment
-    # in full. That is the intended behavior for libvirt-backup-system today
-    # (no secrets pass through these shells), but callers handling sensitive
-    # state must pass an explicit allowlist mapping instead of relying on
-    # inheritance.
+    # ``env=None`` inherits the parent process env. subprocess.run(timeout)
+    # only signals the leader, so a fork+setsid grandchild would outlive the
+    # run lock. Drive Popen by hand so timeout reaches the whole process
+    # group, mirroring run_streamed's escalation.
+    command = args[0] if args else ""
+    timeout_seconds = _effective_timeout(timeout)
+    proc = subprocess.Popen(
+        args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True
+    )
     try:
-        proc = subprocess.run(
-            args, text=True, capture_output=True, env=env, check=False, timeout=_effective_timeout(timeout)
-        )
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        command = args[0] if args else ""
-        event("error", "command timed out", command=command, timeout_seconds=_effective_timeout(timeout))
-        result = CommandResult(
-            args=args,
-            returncode=TIMEOUT_RETURN_CODE,
-            stdout=_timeout_output(exc.stdout),
-            stderr=_timeout_output(exc.stderr),
-        )
+        event("error", "command timed out", command=command, timeout_seconds=timeout_seconds)
+        _kill_process_group(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout = _timeout_output(exc.stdout)
+            stderr = _timeout_output(exc.stderr)
+        result = CommandResult(args=args, returncode=TIMEOUT_RETURN_CODE, stdout=stdout or "", stderr=stderr or "")
         if check:
             raise CommandError(result) from exc
         return result
-    result = CommandResult(args=args, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+    except BaseException:
+        _kill_process_group(proc)
+        raise
+    result = CommandResult(args=args, returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "")
     if check and proc.returncode != 0:
         raise CommandError(result)
     return result

@@ -181,7 +181,7 @@ def test_virtnbdbackup_version_returns_no_failures_when_missing(monkeypatch) -> 
 def test_virtnbdbackup_version_reports_probe_oserror(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
 
-    def fail_run(args, *, check=True, env=None):
+    def fail_run(args, *, check=True, env=None, timeout=None):
         raise OSError("spawn denied")
 
     monkeypatch.setattr("libvirt_backup_system.preflight.run", fail_run)
@@ -193,7 +193,7 @@ def test_virtnbdbackup_version_reports_non_zero_return_code(monkeypatch) -> None
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.run",
-        lambda args, *, check=True, env=None: CommandResult(args, 2, "", "boom"),
+        lambda args, *, check=True, env=None, timeout=None: CommandResult(args, 2, "", "boom"),
     )
     failures = _virtnbdbackup_version_failures()
     assert failures == ["virtnbdbackup --version failed: rc=2"]
@@ -203,7 +203,7 @@ def test_virtnbdbackup_version_reports_unparseable(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.run",
-        lambda args, *, check=True, env=None: CommandResult(args, 0, "unintelligible", ""),
+        lambda args, *, check=True, env=None, timeout=None: CommandResult(args, 0, "unintelligible", ""),
     )
     failures = _virtnbdbackup_version_failures()
     assert failures
@@ -214,7 +214,7 @@ def test_virtnbdbackup_version_rejects_unsupported_major(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.run",
-        lambda args, *, check=True, env=None: CommandResult(args, 0, "virtnbdbackup 3.0", ""),
+        lambda args, *, check=True, env=None, timeout=None: CommandResult(args, 0, "virtnbdbackup 3.0", ""),
     )
     failures = _virtnbdbackup_version_failures()
     assert failures
@@ -229,6 +229,6 @@ def test_virtnbdbackup_version_accepts_supported_majors(monkeypatch, reported: s
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: "/bin/virtnbdbackup")
     monkeypatch.setattr(
         "libvirt_backup_system.preflight.run",
-        lambda args, *, check=True, env=None: CommandResult(args, 0, "", reported),
+        lambda args, *, check=True, env=None, timeout=None: CommandResult(args, 0, "", reported),
     )
     assert _virtnbdbackup_version_failures() == []

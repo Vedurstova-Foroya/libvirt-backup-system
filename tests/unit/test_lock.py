@@ -25,7 +25,7 @@ def test_acquire_run_lock_stamps_holder_pid(tmp_path: Path) -> None:
         assert held.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
-def test_acquire_run_lock_tolerates_pid_write_failure(tmp_path: Path, monkeypatch) -> None:
+def test_acquire_run_lock_tolerates_pid_write_failure(tmp_path: Path, monkeypatch, capsys) -> None:
     cfg = _config(tmp_path)
 
     def fail_write(fd: int, data: bytes) -> int:
@@ -35,6 +35,12 @@ def test_acquire_run_lock_tolerates_pid_write_failure(tmp_path: Path, monkeypatc
     # PID stamping is diagnostic only; a write failure must not break locking.
     with acquire_run_lock(cfg) as held:
         assert held.exists()
+    # The previous silent except hid filesystem problems (full disk, frozen
+    # NFS) so an unstamped lock looked the same as a stamped one. Surface
+    # the failure as a logged warning so operators see the underlying issue.
+    err = capsys.readouterr().err
+    assert "lock PID stamp write failed" in err
+    assert "disk full" in err
 
 
 def test_acquire_run_lock_creates_lockfile_and_releases(tmp_path: Path) -> None:

@@ -2,10 +2,22 @@
 import sys
 
 args = sys.argv[1:]
+UUIDS = {
+    "alpha": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "beta": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "ignore-me": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+}
+DOMAINS = ("alpha", "beta", "ignore-me")
 if "list" in args and "--name" in args:
-    print("alpha")
-    print("beta")
-    print("ignore-me")
+    # list_vms now batches name+uuid through a single ``virsh list --all
+    # --uuid --name`` invocation. Real virsh prints ``<uuid>   <name>`` rows
+    # in that mode; the fake mirrors the same shape when both flags appear.
+    if "--uuid" in args:
+        for name in DOMAINS:
+            print(f"{UUIDS[name]} {name}")
+    else:
+        for name in DOMAINS:
+            print(name)
     raise SystemExit(0)
 if "domstate" in args:
     name = args[-1]
@@ -18,18 +30,13 @@ if "domstate" in args:
     raise SystemExit(0)
 if "domuuid" in args:
     name = args[-1]
-    uuids = {
-        "alpha": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        "beta": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-        "ignore-me": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-    }
-    if name not in uuids:
+    if name not in UUIDS:
         raise SystemExit(1)
-    print(uuids[name])
+    print(UUIDS[name])
     raise SystemExit(0)
 if "dumpxml" in args:
     name = args[-1]
-    if name not in {"alpha", "beta", "ignore-me"}:
+    if name not in DOMAINS:
         raise SystemExit(1)
     print(
         f"<domain>"

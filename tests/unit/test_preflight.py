@@ -96,10 +96,7 @@ def test_check_reports_common_failures(monkeypatch, capsys, backup_config) -> No
 
 
 def test_validate_config_reports_numeric_and_path_edge_cases(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    backup_config,
+    tmp_path: Path, monkeypatch, capsys, backup_config
 ) -> None:
     cfg = _preflight_config(backup_config)
     cfg.values["SPACE_MARGIN_PERCENT"] = "bad"
@@ -110,16 +107,9 @@ def test_validate_config_reports_numeric_and_path_edge_cases(
     assert "SPACE_MARGIN_PERCENT must be an integer" in err
     assert "BACKUP_ESTIMATE_GB_PER_VM must be greater than or equal to 0" in err
     assert "BACKUP_PATH must exist" in err
-
     backup_path = tmp_path / "backup"
     backup_path.mkdir()
-    cfg.values.update(
-        {
-            "SPACE_MARGIN_PERCENT": "20",
-            "BACKUP_ESTIMATE_GB_PER_VM": "1",
-            "BACKUP_PATH": str(backup_path),
-        }
-    )
+    cfg.values.update({"SPACE_MARGIN_PERCENT": "20", "BACKUP_ESTIMATE_GB_PER_VM": "1", "BACKUP_PATH": str(backup_path)})
     monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: False)
     assert validate_config(cfg) == 1
     assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
@@ -147,14 +137,10 @@ def test_check_handles_discovery_and_backup_space_errors(monkeypatch, capsys, ba
     cfg.path_value("BACKUP_PATH").mkdir()
     monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight.list_vms", lambda config: (_ for _ in ()).throw(RuntimeError("no libvirt"))
-    )
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight._df_available_kb",
-        lambda path: (_ for _ in ()).throw(RuntimeError("bad df")),
-    )
-
+    raise_no_libvirt = lambda config: (_ for _ in ()).throw(RuntimeError("no libvirt"))  # noqa: E731
+    raise_bad_df = lambda path: (_ for _ in ()).throw(RuntimeError("bad df"))  # noqa: E731
+    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", raise_no_libvirt)
+    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", raise_bad_df)
     assert check(cfg) == 1
     err = capsys.readouterr().err
     assert "libvirt VM discovery failed" in err
@@ -252,6 +238,9 @@ def _patch_check_preamble(monkeypatch, *, available_kb: int = 2_000_000) -> None
         ("foo\x00bar", "HOST_ID must not contain control characters or NUL"),
         ("a/b", "HOST_ID must not contain path separators or be '.'/'..'"),
         ("..", "HOST_ID must not contain path separators or be '.'/'..'"),
+        (" host", "HOST_ID must not have leading or trailing whitespace"),
+        ("host ", "HOST_ID must not have leading or trailing whitespace"),
+        ("\u00a0host", "HOST_ID must not have leading or trailing whitespace"),  # NBSP
     ],
 )
 def test_validate_config_rejects_unsafe_host_id(backup_config, capsys, value: str, expected: str) -> None:
@@ -279,6 +268,20 @@ def test_check_reports_missing_scratch_dir(tmp_path: Path, monkeypatch, capsys, 
     monkeypatch.setattr("libvirt_backup_system.preflight.SCRATCH_DIR", tmp_path / "missing-scratch")
     assert check(cfg) == 1
     assert "must exist as a directory for virtnbdbackup scratch state" in capsys.readouterr().err
+
+
+def test_check_does_not_create_host_id_when_boolean_is_invalid(monkeypatch, capsys, backup_config) -> None:
+    # bool_value() degrades non-true strings to False, so BACKUP_REQUIRE_NFS_MOUNT=typo
+    # previously skipped the mount check and created BACKUP_PATH/HOST_ID before
+    # reporting the boolean failure. Preflight must refuse to write on invalid config.
+    cfg = _preflight_config(backup_config)
+    backup_path = cfg.path_value("BACKUP_PATH")
+    backup_path.mkdir()
+    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "typo"
+    patch_valid_preflight(monkeypatch)
+    assert check(cfg) == 1
+    assert "BACKUP_REQUIRE_NFS_MOUNT must be a boolean value" in capsys.readouterr().err
+    assert not (backup_path / cfg.get("HOST_ID")).exists()
 
 
 def test_check_reports_unwritable_scratch_dir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:

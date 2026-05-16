@@ -19,11 +19,16 @@ from .systemd_units import (
 WRAPPER_PATH = "/usr/local/bin/libvirt-backup-system"
 PACKAGE_PATH = "/opt/libvirt-backup-system/libvirt_backup_system"
 SYSTEMD_DIR = "/etc/systemd/system"
-# ``Result`` is ``success`` both before the first run and after a clean run, so
-# we cannot distinguish "never fired" from "passed" here. Anything outside this
-# set (exit-code, signal, timeout, oom-kill, core-dump, watchdog, ...) means the
-# most-recent run did not complete cleanly.
+# Anything outside this set (exit-code, signal, timeout, oom-kill, core-dump,
+# watchdog, ...) means the most-recent run did not complete cleanly. The
+# ``success`` value also fires before the first run, so the timer
+# LastTriggerUSec is consulted alongside ``Result`` to tell "never fired" apart
+# from "succeeded".
 HEALTHY_RUN_RESULTS = frozenset({"", "success"})
+# Properties systemd returns as the all-zeros value when the timer has not
+# fired yet or has no future trigger scheduled. ``0`` is the literal stringy
+# answer from ``systemctl show --value`` on a fresh install.
+NEVER_FIRED_PROPERTY_VALUES = frozenset({"", "0"})
 
 
 def _check_wrapper(root: Path) -> list[str]:
@@ -66,9 +71,9 @@ def _expected_unit_text(config: Config, name: str) -> str | None:
 def _check_units(config: Config) -> list[str]:
     # install skips writing unit files when BACKUP_PATH is empty; validate_config
     # already flags the empty value, so there is no separate failure to add here.
-    # But if the operator hand-edited BACKUP_PATH= back to empty without re-running
-    # install, the previously-installed units stay on disk — flag that as a hint
-    # to re-run install so the registration matches the new config.
+    # But if the operator hand-edited BACKUP_PATH= back to empty without
+    # running start, the previously-installed units stay on disk — flag that as
+    # a hint to refresh registration so it matches the new config.
     if not config.get("BACKUP_PATH").strip():
         systemd_dir = prefixed(SYSTEMD_DIR, config.prefix)
         stale = [
@@ -77,21 +82,23 @@ def _check_units(config: Config) -> list[str]:
             if (systemd_dir / name).is_file()
         ]
         if stale:
-            return [f"systemd units present but BACKUP_PATH is empty; re-run install: {', '.join(stale)}"]
+            return [
+                "systemd units present but BACKUP_PATH is empty; " f"run start after fixing config: {', '.join(stale)}"
+            ]
         return []
     failures: list[str] = []
     systemd_dir = prefixed(SYSTEMD_DIR, config.prefix)
     for name in (RUN_UNIT_NAME, CHECK_UNIT_NAME, TIMER_UNIT_NAME):
         unit_path = systemd_dir / name
         if not unit_path.is_file():
-            failures.append(f"systemd unit missing: {unit_path}; run install")
+            failures.append(f"systemd unit missing: {unit_path}; run start")
             continue
         expected = _expected_unit_text(config, name)
         if expected is None:
             failures.append(f"cannot validate {unit_path}: rendering expected unit failed")
             continue
         if unit_path.read_text(encoding="utf-8") != expected:
-            failures.append(f"systemd unit out of date: {unit_path}; re-run install")
+            failures.append(f"systemd unit out of date: {unit_path}; run start")
     return failures
 
 
@@ -108,12 +115,28 @@ def _check_runtime_state(root: Path) -> list[str]:
     failures: list[str] = []
     enabled = _systemctl_value(TIMER_UNIT_NAME, "UnitFileState")
     if enabled != "enabled":
-        failures.append(f"timer not enabled: {TIMER_UNIT_NAME} UnitFileState={enabled or 'unknown'}; run install")
+        failures.append(f"timer not enabled: {TIMER_UNIT_NAME} UnitFileState={enabled or 'unknown'}; run start")
     active = _systemctl_value(TIMER_UNIT_NAME, "ActiveState")
     if active != "active":
         failures.append(f"timer not active: {TIMER_UNIT_NAME} ActiveState={active or 'unknown'}")
+    # NeedDaemonReload catches the case where the unit file on disk matches
+    # what install would render today, but systemd is still running an older
+    # cached copy because nobody ran ``daemon-reload`` after a hand-edit.
+    if _systemctl_value(RUN_UNIT_NAME, "NeedDaemonReload") == "yes":
+        failures.append(f"systemd needs daemon-reload: {RUN_UNIT_NAME} cached unit is stale; run start")
     last_result = _systemctl_value(RUN_UNIT_NAME, "Result")
-    if last_result not in HEALTHY_RUN_RESULTS:
+    last_trigger = _systemctl_value(TIMER_UNIT_NAME, "LastTriggerUSec")
+    next_elapse = _systemctl_value(TIMER_UNIT_NAME, "NextElapseUSecRealtime")
+    if last_trigger in NEVER_FIRED_PROPERTY_VALUES:
+        # ``Result=success`` is also the pre-first-fire value. Cross-checking
+        # the timer lets doctor say "never fired" instead of falsely claiming
+        # the run passed; the next elapse only counts as a green signal when
+        # the timer has actually scheduled a future trigger.
+        if next_elapse in NEVER_FIRED_PROPERTY_VALUES:
+            failures.append(
+                f"timer has not fired and no next elapse scheduled: {TIMER_UNIT_NAME}; check systemctl list-timers"
+            )
+    elif last_result not in HEALTHY_RUN_RESULTS:
         failures.append(f"last run failed: {RUN_UNIT_NAME} Result={last_result}")
     return failures
 

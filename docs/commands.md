@@ -2,13 +2,13 @@
 
 ## `install`
 
-Installs the package copy, wrapper script, config file, and systemd units when `BACKUP_PATH` is configured.
+Installs the package copy, wrapper script, config file, and systemd units when `BACKUP_PATH` is configured. It does not enable the timer; run `check` and then `start` after editing the environment file.
 
 ```sh
 sudo libvirt-backup-system install
 ```
 
-When run via the installed wrapper the package files at `/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute would delete the source being copied). The wrapper, env file, and systemd units are still re-rendered, so this form is the right one for changing `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR`. To pick up new package code, run `install` from a source checkout instead:
+When run via the installed wrapper the package files at `/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute would delete the source being copied). The wrapper, env file, and systemd units are still refreshed, but `start` is the explicit command for applying `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR` changes and activating the timer. To pick up new package code, run `install` from a source checkout instead:
 
 ```sh
 sudo python3 -m libvirt_backup_system install
@@ -44,6 +44,14 @@ Any failure from either layer is reported under the same `doctor failed` event s
 
 ```sh
 sudo libvirt-backup-system doctor
+```
+
+## `start`
+
+Installs or refreshes the systemd unit files from the current environment file, reloads systemd, and enables/starts `libvirt-backup-system.timer`. Use this after `install`, editing `/etc/libvirt-backup-system/libvirt-backup.env`, and `check`; use `run` when you want to execute a backup immediately.
+
+```sh
+sudo libvirt-backup-system start
 ```
 
 ## `run`
@@ -110,7 +118,9 @@ If omitted, the latest snapshot across all months wins. If `--at` is *earlier* t
 
 `--at` resolves at **per-run (checkpoint) granularity**. Each successful backup writes a `runs.jsonl` record into its chain directory mapping the run's UTC timestamp to the new `virtnbdbackup` checkpoint. Restore picks the chain whose start is at-or-before `--at`, then within that chain selects the latest recorded run at-or-before `--at` and passes `virtnbdrestore --until <checkpoint>` so replay stops exactly there. A May 1st chain with daily incrementals through May 20th plus `--at 2026-05-10T12:00:00` recovers the May 10th state — not May 20th and not May 1st.
 
-> **Legacy fallback.** Chain directories created before this feature shipped have no `runs.jsonl`. For those, `--at` still selects the right chain, but the replay runs to chain end (the old chain-end semantics) because there is no per-run record to target. A single fresh backup of the affected VM begins recording new runs going forward; the prior chain remains chain-end-only until a new chain starts. The same fallback applies if `runs.jsonl` is truncated or hand-edited into invalid JSON.
+> **Legacy fallback.** Chain directories created before this feature shipped have no `runs.jsonl` at all. For those, `--at` still selects the right chain, but the replay runs to chain end (the old chain-end semantics) because there is no per-run record to target. A single fresh backup of the affected VM begins recording new runs going forward; the prior chain remains chain-end-only until a new chain starts.
+>
+> Chains where `runs.jsonl` *is* present but unusable — truncated by power loss, hand-edited into invalid JSON, or with no record at-or-before `--at` — are **not** treated as legacy. Falling back to chain end there would silently restore a newer state than the operator asked for, so `restore` refuses with `restore --at has no matching run record` and the operator either fixes the file or picks a different `--at`.
 
 ### How chains map to snapshots
 

@@ -10,14 +10,15 @@ From a checkout on the KVM host, set the backup mount path and install:
 sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install
 ```
 
-Then verify and run once:
+Then verify the install, activate the timer, and run a health check:
 
 ```sh
 sudo libvirt-backup-system check
-sudo libvirt-backup-system run
+sudo libvirt-backup-system start
+sudo libvirt-backup-system doctor
 ```
 
-The systemd timer is installed with the default schedule `*-*-* 02:30:00`.
+`start` installs or refreshes the systemd units from the environment file and activates the timer. The default schedule is `*-*-* 02:30:00`.
 
 ## Basic use
 

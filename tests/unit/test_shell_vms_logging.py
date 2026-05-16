@@ -101,14 +101,12 @@ def test_list_vms_filters_blacklist(monkeypatch) -> None:
     cfg = Config.load(prefix="/tmp")
     cfg.values["VM_BLACKLIST"] = "beta"
     calls: list[list[str]] = []
-    uuid_for = {"alpha": ALPHA_UUID, "beta": BETA_UUID}
+    listing = f"{ALPHA_UUID} alpha\n{BETA_UUID} beta\n\n"
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         calls.append(args)
         if "list" in args:
-            return CommandResult(args, 0, "alpha\nbeta\n\n", "")
-        if "domuuid" in args:
-            return CommandResult(args, 0, uuid_for[args[-1]] + "\n", "")
+            return CommandResult(args, 0, listing, "")
         return CommandResult(args, 0, "running\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
@@ -118,27 +116,29 @@ def test_list_vms_filters_blacklist(monkeypatch) -> None:
         VM("beta", "running", BETA_UUID),
     ]
     assert calls[0][:3] == ["virsh", "-c", "qemu:///system"]
+    assert "--uuid" in calls[0]
+    assert "--name" in calls[0]
     domstate_calls = [call for call in calls if "domstate" in call]
-    domuuid_calls = [call for call in calls if "domuuid" in call]
     assert domstate_calls
-    assert domuuid_calls
-    for call in domstate_calls + domuuid_calls:
+    # The new (uuid, name) tabular list call replaces the per-VM domuuid fork,
+    # so domuuid must no longer appear during list_vms.
+    assert not [call for call in calls if "domuuid" in call]
+    for call in domstate_calls:
         assert call[-2:-1] == ["--"]
 
 
 def test_list_vms_raises_when_state_lookup_fails(monkeypatch, capsys) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
+    listing = f"{ALPHA_UUID} alpha\n{BETA_UUID} beta\n"
 
     def fake_run(
         args: list[str], *, check: bool = True, env: object = None, timeout: float | None = None
     ) -> CommandResult:
         if "list" in args:
-            return CommandResult(args, 0, "alpha\nbeta\n", "")
+            return CommandResult(args, 0, listing, "")
         if args[-1] == "beta":
             raise CommandError(CommandResult(args, 1, "", "gone"))
-        if "domuuid" in args:
-            return CommandResult(args, 0, ALPHA_UUID + "\n", "")
         return CommandResult(args, 0, "running\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
@@ -291,7 +291,7 @@ def test_list_vms_rejects_unsafe_vm_name(monkeypatch) -> None:
     for unsafe in ("-evil", "..", "a/b"):
 
         def fake_run(args: list[str], *, check: bool = True, env: object = None, _value: str = unsafe) -> CommandResult:
-            return CommandResult(args, 0, f"{_value}\n", "")
+            return CommandResult(args, 0, f"{ALPHA_UUID} {_value}\n", "")
 
         monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
         with pytest.raises(ValueError, match="unsafe VM name"):

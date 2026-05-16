@@ -18,12 +18,58 @@ def _dump_domain_xml(uri: str, vm_name: str) -> str:
     return run(["virsh", "-c", uri, "dumpxml", "--inactive", "--", vm_name]).stdout
 
 
+# Element paths libvirt either re-renders on every dumpxml or that move when
+# the libvirtd binary is upgraded — stripping them before fingerprinting keeps
+# a routine libvirt point-release from invalidating every monthly inactive
+# marker and forcing a global recopy. ``<mac>`` is included because libvirt
+# regenerates the auto-allocated MAC on some interface definitions; keeping
+# the surrounding ``<interface>`` element preserves topology detection.
+_VOLATILE_FINGERPRINT_ELEMENTS = (
+    "currentMemory",
+    "seclabel",
+    "metadata",
+    "memoryBacking",
+    "mac",
+)
+
+
+def _canonicalize_for_fingerprint(xml_text: str) -> str:
+    try:
+        # ``virsh dumpxml`` output is produced by a local libvirtd we already
+        # shell out to elsewhere; there is no untrusted XML source here. If
+        # parsing fails we fall back to the raw text so a fingerprint is
+        # still produced.
+        domain = ET.fromstring(xml_text)  # noqa: S314
+    except ET.ParseError:
+        return xml_text
+    for element_name in _VOLATILE_FINGERPRINT_ELEMENTS:
+        for parent in domain.iter():
+            for child in list(parent):
+                if child.tag == element_name:
+                    parent.remove(child)
+    for element in domain.iter():
+        # Collapse whitespace-only text/tail to empty so libvirtd's varying
+        # indentation between versions does not perturb the fingerprint.
+        if element.text is not None and not element.text.strip():
+            element.text = None
+        if element.tail is not None and not element.tail.strip():
+            element.tail = None
+    return ET.tostring(domain, encoding="unicode")
+
+
 def domain_xml_fingerprint(uri: str, vm_name: str) -> str | None:
     """Return a SHA256 over the inactive dumpxml for ``vm_name``, or ``None``.
 
     Stored next to the inactive marker so disk attach/detach, device topology
     changes, or any other domain XML edit invalidates the monthly copy even
     when the underlying disk files have mtimes older than the marker.
+
+    Before hashing, libvirt-version-volatile fields (``<currentMemory>``,
+    auto-generated ``<seclabel>``, ``<metadata>``, ``<memoryBacking>``, and
+    regenerated ``mac`` attributes) are stripped so a libvirtd package
+    upgrade does not falsely invalidate every monthly marker and force a
+    global recopy. The remaining structure still catches disks added/removed,
+    device topology changes, and CPU/memory edits.
     """
     try:
         xml_text = _dump_domain_xml(uri, vm_name)
@@ -32,7 +78,8 @@ def domain_xml_fingerprint(uri: str, vm_name: str) -> str | None:
         # CommandError so callers fail closed (stale marker) instead of crashing
         # backup orchestration mid-run.
         return None
-    return hashlib.sha256(xml_text.encode("utf-8")).hexdigest()
+    canonical = _canonicalize_for_fingerprint(xml_text)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def vm_disk_paths(uri: str, vm_name: str) -> list[str]:

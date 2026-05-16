@@ -13,11 +13,11 @@ from .inactive_markers import marked_backup_dir, marker_is_regular, remove_finge
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
 from .paths import backup_root, runtime_backup_path_ok, write_name_marker
-from .run_records import list_checkpoints, record_run
+from .run_records import CheckpointReadError, list_checkpoints, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
-from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
+from .vms import VM, domain_state, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
 __all__ = [
     "backup_root",
@@ -32,18 +32,16 @@ __all__ = [
 
 
 def current_month(now: dt.datetime | None = None) -> str:
-    # Calendar-month bucket keyed by the wall-clock year+month. Unlike ISO
-    # weeks there is no year-boundary subtlety: a Dec 31 run lands in
-    # ``YYYY-12`` and the next-day Jan 1 run cleanly rolls into ``YYYY+1-01``.
+    # Calendar-month bucket keyed by wall-clock year+month: Dec 31 → YYYY-12,
+    # Jan 1 → YYYY+1-01, no ISO-week year-boundary edge cases.
     now = now or dt.datetime.now(dt.timezone.utc)
     return f"{now.year:04d}-{now.month:02d}"
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
-    # Second precision in UTC. The run lock (acquire_run_lock) serializes
-    # whole runs, so collisions only matter for sequential runs landing in the
-    # same second; ``_prepare_dest`` catches the rare overlap and errors out
-    # rather than overwriting an existing chain dir.
+    # Second precision UTC. acquire_run_lock serializes whole runs; same-second
+    # collisions only matter for new chain dir creation, where _prepare_dest
+    # refuses overwrite rather than clobber prior data.
     now = now or dt.datetime.now(dt.timezone.utc)
     return now.strftime("%Y%m%dT%H%M%S")
 
@@ -74,25 +72,15 @@ def _remove_partial_destination(dest: Path, vm_name: str) -> None:
 
 
 def _confirm_inactive_marker_still_fresh(backup_dir: Path, vm: VM, month: str) -> bool:
-    # Re-check the backup directory exists immediately before returning, so a
-    # concurrent operator removal between marked_backup_dir() and here forces a
-    # recopy rather than a false "already fresh" claim.
+    # Re-check that backup_dir exists so a concurrent operator removal between
+    # marked_backup_dir() and here forces a recopy rather than "already fresh".
     try:
         if not backup_dir.is_dir():
-            event(
-                "info",
-                "inactive marker backup directory disappeared, recopying",
-                vm=vm.name,
-                path=str(backup_dir),
-            )
+            event("info", "inactive marker backup directory disappeared, recopying", vm=vm.name, path=str(backup_dir))
             return False
     except OSError as exc:
         event(
-            "error",
-            "inactive marker backup directory recheck failed",
-            vm=vm.name,
-            path=str(backup_dir),
-            error=str(exc),
+            "error", "inactive marker backup directory recheck failed", vm=vm.name, path=str(backup_dir), error=str(exc)
         )
         return False
     event("info", "inactive VM already copied this month", vm=vm.name, month=month)
@@ -113,6 +101,13 @@ def _finalize_inactive_marker(  # noqa: PLR0913
         return False
     if not _ensure_safe(config, month_dir, "inactive marker skipped because destination became unsafe"):
         return False
+    # Re-check VM state after virtnbdbackup -l copy: backup_vm chose the copy
+    # path from a pre-run state snapshot, so a VM started mid-copy would
+    # otherwise be marked as a trusted full/copy when the data is live-state.
+    post_state = domain_state(config, vm.name)
+    if post_state is None or post_state.strip().lower() != "shut off":
+        event("error", "inactive backup not trusted: VM is no longer shut off", vm=vm.name, post_state=post_state or "")
+        return False
     post_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
     if post_fingerprint is None:
         event("error", "inactive fingerprint computation failed", vm=vm.name)
@@ -122,10 +117,8 @@ def _finalize_inactive_marker(  # noqa: PLR0913
         return False
     if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
         return False
-    # Backdate the marker to the pre-copy timestamp so any mid-copy or
-    # post-copy disk write has a newer mtime than the marker and forces a
-    # recopy. A marker stamped "now" (post-copy) would falsely register a
-    # mid-copy modification as fresh.
+    # Backdate to pre-copy time so any mid- or post-copy disk write has a
+    # newer mtime than the marker and forces a recopy.
     try:
         os.utime(inactive_marker, (pre_copy_time, pre_copy_time))
     except OSError as exc:
@@ -166,10 +159,9 @@ def _virtnbdbackup_cmd(config: Config, vm: VM, level: str, dest: Path) -> list[s
 
 def _prepare_dest(config: Config, vm: VM, month_dir: Path, dest: Path, *, owns_chain_dir: bool) -> bool:
     if owns_chain_dir and dest.exists():
-        # Refuse to overwrite a chain dir we own end-to-end: a rapid retry or
-        # backward clock jump must never delete prior data. Incremental runs
-        # into an existing chain dir are expected, so the guard only fires when
-        # this run created (or would create) the chain dir.
+        # End-to-end-owned chain dir: refuse overwrite so a retry or backward
+        # clock jump cannot delete prior data. Incrementals reuse the dir and
+        # do not own it, so the guard only fires for new fulls/copies.
         event("error", "backup destination already exists", vm=vm.name, destination=str(dest))
         return False
     if not runtime_backup_path_ok(config):
@@ -192,9 +184,8 @@ def _run_virtnbdbackup(config: Config, vm: VM, cmd: list[str], dest: Path, *, ow
     try:
         run_streamed(cmd)
     except CommandError as exc:
-        # Incrementals must NOT clean their chain dir on failure: it holds the
-        # prior full + any earlier increments. Only when this run owns the
-        # chain dir end-to-end (new full, or inactive copy) is removal safe.
+        # Incrementals reuse the chain dir; only end-to-end-owned dirs (new
+        # full / inactive copy) are safe to clean on failure.
         if owns_chain_dir and dest.exists():
             _attempt_partial_cleanup(config, dest, vm.name)
         event("error", "backup failed", vm=vm.name, returncode=exc.result.returncode, stderr=exc.result.stderr.strip())
@@ -225,25 +216,36 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
         destination=str(resolution.chain_dir),
         chain_id=resolution.chain_dir.name,
     )
-    checkpoints_before = list_checkpoints(resolution.chain_dir)
+    try:
+        checkpoints_before = list_checkpoints(resolution.chain_dir, vm.name)
+    except CheckpointReadError as exc:
+        # Chain dir exists but checkpoint metadata is unreadable: virtnbdbackup
+        # would either compute the wrong diff (stale baseline) or succeed with
+        # no recordable name. Fail before touching the chain.
+        event(
+            "error",
+            "checkpoint metadata read failed",
+            vm=vm.name,
+            chain_dir=str(resolution.chain_dir),
+            error=str(exc),
+        )
+        return False
     if not _run_virtnbdbackup(config, vm, cmd, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
         return False
-    record_run(resolution.chain_dir, stamp, checkpoints_before)
+    if not record_run(resolution.chain_dir, stamp, checkpoints_before, vm.name):
+        # Restore --at would silently fall back to chain end (newer state than
+        # asked for) without a durable run record; fail loudly instead.
+        event("error", "run record write failed; failing backup", vm=vm.name, chain_dir=str(resolution.chain_dir))
+        return False
     write_name_marker(resolution.chain_dir, vm.name)
     if resolution.is_new_chain and not write_chain_state(
         month_dir, resolution.chain_dir.name, pre_fingerprint, vm.name
     ):
         return False
-    # Re-check BACKUP_REQUIRE_NFS_MOUNT after the copy completes: virtnbdbackup
-    # writing to a path that lost its NFS mount mid-run would have silently
-    # landed on the underlying local directory.
+    # Re-check the NFS mount: a drop mid-run silently lands writes on the
+    # underlying local directory.
     if not runtime_backup_path_ok(config):
-        event(
-            "error",
-            "backup completed but backup path is no longer mounted",
-            vm=vm.name,
-            destination=str(resolution.chain_dir),
-        )
+        event("error", "backup completed but backup path no longer mounted", vm=vm.name)
         return False
     event("info", "backup completed", vm=vm.name, destination=str(resolution.chain_dir))
     return True
@@ -284,15 +286,13 @@ def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
 
 
 def run_backups(config: Config, *, month: str | None = None) -> int:
-    vms = list_vms(config)
-    # ``month`` is supplied by the ``run`` CLI so the value captured here is
-    # the same one used for the entire run. Computing it locally only happens
-    # when called directly (e.g. tests); the CLI always pins it once at run
-    # start.
+    # ``stamp`` is recomputed per VM: a single run-start stamp across a
+    # minutes-to-hours sequential run would let ``restore --at`` pick a
+    # backup taken well after the requested moment. Same-second collisions
+    # are safe — ``_prepare_dest`` refuses overwrite on new-chain creation.
     month = month or current_month()
-    stamp = timestamp()
     ok = True
-    for vm in vms:
-        if not backup_vm(config, vm, month, stamp):
+    for vm in list_vms(config):
+        if not backup_vm(config, vm, month, timestamp()):
             ok = False
     return 0 if ok else 1

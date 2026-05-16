@@ -7,7 +7,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from .backup import run_backups, verify
+from .backup import current_month, run_backups, verify
 from .config import Config
 from .doctor import doctor
 from .installer import install, uninstall
@@ -17,13 +17,22 @@ from .preflight import check, validate_config
 from .restore import restore
 from .retention import prune_old_months
 from .shell import configure_default_timeout
+from .systemd_start import start
 from .systemd_units import dispatch_via_systemd, status
 from .vms import list_vms
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="libvirt-backup-system")
-    parser.add_argument("--config", help="Path to libvirt-backup.env")
+    parser.add_argument(
+        "--config",
+        help=(
+            "Path to libvirt-backup.env. Supplying this flag forces ``run``/"
+            "``check`` to execute in-process (the installed systemd unit "
+            "bakes in a fixed config path, so honoring a different path means "
+            "skipping systemd dispatch)."
+        ),
+    )
     parser.add_argument("--prefix", help="Root prefix for install paths")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -37,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", aliases=["preflight"])
     sub.add_parser("doctor")
     sub.add_parser("run")
+    sub.add_parser("start")
     sub.add_parser("status")
 
     list_parser = sub.add_parser("list-vms")
@@ -54,9 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target time (e.g. 2026-05-07, 2026-05-07T10:11, 20260507T101112). "
         "Restores to the latest backup run at-or-before this. Chains backed "
         "up by this version record each run's checkpoint and restore stops "
-        "exactly there (``virtnbdrestore --until``); legacy chains without "
-        "per-run records replay the whole chain so the recovered state may "
-        "include later incrementals. Omit for the latest snapshot.",
+        "exactly there (``virtnbdrestore --until``); chains predating that "
+        "feature have no run records and replay end-to-end so the recovered "
+        "state may include later incrementals. A chain with a record file "
+        "that is unusable for the requested time is refused, not silently "
+        "replayed. Omit for the latest snapshot.",
     )
 
     return parser
@@ -78,7 +90,19 @@ def _run_command(config: Config) -> int:
             # cleanup leaves retention entirely to operators / external tools.
             if not config.enabled("BACKUP_CLEANUP_ON_RUN"):
                 return backup_code
-            return max(backup_code, prune_old_months(config))
+            if backup_code != 0:
+                # A failed run can leave the current month without a fresh
+                # backup for the affected VMs. Pruning now would delete the
+                # oldest still-good month while the newest month is incomplete,
+                # so wait for a clean run before touching retention.
+                event("info", "retention skipped because backups did not all succeed")
+                return backup_code
+            # Gate retention on the current calendar month landing a backup:
+            # with retention=12 the oldest month only drops once month 13's
+            # first full has actually written its chain dir, so a missed or
+            # delayed run never collapses the window below the operator's
+            # configured horizon.
+            return max(backup_code, prune_old_months(config, current_month=current_month()))
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
@@ -103,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "install":
             return install(args.prefix, config_path=args.config)
+        if args.command == "start":
+            return start(args.prefix, config_path=args.config)
         if args.command == "status":
             return status(args.prefix)
         if args.command == "uninstall":

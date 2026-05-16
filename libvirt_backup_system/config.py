@@ -103,7 +103,7 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "BACKUP_COMPRESS",
     None,
     "# systemd OnCalendar value used when the timer unit is installed.",
-    "# Re-run install or edit/reload the timer if this changes after install.",
+    "# Run start after changing this so the timer is refreshed and reloaded.",
     "SYSTEMD_ON_CALENDAR",
     None,
     "# Extra free-space margin added to preflight's backup size estimate.",

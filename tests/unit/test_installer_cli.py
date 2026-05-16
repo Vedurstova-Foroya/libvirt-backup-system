@@ -40,7 +40,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config, *, current_month=None: 0)
     assert main(["run"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 2)
@@ -68,8 +68,9 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
 
 def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) -> None:
-    # Pruning failure must NOT roll back a successful backup; ``run`` returns
-    # the higher of the two codes so operators still see the failure.
+    # Successful backup + failed prune returns the prune code. A failing
+    # backup short-circuits prune entirely so retention never deletes the
+    # oldest still-good month while the newest month is incomplete.
     @contextlib.contextmanager
     def fake_lock(config: object):
         yield Path("/tmp/fake.lock")
@@ -79,10 +80,13 @@ def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 1)
+    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config, *, current_month=None: 1)
     assert main(["run"]) == 1
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 2)
-    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config: 0)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.prune_old_months",
+        lambda config, *, current_month=None: (_ for _ in ()).throw(AssertionError("must not prune after failed run")),
+    )
     assert main(["run"]) == 2
 
 
@@ -99,7 +103,7 @@ def test_cli_run_skips_pruning_when_disabled(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
     monkeypatch.setattr(
         "libvirt_backup_system.cli.prune_old_months",
-        lambda config: (_ for _ in ()).throw(AssertionError("must not prune when disabled")),
+        lambda config, *, current_month=None: (_ for _ in ()).throw(AssertionError("must not prune when disabled")),
     )
     assert main(["run"]) == 0
 

@@ -94,6 +94,42 @@ def test_restore_at_legacy_chain_without_runs_jsonl_replays_chain_end(
     assert "-u" not in captured[0]
 
 
+def test_restore_at_refuses_when_runs_jsonl_has_no_matching_record(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    # runs.jsonl exists but every record is later than --at (e.g. the leading
+    # records were truncated by a power loss). Falling back to chain end would
+    # silently restore a NEWER state than the operator asked for; restore must
+    # refuse instead.
+    cfg = _disable_mount(backup_config)
+    chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
+    _write_runs_jsonl(
+        chain_dir,
+        [("20260505T120000", "virtnbdbackup.4"), ("20260506T120000", "virtnbdbackup.5")],
+    )
+    captured = _capture_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-03T00:00:00") == 1
+    assert captured == []
+    assert "restore --at has no matching run record" in capsys.readouterr().err
+
+
+def test_restore_at_refuses_when_runs_jsonl_is_empty(
+    tmp_path: Path, monkeypatch, backup_config: Config, capsys
+) -> None:
+    # An empty / all-corrupt runs.jsonl means we cannot prove what's in this
+    # chain. Distinct from LEGACY (no file at all): MISSING refuses, LEGACY
+    # falls through to chain end.
+    cfg = _disable_mount(backup_config)
+    chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
+    (chain_dir / "runs.jsonl").write_text("not-json\n", encoding="utf-8")
+    captured = _capture_run(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-03T00:00:00") == 1
+    assert captured == []
+    assert "restore --at has no matching run record" in capsys.readouterr().err
+
+
 def test_restore_without_at_never_passes_until(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
     # Even when runs.jsonl exists, omitting --at means "latest snapshot":
     # restore must not stop early at the first recorded checkpoint.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import tempfile
 from pathlib import Path
 
 from .config import Config, iter_month_dirs
@@ -47,27 +49,50 @@ def _iter_verify_targets(config: Config, root: Path, name_or_uuid: str | None) -
 
 
 def _verify_backup_dir(backup_dir: Path) -> bool:
+    # ``-a verify`` is the documented action selector in v2.x; ``-o`` is
+    # required even though verify mode does not write to it. We hand it a
+    # throwaway tempdir rather than ``backup_dir`` itself so a future upstream
+    # change that introduced writes to ``-o`` could never silently mutate the
+    # source backup. mode=0o700 keeps the empty staging dir unreadable to
+    # other users even though it stays empty for the duration of verify.
     try:
-        # ``-a verify`` is the documented action selector in v2.x; ``-o`` is
-        # the required output directory (verify mode does not write to it).
-        # The pre-v2.x ``-o verify`` shortcut still works but is undocumented
-        # in upstream releases and easy to misread, so use the explicit form.
-        run_streamed(["virtnbdrestore", "-a", "verify", "-i", str(backup_dir), "-o", str(backup_dir)])
-    except CommandError as exc:
-        event("error", "verify failed", backup=str(backup_dir), stderr=exc.result.stderr.strip())
-        return False
+        tmp_out = tempfile.mkdtemp(prefix="virtnbdverify-")
     except OSError as exc:
-        # FileNotFoundError / PermissionError from Popen — virtnbdrestore is
-        # missing on this host. Surface it as a clean operator error rather
-        # than the cli's generic fatal-traceback path so a recovery-host
-        # operator who skipped ``check`` gets a useful message.
-        event("error", "verify failed: virtnbdrestore unavailable", backup=str(backup_dir), error=str(exc))
+        event("error", "verify staging dir creation failed", backup=str(backup_dir), error=str(exc))
         return False
+    try:
+        try:
+            run_streamed(["virtnbdrestore", "-a", "verify", "-i", str(backup_dir), "-o", tmp_out])
+        except CommandError as exc:
+            event("error", "verify failed", backup=str(backup_dir), stderr=exc.result.stderr.strip())
+            return False
+        except OSError as exc:
+            # FileNotFoundError / PermissionError from Popen — virtnbdrestore
+            # is missing on this host. Surface it as a clean operator error
+            # rather than the cli's generic fatal-traceback path so a
+            # recovery-host operator who skipped ``check`` gets a useful
+            # message.
+            event("error", "verify failed: virtnbdrestore unavailable", backup=str(backup_dir), error=str(exc))
+            return False
+    finally:
+        # Best-effort cleanup; a future upstream that does write here would
+        # leave files behind, but the next run still gets a fresh tempdir so
+        # leakage is bounded.
+        with contextlib.suppress(OSError):
+            Path(tmp_out).rmdir()
     event("info", "verify passed", backup=str(backup_dir))
     return True
 
 
 def verify(config: Config, vm_name: str | None = None) -> int:
+    """Run ``virtnbdrestore -a verify`` against backups already on disk.
+
+    Unlike ``run``, ``verify`` intentionally ignores ``VM_BLACKLIST``: a VM
+    that has been blacklisted today may still have valid backups from before
+    it was added, and the operator should still be able to check that those
+    on-disk backups are intact. The whole-VM blacklist semantics are scoped to
+    *taking* backups, not to verifying or restoring them.
+    """
     root = backup_root(config)
     backup_path = config.path_value("BACKUP_PATH")
     roots, name_ok = _iter_verify_targets(config, root, vm_name)
@@ -91,7 +116,11 @@ def verify(config: Config, vm_name: str | None = None) -> int:
                 if not _verify_backup_dir(backup_dir):
                     ok = False
                 verified += 1
-    if verified == 0:
+    # ``name_ok`` is False when ``--vm <name>`` did not resolve; ``_resolve_target``
+    # already logged the specific reason ("verify target not found", etc.) so a
+    # second "verify found no backups" event would just double-log the same
+    # cause. Skip it when the target itself was unresolvable.
+    if verified == 0 and name_ok:
         event("error", "verify found no backups", vm=vm_name or None, root=str(root))
         ok = False
     return 0 if ok else 1

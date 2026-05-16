@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import datetime as dt
+import stat
 from pathlib import Path
 
 from .config import Config, is_month_dir_name
 from .inactive_markers import stamp_is_safe
 from .logging_json import event
 from .paths import backup_root, runtime_backup_path_ok
-from .run_records import select_checkpoint
+from .run_records import SelectStatus, select_checkpoint
 from .shell import CommandError, run_streamed
-from .storage import subpath_is_safe
+from .storage import resolved_path_is_within, subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid, resolve_vm_uuid
 
 # Chain dirs are named with backup.timestamp() in UTC, e.g. ``20260507T101112``.
@@ -104,19 +105,49 @@ def _pick_snapshot(snapshots: list[tuple[dt.datetime, Path]], at: dt.datetime | 
     return None
 
 
-def _validate_output(output: Path) -> bool:
-    if output.exists():
+def _validate_output(output: Path, backup_path: Path) -> bool:
+    # Reject symlinks before anything else: ``output.exists()`` follows the
+    # link, so an attacker-controlled symlink pointing at an empty directory
+    # would otherwise pass the "exists + empty" guard and let virtnbdrestore
+    # write through the symlink to a path of the attacker's choosing. ``lstat``
+    # does not follow, so a dangling symlink also fails here.
+    try:
+        link_st = output.lstat()
+    except FileNotFoundError:
+        link_st = None
+    except OSError as exc:
+        event("error", "restore output stat failed", output=str(output), error=str(exc))
+        return False
+    if link_st is not None and stat.S_ISLNK(link_st.st_mode):
+        event("error", "restore output is a symlink", output=str(output))
+        return False
+    try:
+        output_is_in_backup_path = resolved_path_is_within(backup_path, output)
+    except (OSError, RuntimeError) as exc:
+        event("error", "restore output path resolution failed", output=str(output), error=str(exc))
+        return False
+    if output_is_in_backup_path:
+        event("error", "restore output is inside BACKUP_PATH", output=str(output), backup_path=str(backup_path))
+        return False
+    if link_st is not None:
+        if not stat.S_ISDIR(link_st.st_mode):
+            event("error", "restore output is not a directory", output=str(output))
+            return False
         try:
             entries = list(output.iterdir())
-        except (NotADirectoryError, OSError) as exc:
+        except OSError as exc:
             event("error", "restore output is not a usable directory", output=str(output), error=str(exc))
             return False
         if entries:
             event("error", "restore output is not empty", output=str(output))
             return False
         return True
+    # Path is absent: create it with restricted permissions so virtnbdrestore
+    # writes into a directory we own. ``parents=True`` keeps the operator
+    # ergonomics of pointing at a nested staging path; ``exist_ok=False``
+    # closes the TOCTOU window between the lstat above and the mkdir.
     try:
-        output.mkdir(parents=True, exist_ok=False)
+        output.mkdir(parents=True, exist_ok=False, mode=0o700)
     except OSError as exc:
         event("error", "restore output directory creation failed", output=str(output), error=str(exc))
         return False
@@ -137,11 +168,18 @@ def restore(
     run timestamp to the new virtnbdbackup checkpoint, and restore passes
     ``virtnbdrestore --until <checkpoint>`` to stop exactly at that run.
 
-    Legacy chains without ``runs.jsonl`` fall back to chain-end semantics
-    (``--until`` is omitted and the whole chain is replayed). The same fall
-    back applies inside chains where the matching record is corrupt or
-    missing — restore picks the chain by start time, then stops at the
-    matching checkpoint when one is recorded.
+    Chains predating this feature ship with no ``runs.jsonl`` at all and
+    legitimately fall back to chain-end semantics (``--until`` is omitted and
+    the whole chain is replayed). Chains where ``runs.jsonl`` exists but is
+    unusable (truncated, hand-edited into invalid JSON, or with every record
+    in the future of ``at``) are refused: silently falling back to chain end
+    would restore a newer state than the operator asked for, and the safer
+    answer is an explicit failure that the operator can resolve manually.
+
+    ``VM_BLACKLIST`` is intentionally ignored here: a VM that has been
+    blacklisted today may still have valid backups taken before it was added,
+    and the operator must be able to recover from them. The blacklist scopes
+    to *taking* backups, not to restoring them.
     """
     if not runtime_backup_path_ok(config):
         return 1
@@ -172,9 +210,24 @@ def restore(
     if not subpath_is_safe(backup_path, chain_dir):
         event("error", "restore skipped because chain path is unsafe", path=str(chain_dir))
         return 1
-    if not _validate_output(output):
+    if not _validate_output(output, backup_path):
         return 1
-    checkpoint = select_checkpoint(chain_dir, target) if target is not None else None
+    checkpoint: str | None = None
+    if target is not None:
+        selection = select_checkpoint(chain_dir, target)
+        if selection.status is SelectStatus.MISSING:
+            # ``runs.jsonl`` is present but has no record at-or-before ``at``
+            # (truncated first record, or every record is in the future).
+            # Falling back to chain end would silently restore a newer state
+            # than the operator asked for — refuse instead.
+            event(
+                "error",
+                "restore --at has no matching run record",
+                at=at,
+                chain_dir=str(chain_dir),
+            )
+            return 1
+        checkpoint = selection.checkpoint
     cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(output)]
     if checkpoint is not None:
         cmd.extend(["-u", checkpoint])

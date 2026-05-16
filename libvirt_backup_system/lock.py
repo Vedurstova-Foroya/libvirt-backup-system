@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from .config import Config, prefixed
+from .logging_json import event
 
 LOCK_FILE_NAME = "run.lock"
 STATE_DIR = "/var/lib/libvirt-backup-system"
@@ -37,14 +38,16 @@ def acquire_run_lock(config: Config) -> Iterator[Path]:
         except BlockingIOError as exc:
             raise LockBusyError(path) from exc
         # Stamp the holder's PID so an operator paging in mid-run can see who
-        # is holding the lock (cat run.lock). flock keeps mutual exclusion;
-        # this is purely diagnostic so we ignore I/O failures.
+        # is holding the lock (cat run.lock). flock keeps mutual exclusion, so
+        # a stamping failure does not affect correctness; log it anyway so
+        # filesystem problems (full disk, frozen NFS) surface in the run logs
+        # instead of as an unhelpful empty lock file.
         try:
             os.ftruncate(fd, 0)
             os.lseek(fd, 0, os.SEEK_SET)
             os.write(fd, f"{os.getpid()}\n".encode("ascii"))
-        except OSError:
-            pass
+        except OSError as exc:
+            event("warning", "lock PID stamp write failed", path=str(path), error=str(exc))
         try:
             yield path
         finally:

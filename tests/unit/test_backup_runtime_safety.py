@@ -243,7 +243,7 @@ def test_backup_vm_running_revalidates_nfs_after_copy(tmp_path: Path, monkeypatc
 
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     err = capsys.readouterr().err
-    assert "backup completed but backup path is no longer mounted" in err
+    assert "backup completed but backup path no longer mounted" in err
 
 
 def test_confirm_inactive_marker_recopies_when_backup_dir_disappears(

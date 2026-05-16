@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from libvirt_backup_system.config import DEFAULTS, Config
@@ -203,6 +204,45 @@ def test_install_rejects_control_char_config_path(tmp_path: Path, capsys) -> Non
 
     err = capsys.readouterr().err
     assert "config_path must not contain control characters for systemd units" in err
+
+
+def test_install_creates_config_with_mode_0o600(tmp_path: Path, monkeypatch) -> None:
+    # Env file may grow secrets via operator edits; install must atomically
+    # create it with mode 0o600 instead of write_text+chmod (world-readable window).
+    import stat as _stat
+
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    assert install(str(tmp_path)) == 0
+    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    assert _stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_write_initial_config_skips_write_when_file_appears_under_race(tmp_path: Path, monkeypatch) -> None:
+    # A parallel writer between exists() and our O_EXCL open must not be
+    # truncated; FileExistsError is silently ignored.
+    from libvirt_backup_system.installer import _write_initial_config
+
+    config_path = tmp_path / "config.env"
+    config_path.write_text("pre-existing\n", encoding="utf-8")
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
+        del dir_fd
+        if str(path) == str(config_path):
+            raise FileExistsError(17, "file exists", str(path))
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.os.open", fake_open)
+    _write_initial_config(config_path, "new-content\n")
+    assert config_path.read_text(encoding="utf-8") == "pre-existing\n"
+
+
+def test_install_rejects_backticked_config_path(tmp_path: Path, capsys) -> None:
+    # Backticks survive _quote_systemd_path: systemd does not run /bin/sh, but
+    # operator tooling re-rendering the unit through a shell would expand them.
+    assert install(str(tmp_path), config_path=str(tmp_path / "bad`name.env")) == 1
+    err = capsys.readouterr().err
+    assert "config_path must not contain '`'" in err
 
 
 def test_install_rejects_relative_backup_path(tmp_path: Path, monkeypatch, capsys) -> None:

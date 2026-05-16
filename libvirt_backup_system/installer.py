@@ -22,22 +22,17 @@ from .systemd_units import (
 
 __all__ = ["UNIT_SERVICE", "UNIT_TIMER", "install", "uninstall"]
 
-# Only BACKUP_PATH is honored from the process environment during a first
-# install. Other keys are intentionally ignored because Config.render_env writes
-# them as commented defaults, which silently desyncs the systemd-rendered value
-# from what runtime Config.load would later read back from the env file.
+# Only BACKUP_PATH is honored from the process env on first install: other
+# keys render as commented defaults and would desync from the systemd unit.
 INSTALL_TIME_ENV_KEYS = ("BACKUP_PATH",)
 
 
 def _install_package(package_src: Path, package_dst: Path) -> None:
-    # Running ``sudo libvirt-backup-system install`` via the installed wrapper
-    # imports this module from /opt/libvirt-backup-system/libvirt_backup_system,
-    # which is the very directory package_dst resolves to. A rmtree+copytree
-    # pair there would delete the live source mid-execute. Detect the
-    # self-source case (or a nested-under-dst variant) and skip the package
-    # copy; the wrapper script, env file, and systemd units are still
-    # refreshed by the caller. Code refreshes must come from a source
-    # checkout, e.g. ``sudo python3 -m libvirt_backup_system install``.
+    # ``sudo libvirt-backup-system install`` imports this module from
+    # /opt/libvirt-backup-system, which is package_dst — an rmtree+copytree
+    # there would delete the live source mid-execute. Detect the self-source
+    # case and skip the package copy; refresh code from a source checkout via
+    # ``sudo python3 -m libvirt_backup_system install``.
     resolved_src = package_src.resolve()
     resolved_dst = package_dst.resolve() if package_dst.exists() else package_dst
     if resolved_src == resolved_dst or resolved_dst in resolved_src.parents:
@@ -100,13 +95,29 @@ def _install_without_backup_path(root: Path, systemd_dir: Path, resolved_config:
     return 0 if ok else 1
 
 
+def _write_initial_config(path: Path, content: str) -> None:
+    # O_CREAT|O_EXCL|0o600 in one open: write_text + chmod 0o600 would leave
+    # a window where the env (libvirt URI, possibly secrets) is world-readable.
+    # O_EXCL also closes the exists()-vs-open TOCTOU window so a parallel
+    # writer's file is left intact instead of truncated.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        return
+    try:
+        os.write(fd, content.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def _print_install_next_steps(config_path: Path, bin_path: Path) -> None:
     lines = [
         "",
         "Next steps:",
         f"  sudoedit {config_path}",
         "",
-        "Set the required backup path, then re-run install so the systemd mount dependency matches it:",
+        "Set the required backup path, then run start so the systemd mount dependency matches it:",
         "  BACKUP_PATH=/mnt/qnap-backups",
         "",
         "NFS/QNAP mounts are required by default. For an intentionally local backup directory, uncomment:",
@@ -116,9 +127,10 @@ def _print_install_next_steps(config_path: Path, bin_path: Path) -> None:
         "of every successful run. Tune BACKUP_RETENTION_MONTHS or set BACKUP_CLEANUP_ON_RUN=false",
         "to disable pruning.",
         "",
-        "Then validate and run:",
+        "Then validate and activate the timer:",
         f"  sudo {bin_path} check",
-        f"  sudo {bin_path} run",
+        f"  sudo {bin_path} start",
+        f"  sudo {bin_path} doctor",
         "",
     ]
     print("\n".join(lines), flush=True)
@@ -132,16 +144,9 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return 1
-    # Once the env file exists it is the source of truth, so env overrides are
-    # off. On a first install we still want the documented `BACKUP_PATH=... install`
-    # one-shot to work, but only for the keys listed in INSTALL_TIME_ENV_KEYS —
-    # other keys would otherwise be rendered as commented defaults and silently
-    # ignored by the systemd unit at runtime.
-    cfg = Config.load(
-        config_path=str(resolved_config),
-        prefix=str(root),
-        apply_env_overrides=False,
-    )
+    # Env file wins once it exists; first install still honors INSTALL_TIME_ENV_KEYS
+    # so the documented `BACKUP_PATH=... install` one-shot works.
+    cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
     if not resolved_config.exists():
         for env_key in INSTALL_TIME_ENV_KEYS:
             env_value = os.environ.get(env_key)
@@ -180,8 +185,7 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
 
     resolved_config.parent.mkdir(parents=True, exist_ok=True)
     if not resolved_config.exists():
-        resolved_config.write_text(cfg.render_env(), encoding="utf-8")
-        resolved_config.chmod(0o600)
+        _write_initial_config(resolved_config, cfg.render_env())
 
     _print_install_next_steps(resolved_config, bin_path)
     if not backup_path:
@@ -194,19 +198,9 @@ def install(prefix: str | None = None, *, config_path: str | None = None) -> int
     event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(resolved_config))
 
     if not systemctl_available(root):
-        event("info", "systemd activation skipped", root_prefix=str(root))
+        event("info", "systemd reload skipped", root_prefix=str(root))
         return 0
-    return (
-        0
-        if run_systemctl(
-            root,
-            [
-                ["systemctl", "daemon-reload"],
-                ["systemctl", "enable", "--now", "libvirt-backup-system.timer"],
-            ],
-        )
-        else 1
-    )
+    return 0 if run_systemctl(root, [["systemctl", "daemon-reload"]]) else 1
 
 
 def _remove_installed_files(root: Path) -> bool:
@@ -239,9 +233,8 @@ def _remove_installed_files(root: Path) -> bool:
 def _resolve_purge_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list[Path]:
     paths: list[Path] = []
     if flags["config"]:
-        # Remove only the env file; the default parent /etc/libvirt-backup-system
-        # may hold sibling files (drop-ins, operator notes) the user dropped in,
-        # and a recursive rmtree of the directory would wipe them too.
+        # Env file only — the parent dir may hold operator-dropped siblings
+        # (drop-ins, notes) that an rmtree would silently wipe.
         paths.append(cfg.path)
     if flags["state"]:
         paths.append(prefixed("/var/lib/libvirt-backup-system", root))
@@ -277,9 +270,8 @@ def uninstall(
 ) -> int:
     root = root_prefix(prefix)
     cfg = Config.load(config_path=config_path, prefix=str(root), apply_env_overrides=False)
-    # A broken COMMAND_TIMEOUT_SECONDS in the env file would otherwise abort the
-    # very uninstall (especially `--purge-config`) that is meant to clean it up.
-    # Log and continue with the built-in default rather than refusing to act.
+    # A broken COMMAND_TIMEOUT_SECONDS must not abort the very uninstall
+    # (especially `--purge-config`) meant to clean it up — log and continue.
     try:
         configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
     except ValueError as exc:

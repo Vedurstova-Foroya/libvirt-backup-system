@@ -46,7 +46,7 @@ def _df_available_kb(path: Path) -> int:
 
 
 def _disk_virtual_size_bytes(path: str) -> int:
-    # ``-U`` allows inspecting images held open by a running qemu; ``info`` is read-only.
+    # ``-U`` allows inspecting images held open by a running qemu.
     result = run(["qemu-img", "info", "--output=json", "-U", "--", path])
     info = json.loads(result.stdout)
     return int(info["virtual-size"])
@@ -85,8 +85,7 @@ def _vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
         except (CommandError, OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
             stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
             event("warning", "qemu-img info failed for disk", vm=vm.name, disk=disk, error=str(exc), stderr=stderr)
-            # Per-disk allowance: ``max(total, fallback)`` would let a failed disk count as zero.
-            total += fallback_bytes
+            total += fallback_bytes  # per-disk; ``max(total, fb)`` would zero a failed disk
     return total or fallback_bytes
 
 
@@ -109,14 +108,16 @@ def _estimate_required_kb(config: Config, vms: list[VM]) -> int:
 
 def _validate_required_present(config: Config) -> list[str]:
     failures = [f"{k} must not be empty" for k in sorted(CONFIG_KEYS - {"VM_BLACKLIST"}) if not config.get(k).strip()]
-    # HOST_ID flows into Path(); reject path separators, "."/".." traversal,
-    # NUL/tab/newline that would crash later at Path() construction.
+    # HOST_ID flows into Path(); reject shapes that crash Path() or shift the
+    # on-disk BACKUP_PATH/<host_id>/ away from the operator's source string.
     host_id = config.get("HOST_ID")
     if host_id.strip():
         if host_id in {".", ".."} or "/" in host_id or "\\" in host_id:
             failures.append("HOST_ID must not contain path separators or be '.'/'..'")
         elif any(ord(c) < 32 or ord(c) == 127 for c in host_id):
             failures.append("HOST_ID must not contain control characters or NUL")
+        elif host_id != host_id.strip():
+            failures.append("HOST_ID must not have leading or trailing whitespace")
     return failures
 
 
@@ -152,9 +153,8 @@ def _validate_floats(config: Config) -> list[str]:
         if not math.isfinite(value):
             failures.append(f"{key} must be a finite number")
             continue
-        # Zero on the multiplier would collapse the space estimate, disabling the check.
         if key == "BACKUP_INCREMENTAL_MULTIPLIER" and value <= 0:
-            failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")
+            failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")  # zero collapses estimate
         elif key != "BACKUP_INCREMENTAL_MULTIPLIER" and value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
@@ -162,16 +162,16 @@ def _validate_floats(config: Config) -> list[str]:
 
 def _parse_major_version(text: str) -> int | None:
     match = re.search(r"(\d+)(?:\.(\d+))?", text)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return int(match.group(1)) if match else None
 
 
 def _virtnbdbackup_version_failures() -> list[str]:
     if not shutil.which("virtnbdbackup"):
         return []  # already reported by the missing-binary check
     try:
-        result = run(["virtnbdbackup", "--version"], check=False)
+        # 10s cap so a wedged ``--version`` cannot pin the run lock under the
+        # 24h default command timeout.
+        result = run(["virtnbdbackup", "--version"], check=False, timeout=10)
     except OSError as exc:
         return [f"virtnbdbackup version probe failed: {exc}"]
     if result.returncode != 0:
@@ -218,18 +218,19 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
     if failures or not config.get("BACKUP_PATH").strip():
         return failures
     backup_path = config.path_value("BACKUP_PATH")
+    mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
+    mount_msg = "BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"
+    # Re-check the mount before mkdir AND the write probe so an NFS drop
+    # between phases cannot silently pollute the local mountpoint.
     try:
         host_root = backup_root(config)
-        # Re-check the mount before mkdir and again before the write probe; an NFS
-        # drop between phases would otherwise pollute the local mountpoint silently.
-        mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
         if mount_required and not backup_path.is_mount():
-            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
+            return [mount_msg]
         host_root.mkdir(parents=True, exist_ok=True)
         if not subpath_is_safe(backup_path, host_root):
             return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
         if mount_required and not backup_path.is_mount():
-            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
+            return [mount_msg]
         _write_probe(host_root / WRITE_PROBE_NAME)
     except OSError as exc:
         return [f"BACKUP_PATH must be writable: {exc}"]
@@ -237,20 +238,19 @@ def _validate_backup_path_writable(config: Config) -> list[str]:
 
 
 def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]:
-    failures: list[str] = []
-    failures.extend(_validate_required_present(config))
-    failures.extend(_validate_booleans(config))
+    failures: list[str] = list(_validate_required_present(config))
+    bool_failures = _validate_booleans(config)
+    failures.extend(bool_failures)
     failures.extend(_validate_integers(config))
     failures.extend(_validate_floats(config))
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    # require_writable=False on read-only paths (list-vms/verify); avoid
-    # creating BACKUP_PATH/HOST_ID or probe-writing a temporarily-down mount.
-    if require_writable:
-        failures.extend(_validate_backup_path_writable(config))
-    else:
-        failures.extend(_validate_backup_path_readonly(config))
+    # Skip the writable probe when any boolean is invalid: a typo'd
+    # BACKUP_REQUIRE_NFS_MOUNT silently degrades to False and would let the
+    # writable check create BACKUP_PATH/HOST_ID before reporting the error.
+    check = _validate_backup_path_writable if require_writable and not bool_failures else _validate_backup_path_readonly
+    failures.extend(check(config))
     return failures
 
 

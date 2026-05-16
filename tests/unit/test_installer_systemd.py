@@ -129,10 +129,7 @@ def test_install_validates_calendar_with_systemd_analyze(tmp_path: Path, monkeyp
     assert install(None) == 0
 
     assert analyze_calls == [["systemd-analyze", "calendar", "daily"]]
-    assert systemctl_calls == [
-        ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", "libvirt-backup-system.timer"],
-    ]
+    assert systemctl_calls == [["systemctl", "daemon-reload"]]
 
 
 def test_install_rejects_calendar_when_systemd_analyze_fails(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -251,7 +248,7 @@ def test_uninstall_is_idempotent_when_units_are_absent(tmp_path: Path, monkeypat
     assert "systemctl stop skipped because unit file is absent" in out
 
 
-def test_install_replaces_existing_package_and_systemd_activation(tmp_path: Path, monkeypatch) -> None:
+def test_install_replaces_existing_package_and_reloads_systemd(tmp_path: Path, monkeypatch) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
@@ -270,7 +267,7 @@ def test_install_replaces_existing_package_and_systemd_activation(tmp_path: Path
     package.mkdir(parents=True)
     (package / "old.py").write_text("old\n", encoding="utf-8")
     assert install(None) == 0
-    assert calls == [["systemctl", "daemon-reload"], ["systemctl", "enable", "--now", "libvirt-backup-system.timer"]]
+    assert calls == [["systemctl", "daemon-reload"]]
 
 
 def test_install_systemctl_failure_emits_error_and_returns_nonzero(tmp_path: Path, monkeypatch, capsys) -> None:

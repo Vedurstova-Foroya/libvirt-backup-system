@@ -263,7 +263,7 @@ def test_restore_output_not_a_directory(tmp_path: Path, backup_config: Config, c
     output = tmp_path / "file-not-dir"
     output.write_bytes(b"data")
     assert restore(cfg, ALPHA_UUID, output) == 1
-    assert "restore output is not a usable directory" in capsys.readouterr().err
+    assert "restore output is not a directory" in capsys.readouterr().err
 
 
 def test_restore_chain_path_unsafe(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:

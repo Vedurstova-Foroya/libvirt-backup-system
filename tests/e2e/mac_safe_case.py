@@ -57,6 +57,31 @@ def assert_json_lines(output: str) -> None:
     assert all("level" in record and "message" in record for record in records)
 
 
+def _assert_restore_at_composes_with_until(month: str) -> None:
+    # Validate that restore --at composes into virtnbdrestore --until: pick the
+    # first timestamp recorded in runs.jsonl, drive restore through the fake,
+    # and confirm the fake received a --until that resolves to a known
+    # checkpoint in the chain dir. The fake fails closed on an unknown
+    # checkpoint, so a green exit here is proof of the composition.
+    alpha_runs_path = next(
+        (BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).glob("[0-9]*T[0-9]*/runs.jsonl"),
+        None,
+    )
+    if alpha_runs_path is None:
+        return
+    restore_target = PREFIX / "restore-out"
+    shutil.rmtree(restore_target, ignore_errors=True)
+    first_record = json.loads(alpha_runs_path.read_text(encoding="utf-8").splitlines()[0])
+    restore = run(
+        [str(BIN), "restore", "--vm", "alpha", "--output", str(restore_target), "--at", first_record["ts"]],
+    )
+    assert_json_lines(restore.stdout)
+    receipt_path = restore_target / "restore-receipt.json"
+    assert receipt_path.is_file(), "fake virtnbdrestore did not write its receipt"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["until"] == first_record["checkpoint"], receipt
+
+
 def main() -> int:
     shutil.rmtree(PREFIX, ignore_errors=True)
     shutil.rmtree(BACKUP_PATH / "e2e-host", ignore_errors=True)
@@ -101,7 +126,20 @@ def main() -> int:
         # back to its UUID dir via `find -name '<name>.name'`.
         assert (timestamps[-1] / f"{vm_name}.name").is_file(), f"<vm>.name marker missing for {vm_name}"
 
+    # Second run lands in the same month and writes a new checkpoint as an
+    # incremental; the restore composition test below needs at least two run
+    # records with distinct timestamps so it can resolve --at to a non-
+    # chain-end checkpoint. backup.timestamp() is UTC second-precision, so
+    # sleep briefly between the two runs to keep the stamps apart.
+    import time as _time
+
+    _time.sleep(2)
+    second = run([str(BIN), "run"])
+    assert_json_lines(second.stdout)
+
     run([str(BIN), "verify"])
+
+    _assert_restore_at_composes_with_until(month)
 
     # A failing run must never wipe the chain dir for the failing VM, and must
     # leave older month dirs alone unless retention removes them. Disable the

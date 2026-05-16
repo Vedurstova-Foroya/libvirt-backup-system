@@ -29,7 +29,7 @@ BACKUP_PATH=
 # BACKUP_COMPRESS=true
 
 # systemd OnCalendar value used when the timer unit is installed.
-# Re-run install or edit/reload the timer if this changes after install.
+# Run start after changing this so the timer is refreshed and reloaded.
 # SYSTEMD_ON_CALENDAR=*-*-* 02:30:00
 
 # Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.
