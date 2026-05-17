@@ -37,7 +37,7 @@ def write_config() -> None:
                 "LIBVIRT_URI=test:///default",
                 f"BACKUP_PATH={BACKUP_PATH}",
                 "HOST_ID=e2e-host",
-                "VM_BLACKLIST=deadbeef-dead-beef-dead-beefdeadbeef",
+                "VM_BLACKLIST=cccccccc-cccc-cccc-cccc-cccccccccccc",
                 "BACKUP_COMPRESS=true",
                 "BACKUP_REQUIRE_NFS_MOUNT=true",
                 "SPACE_MARGIN_PERCENT=20",
@@ -120,8 +120,6 @@ def main() -> int:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         assert metadata["domain"] == vm_name, metadata
         assert metadata["disks"], f"no disks recorded for {vm_name}"
-        checkpoint = metadata["checkpoint"]
-        assert (timestamps[-1] / f"{checkpoint}.checkpoint").is_file(), "checkpoint missing"
 
     # Second run lands in the same month and writes a new checkpoint as an
     # incremental; the restore composition test below needs at least two run

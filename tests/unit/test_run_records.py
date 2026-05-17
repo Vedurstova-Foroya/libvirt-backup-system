@@ -152,6 +152,17 @@ def test_select_checkpoint_refuses_chain_end_on_poisoned_chain(tmp_path: Path) -
     assert selected_after.status is SelectStatus.POISONED
 
 
+def test_select_checkpoint_poisoned_without_runs_jsonl(tmp_path: Path) -> None:
+    chain_dir = tmp_path / "chain"
+    chain_dir.mkdir()
+    assert poison_chain(chain_dir, "alpha", "record_run failed")
+    assert not (chain_dir / RUNS_FILE).is_file()
+
+    selected = select_checkpoint(chain_dir, _at(2026, 1, 1, 8))
+    assert selected.checkpoint is None
+    assert selected.status is SelectStatus.POISONED
+
+
 def test_record_run_swallows_fsync_directory_failure(tmp_path: Path, monkeypatch) -> None:
     # Parent-dir fsync is best-effort; some NFS configs refuse it. The record
     # itself is still durable, so record_run must return True.

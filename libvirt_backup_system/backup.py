@@ -165,14 +165,25 @@ def _prepare_dest(config: Config, vm: VM, month_dir: Path, dest: Path, *, owns_c
     return _ensure_safe(config, month_dir, "backup skipped because destination became unsafe")
 
 
-def _run_virtnbdbackup(config: Config, vm: VM, cmd: list[str], dest: Path, *, owns_chain_dir: bool) -> bool:
+def _run_virtnbdbackup(
+    config: Config,
+    vm: VM,
+    cmd: list[str],
+    dest: Path,
+    *,
+    owns_chain_dir: bool,
+) -> bool:
     try:
         run_streamed(cmd)
     except CommandError as exc:
         # Incrementals reuse the chain dir; only end-to-end-owned dirs (new
-        # full / inactive copy) are safe to clean on failure.
+        # full / inactive copy) are safe to clean on failure. A failed
+        # incremental may already have changed checkpoint metadata or partial
+        # data in-place, so preserve old data but prevent future reuse.
         if owns_chain_dir and dest.exists():
             _attempt_partial_cleanup(config, dest, vm.name)
+        elif "-l" in cmd and cmd[cmd.index("-l") + 1] == "inc" and dest.exists():
+            poison_chain(dest, vm.name, "virtnbdbackup failed during incremental backup")
         event("error", "backup failed", vm=vm.name, returncode=exc.result.returncode, stderr=exc.result.stderr.strip())
         return False
     if not dest.is_dir():

@@ -97,7 +97,7 @@ except json.JSONDecodeError as exc:
     raise SystemExit(3) from exc
 
 checkpoint = metadata.get("checkpoint", "")
-if not checkpoint or not (source / f"{checkpoint}.checkpoint").exists():
+if not checkpoint or checkpoint not in _known_checkpoints(source):
     print(f"checkpoint file missing for {checkpoint!r}", file=sys.stderr)
     raise SystemExit(4)
 

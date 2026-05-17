@@ -125,10 +125,16 @@ def test_backup_vm_incremental_failure_preserves_chain_dir(
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-b")
     assert chain_dir.is_dir()
     assert (chain_dir / "fixture").exists()
-    err = capsys.readouterr().err
+    assert (chain_dir / CHAIN_POISON_NAME).is_file()
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-c")
+    chain_c = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp-c"
+    assert chain_c.is_dir()
+    captured = capsys.readouterr()
+    err = captured.err
     assert "backup failed" in err
     assert "removed partial backup" not in err
-    assert seen == ["full", "inc"]
+    assert "current chain is poisoned; starting new chain" in captured.out
+    assert seen == ["full", "inc", "full"]
 
 
 def test_backup_vm_record_run_failure_reports_dangling_checkpoints(
