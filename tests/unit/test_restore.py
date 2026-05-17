@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
 
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.restore import parse_at, restore
+from libvirt_backup_system.restore import _skipped_chain_spans_target, parse_at, restore
 from libvirt_backup_system.shell import CommandError, CommandResult
 from tests.unit.conftest import ALPHA_UUID
 
@@ -18,6 +19,9 @@ def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]]) -> Path:
             chain_dir = vm_dir / month / chain
             chain_dir.mkdir()
             (chain_dir / "vda.full.data").write_bytes(b"x")
+            checkpoint = f"virtnbdbackup.{chain}"
+            record = json.dumps({"ts": chain, "checkpoint": checkpoint}, sort_keys=True, separators=(",", ":"))
+            (chain_dir / "runs.jsonl").write_text(record + "\n", encoding="utf-8")
     return vm_dir
 
 
@@ -264,3 +268,24 @@ def test_restore_refuses_unsafe_backup_root(tmp_path: Path, monkeypatch, backup_
     monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", lambda root, path: False)
     assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
     assert "restore skipped because backup root is unsafe" in capsys.readouterr().err
+
+
+def test_skipped_chain_noop_when_selected_stamp_unparseable(tmp_path: Path) -> None:
+    bad_name = tmp_path / "not-a-stamp"
+    bad_name.mkdir()
+    at = dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)
+    assert _skipped_chain_spans_target([], bad_name, at) is None
+
+
+def test_restore_at_refuses_when_skipped_chain_spans_target(tmp_path: Path, backup_config: Config, capsys) -> None:
+    cfg = _restore_config(backup_config)
+    jan = _stamp("2026-01", 10)
+    feb = _stamp("2026-02", 15)
+    vm_dir = _seed_chain(cfg, {"2026-01": [jan]})
+    inc_only = vm_dir / "2026-02" / feb
+    inc_only.mkdir(parents=True)
+    (inc_only / "vda.inc.virtnbdbackup.1.data").write_bytes(b"x")
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-02-20") == 1
+    err = capsys.readouterr().err
+    assert "full backup is missing" in err
+    assert feb in err

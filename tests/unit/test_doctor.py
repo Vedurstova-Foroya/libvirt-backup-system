@@ -25,6 +25,9 @@ from tests.unit.conftest import ALPHA_UUID
 def _install_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     backup_path = tmp_path / "backups"
     backup_path.mkdir()
+    etc = tmp_path / "etc"
+    etc.mkdir(exist_ok=True)
+    (etc / "machine-id").write_text("00000000000000000000000000000000\n", encoding="utf-8")
     monkeypatch.setenv("BACKUP_PATH", str(backup_path))
     assert install(str(tmp_path)) == 0
     monkeypatch.delenv("BACKUP_PATH")

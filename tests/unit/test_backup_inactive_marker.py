@@ -85,28 +85,6 @@ def test_backup_vm_recopies_when_inactive_marker_lstat_fails(
     assert "inactive marker check failed" in capsys.readouterr().err
 
 
-def test_backup_vm_reuse_path_reaps_legacy_fingerprint_sidecar(tmp_path: Path, monkeypatch, backup_config) -> None:
-    # On the reuse (fresh-marker) path, an upgraded host's legacy
-    # .inactive-copy-fingerprint sidecar must also be reaped.
-    cfg = _backup_config(backup_config)
-    parent = tmp_path / f"backups/host/{BETA_UUID}/2026-05"
-    parent.mkdir(parents=True)
-    (parent / "oldstamp").mkdir()
-    marker = parent / ".inactive-copy-complete"
-    marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
-    sidecar = parent / ".inactive-copy-fingerprint"
-    sidecar.write_text("legacy-fp\n", encoding="utf-8")
-    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("reuse must not call virtnbdbackup")),
-    )
-
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
-    assert not sidecar.exists()
-    assert marker.exists()
-
-
 def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
     tmp_path: Path,
     monkeypatch,
@@ -135,31 +113,6 @@ def test_backup_vm_recopies_when_inactive_marker_backup_dir_is_missing(
     out = capsys.readouterr().out
     assert "inactive marker backup directory is missing" in out
     assert "inactive VM already copied" not in out
-
-
-def test_backup_vm_logs_inactive_fingerprint_removal_failure(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    backup_config,
-) -> None:
-    cfg = _backup_config(backup_config)
-    marker_dir = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05"
-    marker_dir.mkdir(parents=True)
-    fingerprint = marker_dir / ".inactive-copy-fingerprint"
-    fingerprint.write_text("old\n", encoding="utf-8")
-    original_unlink = Path.unlink
-
-    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
-        if self == fingerprint:
-            raise OSError("unlink denied")
-        original_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr("libvirt_backup_system.inactive_markers.Path.unlink", fake_unlink)
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
-
-    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
-    assert "inactive fingerprint removal failed" in capsys.readouterr().err
 
 
 def test_backup_vm_logs_inactive_marker_removal_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:

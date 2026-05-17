@@ -74,7 +74,7 @@ sudo libvirt-backup-system status
 
 ## `list-vms`
 
-Lists selected VMs after applying `VM_BLACKLIST`.
+Lists selected VMs after applying `VM_BLACKLIST` (UUID-based).
 
 ```sh
 sudo libvirt-backup-system list-vms

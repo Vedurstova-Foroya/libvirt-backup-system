@@ -62,8 +62,6 @@ def test_backup_vm_running_success(tmp_path: Path, monkeypatch, backup_config) -
     assert calls == [
         ["virtnbdbackup", "-U", "qemu:///system", "-d", "alpha", "-l", "full", "-o", str(dest), "--compress"]
     ]
-    # Empty <vm.name>.name marker lets operators map current names → UUID dirs.
-    assert (dest / "alpha.name").is_file()
 
 
 def test_backup_vm_rejects_unsafe_uuid(tmp_path: Path, backup_config) -> None:
@@ -136,15 +134,12 @@ def test_backup_vm_redoes_inactive_when_marker_is_stale(tmp_path: Path, monkeypa
 def test_backup_vm_clears_marker_when_vm_running(tmp_path: Path, monkeypatch, backup_config) -> None:
     cfg = _backup_config(backup_config)
     marker = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/.inactive-copy-complete"
-    fingerprint = marker.parent / ".inactive-copy-fingerprint"
     marker.parent.mkdir(parents=True)
     marker.write_text("old\n", encoding="utf-8")
-    fingerprint.write_text("oldfp\n", encoding="utf-8")
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
 
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert not marker.exists()
-    assert not fingerprint.exists()
 
 
 def test_backup_vm_rejects_symlinked_backup_subpath(tmp_path: Path, capsys, backup_config) -> None:

@@ -33,10 +33,11 @@ sudo mkdir -p /var/tmp/libvirt-restore/my-vm-backup
 sudo rsync -aH --numeric-ids "$SOURCE"/ /var/tmp/libvirt-restore/my-vm-backup/
 ```
 
-Verify the copied backup before restoring from it (`-a` selects the action; `-o` is the required output path even for verify):
+Verify the copied backup before restoring from it (`-a` selects the action; `-o` is required even for verify but should point at a separate staging directory so a future upstream change cannot mutate the source backup):
 
 ```sh
-sudo virtnbdrestore -a verify -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/my-vm-backup
+sudo mkdir -p /var/tmp/libvirt-restore/verify-staging
+sudo virtnbdrestore -a verify -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/verify-staging
 ```
 
 Restore into an empty staging directory. `-o` is the restore *target directory* (not an action keyword), and `-D` is an optional boolean flag for registering the VM after restore — omit it unless you want `virtnbdrestore` to redefine the VM:

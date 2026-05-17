@@ -9,6 +9,7 @@ from .config import Config, is_month_dir_name
 from .logging_json import event
 from .paths import backup_root, runtime_backup_path_ok
 from .storage import subpath_is_safe
+from .vms import is_safe_vm_uuid
 
 # shutil.rmtree's onerror callback signature. The third element is either an
 # ``exc_info`` triple (Python <3.12) or a bare exception instance (3.12+); we
@@ -42,7 +43,7 @@ def _month_sort_key(name: str) -> tuple[int, int]:
 def _iter_vm_dirs(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    return sorted(p for p in root.iterdir() if p.is_dir())
+    return sorted(p for p in root.iterdir() if p.is_dir() and is_safe_vm_uuid(p.name))
 
 
 def _format_rmtree_error(

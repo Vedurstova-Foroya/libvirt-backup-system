@@ -78,7 +78,7 @@ def test_check_skips_host_id_stamp_when_validation_already_failed(
     monkeypatch,
 ) -> None:
     cfg = _preflight_config(backup_config)
-    cfg.values["VM_BLACKLIST"] = "../escape"
+    cfg.values["VM_BLACKLIST"] = "not-a-valid-uuid"
     cfg.path_value("BACKUP_PATH").mkdir()
     patch_valid_preflight(monkeypatch)
 
@@ -115,9 +115,9 @@ def test_validate_config_reports_empty_host_id(backup_config, capsys) -> None:
 
 def test_validate_config_rejects_unsafe_vm_blacklist_entry(backup_config, capsys) -> None:
     cfg = _preflight_config(backup_config)
-    cfg.values["VM_BLACKLIST"] = "alpha ../escape"
+    cfg.values["VM_BLACKLIST"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa not-a-valid-uuid"
     assert validate_config(cfg) == 1
-    assert "VM_BLACKLIST contains unsafe VM name" in capsys.readouterr().err
+    assert "VM_BLACKLIST contains invalid VM UUID" in capsys.readouterr().err
 
 
 def test_check_lock_held_stamps_host_id_once(backup_config, monkeypatch) -> None:

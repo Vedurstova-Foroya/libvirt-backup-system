@@ -17,8 +17,8 @@ __all__ = ["verify"]
 def _resolve_target(config: Config, root: Path, name_or_uuid: str) -> Path | None:
     # ``is_safe_vm_name`` is permissive enough to also cover UUIDs (no path
     # separators, no control chars), so we can attempt the literal-subdir
-    # match against both the new <uuid>/ and legacy <vm-name>/ layouts in one
-    # check before falling back to virsh resolution.
+    # match (useful for UUIDs passed directly) before falling back to virsh
+    # resolution.
     if not (is_safe_vm_name(name_or_uuid) or is_safe_vm_uuid(name_or_uuid)):
         event("error", "verify target name is invalid", vm=name_or_uuid)
         return None

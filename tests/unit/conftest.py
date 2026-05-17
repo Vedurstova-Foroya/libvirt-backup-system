@@ -30,6 +30,9 @@ def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: 
     # explicitly; this fixture only changes the otherwise-undefined default.
     isolated_root = tmp_path_factory.mktemp("isolated_root")
     monkeypatch.setenv("LIBVIRT_BACKUP_ROOT_PREFIX", str(isolated_root))
+    etc = isolated_root / "etc"
+    etc.mkdir(exist_ok=True)
+    (etc / "machine-id").write_text("00000000000000000000000000000000\n", encoding="utf-8")
 
 
 def virtnbdbackup_fake_success(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:

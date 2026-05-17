@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 import shutil
 import time
 from pathlib import Path
@@ -9,10 +8,10 @@ from pathlib import Path
 from .chains import ChainResolution, resolve_chain, write_chain_state
 from .config import Config
 from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
-from .inactive_markers import marked_backup_dir, marker_is_regular, remove_fingerprint, remove_marker, write_marker
+from .inactive_markers import marked_backup_dir, marker_is_regular, remove_marker, write_marker
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
-from .paths import backup_root, runtime_backup_path_ok, write_name_marker
+from .paths import backup_root, runtime_backup_path_ok
 from .run_records import CheckpointReadError, list_checkpoints, poison_chain, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
@@ -111,17 +110,8 @@ def _finalize_inactive_marker(  # noqa: PLR0913
     if post_fingerprint != pre_fingerprint:
         event("error", "domain XML changed during inactive backup; backup not trusted", vm=vm.name)
         return fail_with_cleanup()
-    if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name):
+    if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name, mtime=pre_copy_time):
         return fail_with_cleanup()
-    # Backdate to pre-copy time so any mid- or post-copy disk write has a
-    # newer mtime than the marker and forces a recopy.
-    try:
-        os.utime(inactive_marker, (pre_copy_time, pre_copy_time))
-    except OSError as exc:
-        event("error", "inactive marker backdate failed; rolling back marker", vm=vm.name, error=str(exc))
-        remove_marker(inactive_marker, vm.name)
-        return fail_with_cleanup()
-    remove_fingerprint(inactive_marker, vm.name)
     event("info", "backup completed", vm=vm.name, destination=str(dest))
     return True
 
@@ -131,7 +121,6 @@ def _maybe_reuse_inactive_backup(config: Config, vm: VM, month: str, month_dir: 
         return False
     backup_dir = marked_backup_dir(config, month_dir, marker, vm.name)
     if backup_dir and inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, marker):
-        remove_fingerprint(marker, vm.name)  # reap legacy sidecar on the reuse path too
         return _confirm_inactive_marker_still_fresh(backup_dir, vm, month)
     if backup_dir:
         event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
@@ -194,7 +183,6 @@ def _run_virtnbdbackup(config: Config, vm: VM, cmd: list[str], dest: Path, *, ow
 
 def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker: Path) -> bool:
     remove_marker(marker, vm.name)
-    remove_fingerprint(marker, vm.name)
     pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
     if pre_fingerprint is None:
         event("error", "domain XML fingerprint computation failed", vm=vm.name)
@@ -225,7 +213,6 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
         return False
     if not _run_virtnbdbackup(config, vm, cmd, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
         return False
-    write_name_marker(resolution.chain_dir, vm.name)
     if not record_run(resolution.chain_dir, stamp, checkpoints_before, vm.name, expect_new=True):
         try:
             dangling = sorted(list_checkpoints(resolution.chain_dir, vm.name) - checkpoints_before)
@@ -233,10 +220,10 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
             dangling = []
         msg = "run record write failed; dangling checkpoints" if dangling else "run record write failed"
         event("error", msg, vm=vm.name, chain_dir=str(resolution.chain_dir))
+        level = "new" if resolution.is_new_chain else "incremental"
+        poison_chain(resolution.chain_dir, vm.name, f"record_run failed after {level} backup")
         if resolution.is_new_chain:
             _attempt_partial_cleanup(config, resolution.chain_dir, vm.name)
-        else:
-            poison_chain(resolution.chain_dir, vm.name, "record_run failed after incremental backup")
         return False
     if resolution.is_new_chain and not write_chain_state(
         month_dir, resolution.chain_dir.name, pre_fingerprint, vm.name
@@ -263,7 +250,6 @@ def _backup_inactive(config: Config, vm: VM, month_dir: Path, stamp: str, marker
     event("info", "backup started", vm=vm.name, state=vm.state, backup_level="copy", destination=str(dest))
     if not _run_virtnbdbackup(config, vm, _virtnbdbackup_cmd(config, vm, "copy", dest), dest, owns_chain_dir=True):
         return False
-    write_name_marker(dest, vm.name)
     return _finalize_inactive_marker(config, marker, month_dir, vm, pre_fingerprint, stamp, dest, pre_copy_time)
 
 

@@ -45,7 +45,7 @@ def test_backup_vm_fails_when_marker_write_fails(monkeypatch, capsys, backup_con
     )
     monkeypatch.setattr(
         "libvirt_backup_system.backup.write_marker",
-        lambda marker, stamp, fingerprint, vm: False,
+        lambda marker, stamp, fingerprint, vm, *, mtime=None: False,
     )
 
     assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")

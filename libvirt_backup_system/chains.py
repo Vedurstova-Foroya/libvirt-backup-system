@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,15 +12,8 @@ from .storage import subpath_is_safe
 
 # Single-file state lives directly under the month dir alongside the inactive
 # marker. ``.`` prefix matches the existing hidden-state convention used by
-# ``.inactive-copy-complete`` and the legacy ``.inactive-copy-fingerprint``.
+# ``.inactive-copy-complete``.
 CHAIN_STATE_NAME = ".chain-state.json"
-# Legacy two-file layout kept for upgrade reads only. Old chains wrote the
-# pointer and fingerprint as two separate atomic_write calls, leaving a window
-# where a crash between the two could waste a full backup. New writes go to
-# CHAIN_STATE_NAME atomically; legacy files are reaped on the next successful
-# write so no host carries both formats indefinitely.
-CHAIN_POINTER_NAME = ".current-chain"
-CHAIN_FINGERPRINT_NAME = ".chain-fingerprint"
 
 
 @dataclass(frozen=True)
@@ -35,16 +27,6 @@ def _backup_subpath_is_safe(config: Config, path: Path) -> bool:
     if not config.get("BACKUP_PATH").strip():
         return False
     return subpath_is_safe(config.path_value("BACKUP_PATH"), path)
-
-
-def _read_text(path: Path) -> str | None:
-    if not marker_is_regular(path):
-        return None
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        event("error", "chain state read failed", path=str(path), error=str(exc))
-        return None
 
 
 def _read_json_chain_state(path: Path) -> tuple[str | None, str | None]:
@@ -75,24 +57,14 @@ def _read_json_chain_state(path: Path) -> tuple[str | None, str | None]:
 def read_chain_state(month_dir: Path) -> tuple[str | None, str | None]:
     """Return ``(chain_id, fingerprint)`` from the month dir, ``None`` when absent.
 
-    Reads the single-file JSON state first; falls back to the legacy
-    two-file pair so chains written by older releases keep their incremental
-    continuity across the upgrade. The single-file layout is written
-    atomically (one rename, one durability event) so the half-written state
-    that the old layout could produce — pointer present, fingerprint absent
-    or vice versa, which forced a wasted new full — is impossible going
-    forward.
+    Reads the single-file JSON state. The layout is written atomically
+    (one rename, one durability event) so a half-written state — pointer
+    present, fingerprint absent or vice versa — is impossible.
     """
     chain_id, fingerprint = _read_json_chain_state(month_dir / CHAIN_STATE_NAME)
     if chain_id is not None and fingerprint is not None:
         return chain_id, fingerprint
-    legacy_pointer = _read_text(month_dir / CHAIN_POINTER_NAME)
-    legacy_fingerprint = _read_text(month_dir / CHAIN_FINGERPRINT_NAME)
-    if not legacy_pointer:
-        legacy_pointer = None
-    if not legacy_fingerprint:
-        legacy_fingerprint = None
-    return legacy_pointer, legacy_fingerprint
+    return None, None
 
 
 def write_chain_state(month_dir: Path, chain_id: str, fingerprint: str, vm_name: str) -> bool:
@@ -101,25 +73,14 @@ def write_chain_state(month_dir: Path, chain_id: str, fingerprint: str, vm_name:
     Writes both fields into a single JSON file via one ``atomic_write`` so a
     crash between two separate writes cannot leave a half-state that the
     next run interprets as "no chain" and answers with an unnecessary full.
-    Legacy pointer/fingerprint files from older releases are reaped after
-    the JSON file is durably in place so hosts converge to one format.
     """
     payload = json.dumps({"chain_id": chain_id, "fingerprint": fingerprint}, sort_keys=True) + "\n"
-    if not atomic_write(
+    return atomic_write(
         month_dir / CHAIN_STATE_NAME,
         payload,
         vm_name,
         "chain state write failed",
-    ):
-        return False
-    # Best-effort cleanup of the legacy pair; their continued presence would
-    # not cause incorrect behavior (the JSON file wins in read_chain_state),
-    # but leaving them around indefinitely confuses operators inspecting the
-    # backup tree by hand.
-    for legacy in (CHAIN_POINTER_NAME, CHAIN_FINGERPRINT_NAME):
-        with suppress(FileNotFoundError, OSError):
-            (month_dir / legacy).unlink()
-    return True
+    )
 
 
 def _existing_chain_dir(config: Config, month_dir: Path, chain_id: str) -> Path | None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import socket
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,13 +89,14 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Set false when backing up to an intentionally local directory.",
     "BACKUP_REQUIRE_NFS_MOUNT",
     None,
-    '# Backup host folder name. Empty means "use this machine\'s short hostname".',
+    '# Backup host folder name. Empty means "use /etc/machine-id".',
     "# Keep this stable: renaming HOST_ID orphans existing inactive-copy markers",
     "# under the previous folder, so monthly-fresh inactive copies will be redone",
     "# and the old data left untouched in the prior HOST_ID directory.",
     "HOST_ID",
     None,
-    "# VM names to skip. Separate with spaces or commas.",
+    "# VM UUIDs to skip. Separate with spaces or commas.",
+    "# Use ``virsh domuuid <vm-name>`` to look up a VM's UUID.",
     "VM_BLACKLIST",
     None,
     "# Add --compress to virtnbdbackup commands.",
@@ -136,6 +136,14 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# manage retention out-of-band; pruning failures never roll back backups.",
     "BACKUP_CLEANUP_ON_RUN",
 )
+
+
+def _read_machine_id(prefix: Path) -> str:
+    path = prefixed("/etc/machine-id", prefix)
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def root_prefix(value: str | None = None) -> Path:
@@ -224,12 +232,10 @@ class Config:
                         event("info", "env override", key=key, source="environ")
                     values[key] = env_value
         if not values.get("HOST_ID"):
-            # Fall back to the short hostname. If that is also empty (kernel
-            # hostname unset, or starts with a dot in some container envs),
+            # Fall back to /etc/machine-id. If the file is missing or empty
             # leave HOST_ID="" so _validate_required_present surfaces a clean
-            # "HOST_ID must not be empty" rather than Config.load raising a
-            # RuntimeError that the cli reports as an unstructured fatal.
-            values["HOST_ID"] = socket.gethostname().split(".")[0]
+            # "HOST_ID must not be empty".
+            values["HOST_ID"] = _read_machine_id(root)
         return cls(values=values, path=path, prefix=root)
 
     def get(self, key: str) -> str:

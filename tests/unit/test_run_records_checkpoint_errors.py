@@ -8,18 +8,10 @@ import pytest
 from libvirt_backup_system.run_records import CheckpointReadError, list_checkpoints, record_run
 
 
-def _write_checkpoint(chain_dir: Path, name: str) -> None:
-    (chain_dir / f"{name}.checkpoint").write_text("payload\n", encoding="utf-8")
-
-
 def test_list_checkpoints_xml_dir_iter_failure_raises(tmp_path: Path, monkeypatch) -> None:
-    # OSError on the XML dir is NOT a legitimate "no checkpoints" signal —
-    # falling through to legacy would let record_run treat the chain as having
-    # no new checkpoint, producing a run restore --at later cannot resolve.
     chain_dir = tmp_path / "chain"
     chain_dir.mkdir()
     (chain_dir / "checkpoints").mkdir()
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
     real_iterdir = Path.iterdir
 
     def boom(self: Path) -> object:
@@ -32,13 +24,10 @@ def test_list_checkpoints_xml_dir_iter_failure_raises(tmp_path: Path, monkeypatc
         list_checkpoints(chain_dir, "alpha")
 
 
-def test_list_checkpoints_xml_dir_disappears_returns_none(tmp_path: Path, monkeypatch) -> None:
-    # is_dir() returned True (TOCTOU window) but the dir was unlinked before
-    # iterdir(). FileNotFoundError is benign — fall through to legacy.
+def test_list_checkpoints_xml_dir_disappears_returns_empty(tmp_path: Path, monkeypatch) -> None:
     chain_dir = tmp_path / "chain"
     chain_dir.mkdir()
     (chain_dir / "checkpoints").mkdir()
-    _write_checkpoint(chain_dir, "virtnbdbackup.0")
     real_iterdir = Path.iterdir
 
     def boom(self: Path) -> object:
@@ -47,24 +36,7 @@ def test_list_checkpoints_xml_dir_disappears_returns_none(tmp_path: Path, monkey
         return real_iterdir(self)
 
     monkeypatch.setattr(Path, "iterdir", boom)
-    assert list_checkpoints(chain_dir, "alpha") == {"virtnbdbackup.0"}
-
-
-def test_list_checkpoints_legacy_iter_raises_on_oserror(tmp_path: Path, monkeypatch) -> None:
-    # A real OSError on the legacy chain-dir listing is also a "cannot tell"
-    # state — must propagate CheckpointReadError so the run fails.
-    chain_dir = tmp_path / "chain"
-    chain_dir.mkdir()
-    real_iterdir = Path.iterdir
-
-    def boom(self: Path) -> object:
-        if self == chain_dir:
-            raise OSError("permission denied")
-        return real_iterdir(self)
-
-    monkeypatch.setattr(Path, "iterdir", boom)
-    with pytest.raises(CheckpointReadError):
-        list_checkpoints(chain_dir, "alpha")
+    assert list_checkpoints(chain_dir, "alpha") == set()
 
 
 def test_record_run_fails_when_checkpoint_metadata_unreadable(tmp_path: Path, monkeypatch, capsys) -> None:

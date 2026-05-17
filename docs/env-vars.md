@@ -22,7 +22,8 @@ BACKUP_PATH=
 # Keep this stable if the hostname might change.
 # HOST_ID=
 
-# VM names to skip. Separate with spaces or commas.
+# VM UUIDs to skip. Separate with spaces or commas.
+# Use ``virsh domuuid <vm-name>`` to look up a VM's UUID.
 # VM_BLACKLIST=
 
 # Add --compress to virtnbdbackup commands.

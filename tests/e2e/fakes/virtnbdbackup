@@ -68,8 +68,7 @@ metadata = {
 # Mirror real virtnbdbackup's authoritative checkpoint state: append the new
 # checkpoint to <domain>.cpt (JSON list, see
 # libvirtnbdbackup/virt/checkpoint.py:save) and drop the per-checkpoint XML
-# under <output>/checkpoints/. The legacy ``<name>.checkpoint`` file is kept
-# as a third witness so back-compat reads still resolve.
+# under <output>/checkpoints/.
 cpt_path = dest / f"{args.d}.cpt"
 try:
     existing_checkpoints = json.loads(cpt_path.read_text(encoding="utf-8"))
@@ -84,5 +83,4 @@ cpt_path.write_text(json.dumps(existing_checkpoints), encoding="utf-8")
     f"<domaincheckpoint><name>{checkpoint_name}</name></domaincheckpoint>\n",
     encoding="utf-8",
 )
-(dest / f"{checkpoint_name}.checkpoint").write_text(args.d + "\n", encoding="utf-8")
 print(f"backed up {args.d} level={args.l} to {dest}")

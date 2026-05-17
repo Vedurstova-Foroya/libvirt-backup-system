@@ -27,10 +27,10 @@ def test_finalize_inactive_marker_fails_on_utime_failure(tmp_path: Path, monkeyp
     def failing_utime(path: object, times: tuple[float, float]) -> None:
         raise OSError("readonly mount")
 
-    monkeypatch.setattr("libvirt_backup_system.backup.os.utime", failing_utime)
+    monkeypatch.setattr("libvirt_backup_system.inactive_markers.os.utime", failing_utime)
     assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
     err = capsys.readouterr().err
-    assert "inactive marker backdate failed; rolling back marker" in err
+    assert "inactive marker write failed" in err
     marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
     assert not marker.exists()
 

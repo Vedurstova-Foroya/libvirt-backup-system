@@ -99,11 +99,20 @@ def _pick_snapshot(snapshots: list[tuple[dt.datetime, Path]], at: dt.datetime | 
     restorable = [(stamp, chain_dir) for stamp, chain_dir in snapshots if chain_has_full_backup_file(chain_dir)]
     if at is None:
         return restorable[-1][1] if restorable else None
-    # Latest snapshot at-or-before ``at``: walking in reverse stops at the
-    # first hit. An ``at`` earlier than every snapshot returns None so the
-    # operator gets an explicit error rather than the unrelated latest dir.
     for stamp, chain_dir in reversed(restorable):
         if stamp <= at:
+            return chain_dir
+    return None
+
+
+def _skipped_chain_spans_target(
+    snapshots: list[tuple[dt.datetime, Path]], selected: Path, at: dt.datetime
+) -> Path | None:
+    selected_stamp = _parse_chain_stamp(selected.name)
+    if selected_stamp is None:
+        return None
+    for stamp, chain_dir in snapshots:
+        if selected_stamp < stamp <= at and not chain_has_full_backup_file(chain_dir):
             return chain_dir
     return None
 
@@ -217,6 +226,16 @@ def restore(
     chain_dir = _pick_snapshot(snapshots, target)
     if chain_dir is None:
         event("error", "restore --at is earlier than the oldest backup", at=at, oldest=snapshots[0][1].name)
+        return 1
+    skipped = _skipped_chain_spans_target(snapshots, chain_dir, target) if target is not None else None
+    if skipped is not None:
+        event(
+            "error",
+            "restore refused: a newer chain spans --at but its full backup is missing",
+            at=at,
+            skipped_chain=str(skipped),
+            fallback_chain=str(chain_dir),
+        )
         return 1
     if not subpath_is_safe(backup_path, chain_dir):
         event("error", "restore skipped because chain path is unsafe", path=str(chain_dir))

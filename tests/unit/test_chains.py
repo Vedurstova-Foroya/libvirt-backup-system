@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from libvirt_backup_system.chains import (
-    CHAIN_FINGERPRINT_NAME,
-    CHAIN_POINTER_NAME,
     CHAIN_STATE_NAME,
     read_chain_state,
     resolve_chain,
@@ -26,56 +25,6 @@ def test_read_chain_state_missing_files(tmp_path: Path) -> None:
 def test_write_then_read_chain_state(tmp_path: Path) -> None:
     assert write_chain_state(tmp_path, "stamp-a", "fp-a", "alpha")
     assert read_chain_state(tmp_path) == ("stamp-a", "fp-a")
-
-
-def test_read_chain_state_treats_empty_legacy_files_as_missing(tmp_path: Path) -> None:
-    (tmp_path / CHAIN_POINTER_NAME).write_text("\n", encoding="utf-8")
-    (tmp_path / CHAIN_FINGERPRINT_NAME).write_text("", encoding="utf-8")
-    # An empty file from a partial prior write must read as "no chain" so the
-    # next run forces a fresh full rather than treating an empty pointer as a
-    # valid (but invalid) chain id. Reading the legacy two-file format still
-    # applies because some installs upgraded from the old layout.
-    assert read_chain_state(tmp_path) == (None, None)
-
-
-def test_read_chain_state_falls_back_to_legacy_files(tmp_path: Path) -> None:
-    # Upgrade path: a host that wrote chain state under the old two-file
-    # layout still needs its chains recognized after the JSON migration so
-    # mid-month incrementals continue into the existing chain. With the
-    # JSON file absent, fall through to the legacy pair.
-    (tmp_path / CHAIN_POINTER_NAME).write_text("stamp-legacy\n", encoding="utf-8")
-    (tmp_path / CHAIN_FINGERPRINT_NAME).write_text("fp-legacy\n", encoding="utf-8")
-    assert read_chain_state(tmp_path) == ("stamp-legacy", "fp-legacy")
-
-
-def test_write_chain_state_reaps_legacy_files(tmp_path: Path) -> None:
-    # After a successful single-file write the legacy pair must be removed so
-    # hosts converge to one format and operators inspecting the backup tree
-    # do not see two stale pointers competing.
-    (tmp_path / CHAIN_POINTER_NAME).write_text("old\n", encoding="utf-8")
-    (tmp_path / CHAIN_FINGERPRINT_NAME).write_text("old\n", encoding="utf-8")
-    assert write_chain_state(tmp_path, "stamp-a", "fp-a", "alpha")
-    assert (tmp_path / CHAIN_STATE_NAME).is_file()
-    assert not (tmp_path / CHAIN_POINTER_NAME).exists()
-    assert not (tmp_path / CHAIN_FINGERPRINT_NAME).exists()
-
-
-def test_read_chain_state_handles_legacy_read_failure(tmp_path: Path, monkeypatch, capsys) -> None:
-    pointer = tmp_path / CHAIN_POINTER_NAME
-    pointer.write_text("stamp\n", encoding="utf-8")
-    (tmp_path / CHAIN_FINGERPRINT_NAME).write_text("fp\n", encoding="utf-8")
-    original = Path.read_text
-
-    def fake_read_text(self: Path, *args: object, **kwargs: object) -> str:
-        if self == pointer:
-            raise OSError("denied")
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr("libvirt_backup_system.chains.Path.read_text", fake_read_text)
-    chain, fp = read_chain_state(tmp_path)
-    assert chain is None
-    assert fp == "fp"
-    assert "chain state read failed" in capsys.readouterr().err
 
 
 def test_resolve_chain_starts_new_when_no_state(tmp_path: Path, backup_config) -> None:
@@ -147,11 +96,11 @@ def test_resolve_chain_rejects_unsafe_pointer(tmp_path: Path, backup_config, cap
     cfg = _cfg(backup_config)
     month_dir = cfg.path_value("BACKUP_PATH") / "host" / "vm" / "2026-05"
     month_dir.mkdir(parents=True)
-    # Bypass write_chain_state (which would refuse the unsafe stamp at write
-    # time) to simulate an operator-edited or upgrade-corrupted pointer file.
     (month_dir / "stamp-a").mkdir()
-    (month_dir / ".current-chain").write_text("../../escape\n", encoding="utf-8")
-    (month_dir / ".chain-fingerprint").write_text("fp\n", encoding="utf-8")
+    (month_dir / ".chain-state.json").write_text(
+        json.dumps({"chain_id": "../../escape", "fingerprint": "fp"}),
+        encoding="utf-8",
+    )
     resolution = resolve_chain(cfg, "alpha", month_dir, "stamp-b", "fp")
     assert resolution.is_new_chain
     assert resolution.chain_dir == month_dir / "stamp-b"
@@ -166,8 +115,10 @@ def test_resolve_chain_rejects_chain_dir_outside_backup_path(tmp_path: Path, bac
     outside = tmp_path / "outside"
     outside.mkdir()
     (month_dir / "stamp-a").symlink_to(outside, target_is_directory=True)
-    (month_dir / ".current-chain").write_text("stamp-a\n", encoding="utf-8")
-    (month_dir / ".chain-fingerprint").write_text("fp\n", encoding="utf-8")
+    (month_dir / ".chain-state.json").write_text(
+        json.dumps({"chain_id": "stamp-a", "fingerprint": "fp"}),
+        encoding="utf-8",
+    )
     resolution = resolve_chain(cfg, "alpha", month_dir, "stamp-b", "fp")
     assert resolution.is_new_chain
     assert "chain dir path is unsafe" in capsys.readouterr().err

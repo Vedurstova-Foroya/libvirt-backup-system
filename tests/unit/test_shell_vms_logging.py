@@ -99,7 +99,7 @@ def test_event_streams(capsys) -> None:
 def test_list_vms_filters_blacklist(monkeypatch) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
-    cfg.values["VM_BLACKLIST"] = "beta"
+    cfg.values["VM_BLACKLIST"] = BETA_UUID
     calls: list[list[str]] = []
     listing = f"{ALPHA_UUID} alpha\n{BETA_UUID} beta\n\n"
 

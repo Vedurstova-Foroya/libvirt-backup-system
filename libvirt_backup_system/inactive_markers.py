@@ -10,7 +10,6 @@ from .config import Config
 from .logging_json import event
 from .storage import subpath_is_safe
 
-LEGACY_FINGERPRINT_FILE_NAME = ".inactive-copy-fingerprint"
 # SHA-256 hexdigest length. The fingerprint we write is ``hashlib.sha256(...
 # ).hexdigest()`` so anything that doesn't match the 64-char-lowercase-hex
 # shape is corruption (truncated write, hand-edit, partial restore from a
@@ -40,23 +39,6 @@ def _backup_subpath_is_safe(config: Config, path: Path) -> bool:
     return subpath_is_safe(config.path_value("BACKUP_PATH"), path)
 
 
-def _legacy_fingerprint_path(marker: Path) -> Path:
-    return marker.parent / LEGACY_FINGERPRINT_FILE_NAME
-
-
-def remove_fingerprint(marker: Path, vm_name: str) -> None:
-    # Older releases stored the fingerprint in a separate sidecar file; the
-    # current marker stores both stamp and fingerprint in one atomic file, so
-    # this only exists to scrub leftover sidecars on the first run after upgrade.
-    path = _legacy_fingerprint_path(marker)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        event("error", "inactive fingerprint removal failed", vm=vm_name, path=str(path), error=str(exc))
-
-
 def marker_is_regular(marker: Path) -> bool:
     try:
         return stat.S_ISREG(marker.lstat().st_mode)
@@ -76,8 +58,8 @@ def remove_marker(marker: Path, vm_name: str) -> None:
         event("error", "inactive marker removal failed", vm=vm_name, marker=str(marker), error=str(exc))
 
 
-def write_marker(marker: Path, stamp: str, fingerprint: str, vm_name: str) -> bool:
-    return atomic_write(marker, f"{stamp}\n{fingerprint}\n", vm_name, "inactive marker write failed")
+def write_marker(marker: Path, stamp: str, fingerprint: str, vm_name: str, *, mtime: float | None = None) -> bool:
+    return atomic_write(marker, f"{stamp}\n{fingerprint}\n", vm_name, "inactive marker write failed", mtime=mtime)
 
 
 def _read_marker_lines(marker: Path) -> list[str] | None:
@@ -118,7 +100,7 @@ def _open_excl_nofollow(path: Path) -> int:
     return os.open(path, flags, 0o600)
 
 
-def atomic_write(path: Path, content: str, vm_name: str, error_message: str) -> bool:
+def atomic_write(path: Path, content: str, vm_name: str, error_message: str, *, mtime: float | None = None) -> bool:
     parent = path.parent
     tmp_path: Path | None = None
     fd = -1
@@ -149,6 +131,8 @@ def atomic_write(path: Path, content: str, vm_name: str, error_message: str) -> 
             # power loss could lose the freshness stamp and force a redundant
             # monthly copy on the next run.
             os.fsync(handle.fileno())
+        if mtime is not None:
+            os.utime(tmp_path, (mtime, mtime))
         tmp_path.replace(path)
         # fsync the parent directory so the rename itself is durable. The new
         # name only survives a crash once the directory entry is committed.

@@ -147,17 +147,12 @@ def _list_name_uuid_pairs(config: Config) -> list[tuple[str, str]]:
 def list_vms(config: Config, *, include_blacklisted: bool = False) -> list[VM]:
     pairs = _list_name_uuid_pairs(config)
     selected: list[VM] = []
-    # NFC-normalize the blacklist so an operator-typed entry that uses NFD
-    # decomposition still matches the NFC-normalized name we got from virsh.
-    blacklist = {_normalize_vm_name(item) for item in config.blacklist}
+    blacklist = config.blacklist
     for name, uuid in pairs:
-        # Safety check runs before the blacklist filter so a maliciously-named
-        # VM that also happens to be on the blacklist still surfaces as an
-        # error rather than being silently dropped from the run.
         _assert_safe_vm_name(name)
         if not is_safe_vm_uuid(uuid):
             raise ValueError(f"virsh list returned an invalid UUID for {name!r}: {uuid!r}")
-        if not include_blacklisted and name in blacklist:
+        if not include_blacklisted and uuid in blacklist:
             continue
         try:
             state = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", name]).stdout.strip()

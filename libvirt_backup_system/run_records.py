@@ -16,7 +16,6 @@ from .logging_json import event
 
 RUNS_FILE = "runs.jsonl"
 CHAIN_POISON_NAME = ".chain-poisoned"
-CHECKPOINT_SUFFIX = ".checkpoint"
 CPT_SUFFIX = ".cpt"
 CHECKPOINTS_SUBDIR = "checkpoints"
 # Matches backup.timestamp(): second-precision UTC, no offset suffix because
@@ -95,29 +94,18 @@ def _read_checkpoint_xml_dir(xml_dir: Path) -> set[str] | None:
     return names if names else None
 
 
-def _read_legacy_checkpoint_files(chain_dir: Path) -> set[str]:
-    try:
-        entries = list(chain_dir.iterdir())
-    except FileNotFoundError:
-        return set()
-    except OSError as exc:
-        raise CheckpointReadError(f"listing {chain_dir}: {exc}") from exc
-    return {entry.stem for entry in entries if entry.is_file() and entry.suffix == CHECKPOINT_SUFFIX}
-
-
 def list_checkpoints(chain_dir: Path, vm_name: str | None = None) -> set[str]:
     """Names of every checkpoint virtnbdbackup has written into ``chain_dir``.
 
-    Reads the real virtnbdbackup state first (``<vm>.cpt`` JSON list, then
-    ``checkpoints/*.xml``) and falls back to legacy top-level
-    ``*.checkpoint`` files used by older fixtures. ``vm_name`` is required
-    to locate the authoritative ``.cpt`` file; callers that have not yet
-    been threaded through to pass a name skip straight to the fallbacks.
+    Reads the real virtnbdbackup state (``<vm>.cpt`` JSON list, then
+    ``checkpoints/*.xml``). ``vm_name`` is required to locate the
+    authoritative ``.cpt`` file; callers that have not yet been threaded
+    through to pass a name skip straight to the XML directory fallback.
 
     Raises ``CheckpointReadError`` when a checkpoint source exists but is
     unreadable (permission flip, NFS hiccup, fs corruption). Missing
     sources are silently absent: the caller falls through to the next
-    layout. Returning an empty set on a real read error would let a
+    source. Returning an empty set on a real read error would let a
     backup record success while restore --at later diverged from operator
     intent, so the caller must catch CheckpointReadError and fail the run.
     """
@@ -130,7 +118,7 @@ def list_checkpoints(chain_dir: Path, vm_name: str | None = None) -> set[str]:
         from_xml = _read_checkpoint_xml_dir(xml_dir)
         if from_xml is not None:
             return from_xml
-    return _read_legacy_checkpoint_files(chain_dir)
+    return set()
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -198,12 +186,19 @@ def record_run(
     return True
 
 
-def _parse_records(chain_dir: Path) -> list[tuple[dt.datetime, str]]:
+def _parse_records(chain_dir: Path) -> tuple[list[tuple[dt.datetime, str]], bool]:
+    """Return ``(records, has_corrupt)`` from the chain's ``runs.jsonl``.
+
+    ``has_corrupt`` is True when any non-empty line could not be parsed;
+    callers use it to refuse point-in-time restore since the corrupt line
+    may cover the operator's ``--at`` window.
+    """
     try:
         raw = (chain_dir / RUNS_FILE).read_text(encoding="utf-8")
     except OSError:
-        return []
+        return [], False
     records: list[tuple[dt.datetime, str]] = []
+    has_corrupt = False
     for raw_line in raw.splitlines():
         line = raw_line.strip()
         if not line:
@@ -213,13 +208,14 @@ def _parse_records(chain_dir: Path) -> list[tuple[dt.datetime, str]]:
             ts = dt.datetime.strptime(data["ts"], STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
             checkpoint = data["checkpoint"]
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            # Skip corrupt lines (truncated by power loss, hand-edited, ...);
-            # the surviving records still let restore reach the right run.
+            has_corrupt = True
             continue
         if isinstance(checkpoint, str) and checkpoint:
             records.append((ts, checkpoint))
+        else:
+            has_corrupt = True
     records.sort(key=lambda item: item[0])
-    return records
+    return records, has_corrupt
 
 
 class SelectStatus(enum.Enum):
@@ -227,7 +223,6 @@ class SelectStatus(enum.Enum):
 
     ``FOUND``: a matching checkpoint was found; use ``virtnbdrestore --until``.
     ``CHAIN_END``: ``at`` is at-or-after the last recorded run; omit ``--until``.
-    ``LEGACY``: chain has no ``runs.jsonl``; omit ``--until`` (back-compat).
     ``POISONED``: the chain has an unrecorded later checkpoint, so chain-end
         replay is unsafe.
     ``MISSING``: ``runs.jsonl`` exists but has no record at-or-before ``at`` —
@@ -239,7 +234,6 @@ class SelectStatus(enum.Enum):
 
     FOUND = "found"
     CHAIN_END = "chain_end"
-    LEGACY = "legacy"
     POISONED = "poisoned"
     MISSING = "missing"
 
@@ -261,11 +255,9 @@ def select_checkpoint(chain_dir: Path, at: dt.datetime) -> Selection:
     if not (chain_dir / RUNS_FILE).is_file():
         if poisoned:
             return Selection(None, SelectStatus.POISONED)
-        return Selection(None, SelectStatus.LEGACY)
-    records = _parse_records(chain_dir)
-    if not records:
-        # File present but unreadable / every line corrupt: cannot prove
-        # what was captured here, so refuse rather than guess.
+        return Selection(None, SelectStatus.MISSING)
+    records, has_corrupt = _parse_records(chain_dir)
+    if not records or has_corrupt:
         return Selection(None, SelectStatus.MISSING)
     if at == records[-1][0] and poisoned:
         return Selection(records[-1][1], SelectStatus.FOUND)

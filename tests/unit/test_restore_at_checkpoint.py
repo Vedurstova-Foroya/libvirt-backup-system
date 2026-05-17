@@ -83,17 +83,14 @@ def test_restore_at_omits_until_when_target_is_at_or_after_last_run(
     assert "-u" not in captured[0]
 
 
-def test_restore_at_legacy_chain_without_runs_jsonl_replays_chain_end(
-    tmp_path: Path, monkeypatch, backup_config: Config
-) -> None:
-    # A chain dir from before this feature has no runs.jsonl: restore picks
-    # the chain by start time but omits --until so the whole chain replays.
+def test_restore_at_refuses_when_runs_jsonl_missing(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
     cfg = _disable_mount(backup_config)
     _seed_chain(cfg, _stamp("2026-05", 1, 8))
     captured = _capture_run(monkeypatch)
 
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-03T12:00:00") == 0
-    assert "-u" not in captured[0]
+    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-05-03T12:00:00") == 1
+    assert captured == []
+    assert "restore --at has no matching run record" in capsys.readouterr().err
 
 
 def test_restore_at_refuses_when_runs_jsonl_has_no_matching_record(
@@ -120,8 +117,7 @@ def test_restore_at_refuses_when_runs_jsonl_is_empty(
     tmp_path: Path, monkeypatch, backup_config: Config, capsys
 ) -> None:
     # An empty / all-corrupt runs.jsonl means we cannot prove what's in this
-    # chain. Distinct from LEGACY (no file at all): MISSING refuses, LEGACY
-    # falls through to chain end.
+    # chain.
     cfg = _disable_mount(backup_config)
     chain_dir = _seed_chain(cfg, _stamp("2026-05", 1, 8))
     (chain_dir / "runs.jsonl").write_text("not-json\n", encoding="utf-8")

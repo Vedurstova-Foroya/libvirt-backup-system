@@ -14,7 +14,7 @@ from .preflight_estimate import df_available_kb as _df_available_kb
 from .preflight_estimate import estimate_required_kb as _estimate_required_kb
 from .shell import run
 from .storage import subpath_is_safe
-from .vms import is_safe_vm_name, list_vms
+from .vms import is_safe_vm_uuid, list_vms
 
 REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
 BOOLEAN_KEYS = frozenset(
@@ -65,8 +65,8 @@ def _validate_required_present(config: Config) -> list[str]:
 
 
 def _validate_vm_blacklist(config: Config) -> list[str]:
-    bad = [name for name in split_words(config.get("VM_BLACKLIST")) if not is_safe_vm_name(name)]
-    return [f"VM_BLACKLIST contains unsafe VM name: {name!r}" for name in bad]
+    bad = [entry for entry in split_words(config.get("VM_BLACKLIST")) if not is_safe_vm_uuid(entry)]
+    return [f"VM_BLACKLIST contains invalid VM UUID: {entry!r}" for entry in bad]
 
 
 def _validate_booleans(config: Config) -> list[str]:
@@ -262,9 +262,9 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     failures = _validate_env_values(config, require_writable=True)
     if lock_held and not failures:
         failures.extend(stamp_host_id_on_first_run(config))
-    for binary in REQUIRED_BINARIES:
-        if not shutil.which(binary):
-            failures.append(f"missing binary: {binary}")
+    elif not lock_held:
+        failures.extend(host_id_drift_failures(config))
+    failures.extend(f"missing binary: {binary}" for binary in REQUIRED_BINARIES if not shutil.which(binary))
     failures.extend(_virtnbdbackup_version_failures())
     failures.extend(_validate_scratch_dir())
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:

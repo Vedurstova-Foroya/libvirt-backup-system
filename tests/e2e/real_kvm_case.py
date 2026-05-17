@@ -46,8 +46,8 @@ def _virsh(args: list[str], *, check: bool = True) -> subprocess.CompletedProces
     return _run(["virsh", "-c", SESSION_URI, *args], check=check)
 
 
-def _session_domain_names() -> list[str]:
-    proc = _virsh(["list", "--all", "--name"])
+def _session_domain_uuids() -> list[str]:
+    proc = _virsh(["list", "--all", "--uuid"])
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
@@ -135,7 +135,7 @@ def _json_lines(output: str) -> list[dict[str, object]]:
 
 def _assert_backup_layout(backup_path: Path, host_id: str, vm_name: str, vm_uuid: str) -> Path:
     # Backups are keyed by libvirt UUID; the operator-facing VM name lands in
-    # the per-backup ``<name>.name`` marker. Running VMs build a monthly
+    # Running VMs build a monthly
     # incremental chain so the chain dir is the first stamp inside the month.
     vm_root = backup_path / host_id / vm_uuid
     months = list(vm_root.glob("????-??"))
@@ -145,8 +145,6 @@ def _assert_backup_layout(backup_path: Path, host_id: str, vm_name: str, vm_uuid
     backup = stamps[-1]
     data_files = list(backup.glob("vda.*.data"))
     assert data_files, f"no virtnbdbackup data file under {backup}: {list(backup.iterdir())}"
-    name_marker = backup / f"{vm_name}.name"
-    assert name_marker.is_file(), f"missing <vm-name>.name marker under {backup}"
     return backup
 
 
@@ -172,9 +170,14 @@ def _run_scenario(work: Path, running_name: str, inactive_name: str) -> None:
     config_path = prefix / "etc/libvirt-backup-system/libvirt-backup.env"
     assert bin_path.exists(), f"installer did not create {bin_path}"
 
-    # Snapshot any session VMs that already existed before our run and add them
-    # to VM_BLACKLIST so the orchestrator only touches the two test domains.
-    pre_existing = [name for name in _session_domain_names() if name not in {running_name, inactive_name}]
+    # Snapshot any session VMs that already existed before our run and add
+    # their UUIDs to VM_BLACKLIST so the orchestrator only touches the two
+    # test domains.
+    test_uuids = {
+        _virsh(["domuuid", running_name]).stdout.strip(),
+        _virsh(["domuuid", inactive_name]).stdout.strip(),
+    }
+    pre_existing = [uuid for uuid in _session_domain_uuids() if uuid not in test_uuids]
     _write_config(config_path, backup_path=backup_path, host_id=host_id, blacklist=pre_existing)
 
     check = _run([str(bin_path), "check"])

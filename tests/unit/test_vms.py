@@ -132,20 +132,19 @@ def test_normalize_vm_name_folds_nfc_and_nfd() -> None:
     assert _normalize_vm_name(nfd) == nfc
 
 
-def test_list_vms_blacklist_matches_unicode_normalization(monkeypatch) -> None:
-    # An operator who pasted the NFD form of a name into VM_BLACKLIST must
-    # still match the NFC-normalized name returned by virsh.
+def test_list_vms_blacklist_matches_by_uuid(monkeypatch) -> None:
     monkeypatch.delenv("LIBVIRT_URI", raising=False)
     cfg = Config.load(prefix="/tmp")
-    cfg.values["VM_BLACKLIST"] = "café"
+    cfg.values["VM_BLACKLIST"] = ALPHA_UUID
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         if "list" in args:
-            return CommandResult(args, 0, f"{ALPHA_UUID} café\n", "")
+            return CommandResult(args, 0, f"{ALPHA_UUID} alpha\n{BETA_UUID} beta\n", "")
         return CommandResult(args, 0, "running\n", "")
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
-    assert list_vms(cfg) == []
+    result = list_vms(cfg)
+    assert result == [VM("beta", "running", BETA_UUID)]
 
 
 def test_list_vms_skips_malformed_listing_lines(monkeypatch) -> None:
