@@ -37,13 +37,6 @@ class VM:
     def running(self) -> bool:
         return self.state.strip().lower() == "running"
 
-    @property
-    def inactive(self) -> bool:
-        # Only fully shut-off VMs use the copy-level + monthly marker path.
-        # Paused, in-shutdown, crashed, pmsuspended, etc. still have live state
-        # and must not be misclassified as a cold offline backup.
-        return self.state.strip().lower() == "shut off"
-
 
 def is_safe_vm_name(name: str) -> bool:
     if not name or name in {".", ".."} or name.startswith("-"):
@@ -79,29 +72,6 @@ def _domuuid(config: Config, vm_name: str) -> str:
         # plugin, locale-mangled output) is diagnosable from the log alone.
         raise ValueError(f"virsh domuuid returned an invalid UUID for {vm_name!r}: {uuid!r}")
     return uuid
-
-
-def domain_state(config: Config, vm_name: str) -> str | None:
-    """Return the current libvirt ``domstate`` for ``vm_name``, or ``None`` on error.
-
-    Used by inactive-backup finalize to re-verify the VM is still shut off
-    after virtnbdbackup -l copy returns: if the VM was started mid-copy the
-    copied data is live-state and must not be marked as a trusted backup.
-    Returning ``None`` makes the caller fail closed rather than guess.
-    """
-    if not is_safe_vm_name(vm_name):
-        return None
-    try:
-        return run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", vm_name]).stdout.strip()
-    except CommandError as exc:
-        event(
-            "error",
-            "VM state recheck failed",
-            vm=vm_name,
-            returncode=exc.result.returncode,
-            stderr=exc.result.stderr.strip(),
-        )
-        return None
 
 
 def resolve_vm_uuid(config: Config, vm_name: str) -> str | None:

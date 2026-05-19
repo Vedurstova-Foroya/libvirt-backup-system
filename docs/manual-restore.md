@@ -1,12 +1,13 @@
 # Manual restore process
 
-Most operators should use the built-in `restore` subcommand:
+Most operators should use the built-in `list-restore-points` and `restore` subcommands:
 
 ```sh
-sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
+sudo libvirt-backup-system list-restore-points
+sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 ```
 
-That command picks the latest month and latest chain, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <output>`. Pass `--at <YYYY-MM-DD>` (or any of the accepted timestamp forms documented in [Command reference](commands.md#restore)) to select the chain whose start time is at-or-before the target.
+`list-restore-points` prints every recorded run across all hosts and VMs; the first two columns are the UUID and the per-run timestamp. `restore` looks the pair up, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <staging> --until <checkpoint> -D` against the matching chain. The `-D` flag asks `virtnbdrestore` to redefine the domain in libvirt; same-host restores destroy and undefine the existing VM first.
 
 This page covers the manual procedure for situations where the source backup must first be staged onto local storage (e.g. NFS read-only, off-host recovery), or where the operator needs full control over each step.
 

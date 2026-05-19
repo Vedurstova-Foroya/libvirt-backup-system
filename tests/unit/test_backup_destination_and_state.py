@@ -6,16 +6,11 @@ from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID, BETA_UUID, virtnbdbackup_fake_success
+from tests.unit.conftest import ALPHA_UUID
 
 
 def _backup_config(cfg: Config) -> Config:
-    cfg.values.update(
-        {
-            "BACKUP_COMPRESS": "true",
-            "INACTIVE_COPY_EVERY_RUN": "false",
-        }
-    )
+    cfg.values.update({"BACKUP_COMPRESS": "true"})
     return cfg
 
 
@@ -32,25 +27,3 @@ def test_backup_vm_refuses_existing_destination(tmp_path: Path, monkeypatch, cap
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert (dest / "prior-backup").exists()
     assert "backup destination already exists" in capsys.readouterr().err
-
-
-def test_backup_vm_uses_copy_only_for_shut_off(tmp_path: Path, monkeypatch, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    calls: list[list[str]] = []
-
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        calls.append(args)
-        return virtnbdbackup_fake_success(args, check=check, env=env)
-
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
-
-    assert backup_vm(cfg, VM("alpha", "paused", ALPHA_UUID), "2026-05", "s1")
-    assert "full" in calls[-1]
-    assert "copy" not in calls[-1]
-    paused_marker = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/.inactive-copy-complete"
-    assert not paused_marker.exists()
-
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "s2")
-    assert "copy" in calls[-1]
-    shutoff_marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
-    assert shutoff_marker.exists()

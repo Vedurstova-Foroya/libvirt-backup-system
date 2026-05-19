@@ -101,14 +101,14 @@ def _prune_one_month(config: Config, backup_path: Path, vm_uuid: str, month_dir:
 
 
 # virtnbdbackup tags every data file with the run's backup level. ``-l full``
-# and ``-l copy`` both produce a standalone, restore-without-deps file
-# (``<vm>.<disk>.full.data`` / ``<vm>.<disk>.copy.data`` in real output);
-# ``-l inc`` produces ``<vm>.<disk>.inc.virtnbdbackup.<N>.data`` which only
-# restores when chained on top of the chain's full. Retention counts a month
-# as "has a full backup" iff at least one such standalone file exists, so an
-# incremental-only chain (full deleted out-of-band, or a malformed leftover)
-# does not satisfy the floor.
-_FULL_BACKUP_TOKENS = (".full.", ".copy.")
+# produces a standalone, restore-without-deps file
+# (``<vm>.<disk>.full.data`` in real output); ``-l inc`` produces
+# ``<vm>.<disk>.inc.virtnbdbackup.<N>.data`` which only restores when chained
+# on top of the chain's full. Retention counts a month as "has a full backup"
+# iff at least one such standalone file exists, so an incremental-only chain
+# (full deleted out-of-band, or a malformed leftover) does not satisfy the
+# floor.
+_FULL_BACKUP_TOKENS = (".full.",)
 _BACKUP_DATA_SUFFIX = ".data"
 
 
@@ -126,7 +126,7 @@ def chain_has_full_backup_file(chain_dir: Path) -> bool:
 
 def _has_full_backup(month_dir: Path) -> bool:
     """True if the month dir holds at least one chain dir containing a full
-    (or ``-l copy``) virtnbdbackup data file.
+    virtnbdbackup data file.
 
     A chain dir of pure incrementals does not count: those files cannot be
     restored standalone, so a month with only ``-l inc`` files on disk is not
@@ -168,10 +168,9 @@ def _prune_vm(
     if current_month is not None:
         current_dir = next((p for p in month_dirs if p.name == current_month), None)
         if current_dir is None or not _has_full_backup(current_dir):
-            # Gate 1: hold pruning until this month has its own full (or
-            # ``-l copy``) backup on disk. Pure incrementals on top of an
-            # earlier chain cannot satisfy this — the month must own a
-            # restore-standalone file.
+            # Gate 1: hold pruning until this month has its own full backup
+            # on disk. Pure incrementals on top of an earlier chain cannot
+            # satisfy this — the month must own a restore-standalone file.
             event(
                 "info",
                 "retention skipped for VM without full backup in current month",
@@ -220,16 +219,15 @@ def prune_old_months(config: Config, *, current_month: str | None = None) -> int
     misconfiguration cannot fail the run.
 
     When ``current_month`` is supplied the prune for a VM is gated on two
-    safety checks: the current month must hold its own full (or
-    ``-l copy``) backup file, AND at least ``BACKUP_RETENTION_MONTHS`` other
-    calendar months must also each hold a full of their own. Pure
-    incremental chain dirs (or leftover empty month dirs) do not satisfy
-    either gate. Together these turn retention=N into "only delete the
-    oldest month once N+1 months *each* hold a restore-standalone full",
-    so a missed or partially failed run never shrinks the window below
-    the configured floor. Callers that pass ``None`` (verify/test helpers)
-    prune purely by ``BACKUP_RETENTION_MONTHS`` without the full-backup
-    gates.
+    safety checks: the current month must hold its own full backup file,
+    AND at least ``BACKUP_RETENTION_MONTHS`` other calendar months must
+    also each hold a full of their own. Pure incremental chain dirs (or
+    leftover empty month dirs) do not satisfy either gate. Together these
+    turn retention=N into "only delete the oldest month once N+1 months
+    *each* hold a restore-standalone full", so a missed or partially
+    failed run never shrinks the window below the configured floor.
+    Callers that pass ``None`` (verify/test helpers) prune purely by
+    ``BACKUP_RETENTION_MONTHS`` without the full-backup gates.
     """
     keep = _retention_months(config)
     if keep is None:

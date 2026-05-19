@@ -28,7 +28,7 @@ def acquire_run_lock(config: Config) -> Iterator[Path]:
     path = lock_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     # O_NOFOLLOW matches the openat pattern used by _write_probe and the
-    # inactive-marker writes. /var/lib/libvirt-backup-system is root-owned so a
+    # atomic_write helpers. /var/lib/libvirt-backup-system is root-owned so a
     # non-root symlink plant is not the threat model, but consistency keeps
     # future hardening from finding only one outlier.
     fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)

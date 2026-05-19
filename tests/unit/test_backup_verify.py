@@ -9,12 +9,7 @@ from tests.unit.conftest import ALPHA_UUID
 
 
 def _verify_config(cfg: Config) -> Config:
-    cfg.values.update(
-        {
-            "BACKUP_COMPRESS": "true",
-            "INACTIVE_COPY_EVERY_RUN": "false",
-        }
-    )
+    cfg.values.update({"BACKUP_COMPRESS": "true"})
     return cfg
 
 

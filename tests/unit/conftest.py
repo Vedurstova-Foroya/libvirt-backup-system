@@ -77,18 +77,9 @@ def backup_config(tmp_path: Path) -> Config:
 
 
 @pytest.fixture(autouse=True)
-def _stub_domain_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    # _finalize_inactive_marker re-reads virsh domstate after the copy to
-    # confirm the VM is still shut off. Default to a stub that matches the
-    # original VM state expectation so unit tests don't shell out; tests
-    # that exercise the mid-copy state drift override this explicitly.
-    monkeypatch.setattr("libvirt_backup_system.backup.domain_state", lambda cfg, name: "shut off")
-
-
-@pytest.fixture(autouse=True)
 def _stub_domain_xml_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Inactive backups call domain_xml_fingerprint, which would otherwise shell
-    # out to virsh and explode in unit tests. Default to a stable stub so each
+    # backup_vm calls domain_xml_fingerprint, which would otherwise shell out
+    # to virsh and explode in unit tests. Default to a stable stub so each
     # test only needs to override when it wants to assert the fingerprint code
     # path directly.
     monkeypatch.setattr("libvirt_backup_system.backup.domain_xml_fingerprint", lambda uri, name: "fp-stub")

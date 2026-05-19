@@ -4,22 +4,17 @@ from pathlib import Path
 
 from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.shell import CommandResult
+from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID, BETA_UUID, virtnbdbackup_fake_success
+from tests.unit.conftest import ALPHA_UUID, virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
-    cfg.values.update(
-        {
-            "BACKUP_COMPRESS": "true",
-            "INACTIVE_COPY_EVERY_RUN": "false",
-        }
-    )
+    cfg.values.update({"BACKUP_COMPRESS": "true"})
     return cfg
 
 
-def test_backup_vm_fails_when_inactive_fingerprint_cannot_be_computed(monkeypatch, capsys, backup_config) -> None:
+def test_backup_vm_fails_when_fingerprint_cannot_be_computed(monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
     monkeypatch.setattr(
         "libvirt_backup_system.backup.run_streamed",
@@ -30,26 +25,8 @@ def test_backup_vm_fails_when_inactive_fingerprint_cannot_be_computed(monkeypatc
     )
     monkeypatch.setattr("libvirt_backup_system.backup.domain_xml_fingerprint", lambda uri, name: None)
 
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    assert "inactive fingerprint computation failed" in capsys.readouterr().err
-
-
-def test_backup_vm_fails_when_marker_write_fails(monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.write_marker",
-        lambda marker, stamp, fingerprint, vm, *, mtime=None: False,
-    )
-
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    capsys.readouterr()
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    assert "domain XML fingerprint computation failed" in capsys.readouterr().err
 
 
 def test_backup_vm_bails_when_required_nfs_mount_disappears(tmp_path: Path, capsys, backup_config) -> None:
@@ -83,79 +60,8 @@ def test_backup_vm_bails_when_mount_disappears_before_mkdir(tmp_path: Path, monk
         lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("must not run")),
     )
 
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
-
-
-def test_backup_vm_skips_marker_when_post_fingerprint_fails(monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    fingerprints = iter(["pre-fp", None])
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.domain_xml_fingerprint",
-        lambda uri, name: next(fingerprints),
-    )
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
-
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    assert "inactive fingerprint computation failed" in capsys.readouterr().err
-
-
-def test_backup_vm_finalize_aborts_when_mount_disappears(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-    cfg.path_value("BACKUP_PATH").mkdir()
-    # Entry + pre-mkdir checks pass; the finalize-time recheck flips to False.
-    checks = iter([True, True, False])
-    monkeypatch.setattr("libvirt_backup_system.paths.Path.is_mount", lambda self: next(checks, False))
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
-
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
-
-
-def test_confirm_inactive_marker_handles_oserror_on_recheck(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
-    marker.parent.mkdir(parents=True)
-    backup_dir = marker.parent / "oldstamp"
-    backup_dir.mkdir()
-    marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
-    original_is_dir = Path.is_dir
-    is_dir_calls = {"n": 0}
-
-    def fake_is_dir(self: Path) -> bool:
-        if self == backup_dir:
-            is_dir_calls["n"] += 1
-            if is_dir_calls["n"] >= 2:
-                raise OSError("racey")
-            return True
-        return original_is_dir(self)
-
-    monkeypatch.setattr("libvirt_backup_system.backup.Path.is_dir", fake_is_dir)
-    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
-
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
-    err = capsys.readouterr().err
-    assert "inactive marker backup directory recheck failed" in err
 
 
 def test_backup_vm_rejects_zero_exit_with_missing_destination(
@@ -220,6 +126,50 @@ def test_backup_vm_rejects_dest_replaced_by_symlink_post_copy(tmp_path, monkeypa
     assert "backup destination became unsafe after virtnbdbackup" in capsys.readouterr().err
 
 
+def test_backup_vm_disable_path_skips_cleanup_when_dest_never_created(
+    monkeypatch,
+    capsys,
+    backup_config,
+) -> None:
+    # ``virtnbdbackup`` can fail before the dest directory is materialised
+    # (binary missing, AppArmor deny, ENOSPC before mkdir, ...). The post-
+    # failure cleanup path must observe that the destination does not exist
+    # and skip both partial cleanup and chain poisoning rather than logging a
+    # spurious failure.
+    cfg = _backup_config(backup_config)
+
+    def never_creates_dest(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        raise CommandError(CommandResult(args, 9, "", "boom"))
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", never_creates_dest)
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    err = capsys.readouterr().err
+    assert "backup failed" in err
+    assert "partial backup removal" not in err
+
+
+def test_backup_vm_fails_when_initial_checkpoint_read_fails(monkeypatch, capsys, backup_config) -> None:
+    # ``list_checkpoints`` is called once before virtnbdbackup so the run can
+    # detect new checkpoints by diffing the set afterward. If that initial
+    # read raises ``CheckpointReadError`` (NFS hiccup, permission flip),
+    # backup_vm must fail closed instead of recording state we cannot trust.
+    from libvirt_backup_system.run_records import CheckpointReadError
+
+    cfg = _backup_config(backup_config)
+
+    def fail_read(chain_dir, vm_name=None):
+        raise CheckpointReadError("denied")
+
+    monkeypatch.setattr("libvirt_backup_system.backup.list_checkpoints", fail_read)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.run_streamed",
+        lambda args, check=True, env=None: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
+    assert "checkpoint metadata read failed" in capsys.readouterr().err
+
+
 def test_backup_vm_running_revalidates_nfs_after_copy(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
     cfg = _backup_config(backup_config)
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
@@ -232,42 +182,3 @@ def test_backup_vm_running_revalidates_nfs_after_copy(tmp_path: Path, monkeypatc
     assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     err = capsys.readouterr().err
     assert "backup completed but backup path no longer mounted" in err
-
-
-def test_confirm_inactive_marker_recopies_when_backup_dir_disappears(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    backup_config,
-) -> None:
-    cfg = _backup_config(backup_config)
-    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
-    marker.parent.mkdir(parents=True)
-    backup_dir = marker.parent / "oldstamp"
-    backup_dir.mkdir()
-    marker.write_text("oldstamp\nfp-stub\n", encoding="utf-8")
-    original_is_dir = Path.is_dir
-    removed = {"done": False}
-
-    def vanishing_is_dir(self: Path) -> bool:
-        if self == backup_dir and not removed["done"]:
-            # First call (inside marked_backup_dir) sees the directory; the
-            # second (the TOCTOU recheck) finds it gone.
-            removed["done"] = True
-            return True
-        if self == backup_dir:
-            return False
-        return original_is_dir(self)
-
-    monkeypatch.setattr("libvirt_backup_system.backup.Path.is_dir", vanishing_is_dir)
-    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: True)
-    monkeypatch.setattr(
-        "libvirt_backup_system.backup.run_streamed",
-        lambda args, check=True, env=None: (
-            Path(args[args.index("-o") + 1]).mkdir(parents=True, exist_ok=True),
-            CommandResult(args, 0, "", ""),
-        )[1],
-    )
-
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "newstamp")
-    assert "inactive marker backup directory disappeared" in capsys.readouterr().out

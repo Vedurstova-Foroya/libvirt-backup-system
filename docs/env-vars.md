@@ -12,10 +12,10 @@
 
 # Backup root. Backups are written as:
 #   BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
-# Running VMs use monthly incremental chains: the first run each calendar month
-# is a full, later runs in the same month are incrementals into the same
-# chain-id directory. Inactive (shut-off) VMs use ``-l copy`` and a per-month
-# .inactive-copy-complete marker.
+# Only running VMs are backed up: the first run each calendar month is a full,
+# later runs in the same month are incrementals into the same chain-id
+# directory. Offline VMs are logged as ``skipping vm because it is offline``
+# and skipped.
 BACKUP_PATH=
 
 # Backup host folder name. Empty means "use this machine's short hostname".
@@ -58,20 +58,6 @@ BACKUP_PATH=
 
 # Extra free-space margin added to preflight's backup size estimate.
 # SPACE_MARGIN_PERCENT=20
-
-# Stopped VMs are copied once per month by default.
-# Set true to copy stopped VMs on every run.
-#
-# Caveat for block-device-backed inactive VMs: when an inactive VM's disks are
-# backed by raw block devices (LVM logical volumes, iSCSI LUNs, RBD images
-# mapped as block devices, ...), the once-per-month fast path is not taken.
-# The block-device inode mtime is rarely rewritten when its contents change, so
-# the freshness check treats any block-backed disk as "possibly modified" and
-# forces a recopy on every run, regardless of INACTIVE_COPY_EVERY_RUN. This is
-# a deliberate correctness choice (the alternative is risking a stale copy);
-# operators with block-backed inactive VMs should expect every-run copies for
-# those VMs and size their backup window accordingly.
-# INACTIVE_COPY_EVERY_RUN=false
 
 # Per-VM backup size estimate used by preflight space checks, in GB.
 # Used only as a fallback when disk introspection (virsh / qemu-img) fails.

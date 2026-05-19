@@ -13,7 +13,7 @@ def backup_root(config: Config) -> Path:
 def runtime_backup_path_ok(config: Config) -> bool:
     # Preflight enforces BACKUP_REQUIRE_NFS_MOUNT once at start-of-run. Every
     # filesystem mutation re-checks because the mount can disappear at any time
-    # between preflight, mkdir, the backup itself, and marker writes.
+    # between preflight, mkdir, the backup itself, and chain state writes.
     if not config.enabled("BACKUP_REQUIRE_NFS_MOUNT"):
         return True
     backup_path = config.path_value("BACKUP_PATH")

@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import datetime as dt
 import shutil
-import time
 from pathlib import Path
 
 from .chains import ChainResolution, disable_chain_reuse, resolve_chain, write_chain_state
 from .config import Config
-from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
-from .inactive_markers import marked_backup_dir, marker_is_regular, remove_marker, write_marker
+from .disks import domain_xml_fingerprint
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
 from .paths import backup_root, runtime_backup_path_ok
@@ -16,7 +14,7 @@ from .run_records import CheckpointReadError, list_checkpoints, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
-from .vms import VM, domain_state, is_safe_vm_name, is_safe_vm_uuid, list_vms
+from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
 __all__ = [
     "backup_root",
@@ -65,68 +63,6 @@ def _remove_partial_destination(dest: Path, vm_name: str) -> None:
         event("info", "removed partial backup", vm=vm_name, destination=str(dest))
 
 
-def _confirm_inactive_marker_still_fresh(backup_dir: Path, vm: VM, month: str) -> bool:
-    # Re-check that backup_dir exists so a concurrent operator removal between
-    # marked_backup_dir() and here forces a recopy rather than "already fresh".
-    try:
-        if not backup_dir.is_dir():
-            event("info", "inactive marker backup directory disappeared, recopying", vm=vm.name, path=str(backup_dir))
-            return False
-    except OSError as exc:
-        event(
-            "error", "inactive marker backup directory recheck failed", vm=vm.name, path=str(backup_dir), error=str(exc)
-        )
-        return False
-    event("info", "inactive VM already copied this month", vm=vm.name, month=month)
-    return True
-
-
-def _finalize_inactive_marker(  # noqa: PLR0913
-    config: Config,
-    inactive_marker: Path,
-    month_dir: Path,
-    vm: VM,
-    pre_fingerprint: str,
-    stamp: str,
-    dest: Path,
-    pre_copy_time: float,
-) -> bool:
-    def fail_with_cleanup() -> bool:
-        _attempt_partial_cleanup(config, dest, vm.name)
-        return False
-
-    if not runtime_backup_path_ok(config):
-        return False
-    if not _ensure_safe(config, month_dir, "inactive marker skipped because destination became unsafe"):
-        return False
-    post_state = domain_state(config, vm.name)
-    if post_state is None or post_state.strip().lower() != "shut off":
-        event("error", "inactive backup not trusted: VM is no longer shut off", vm=vm.name, post_state=post_state or "")
-        return fail_with_cleanup()
-    post_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
-    if post_fingerprint is None:
-        event("error", "inactive fingerprint computation failed", vm=vm.name)
-        return fail_with_cleanup()
-    if post_fingerprint != pre_fingerprint:
-        event("error", "domain XML changed during inactive backup; backup not trusted", vm=vm.name)
-        return fail_with_cleanup()
-    if not write_marker(inactive_marker, stamp, post_fingerprint, vm.name, mtime=pre_copy_time):
-        return fail_with_cleanup()
-    event("info", "backup completed", vm=vm.name, destination=str(dest))
-    return True
-
-
-def _maybe_reuse_inactive_backup(config: Config, vm: VM, month: str, month_dir: Path, marker: Path) -> bool:
-    if not vm.inactive or config.enabled("INACTIVE_COPY_EVERY_RUN") or not marker_is_regular(marker):
-        return False
-    backup_dir = marked_backup_dir(config, month_dir, marker, vm.name)
-    if backup_dir and inactive_marker_is_fresh(config.get("LIBVIRT_URI"), vm.name, marker):
-        return _confirm_inactive_marker_still_fresh(backup_dir, vm, month)
-    if backup_dir:
-        event("info", "inactive marker is stale, recopying", vm=vm.name, month=month)
-    return False
-
-
 def _attempt_partial_cleanup(config: Config, dest: Path, vm_name: str) -> None:
     if backup_subpath_is_safe(config, dest) and runtime_backup_path_ok(config):
         _remove_partial_destination(dest, vm_name)
@@ -146,7 +82,7 @@ def _prepare_dest(config: Config, vm: VM, month_dir: Path, dest: Path, *, owns_c
     if owns_chain_dir and dest.exists():
         # End-to-end-owned chain dir: refuse overwrite so a retry or backward
         # clock jump cannot delete prior data. Incrementals reuse the dir and
-        # do not own it, so the guard only fires for new fulls/copies.
+        # do not own it, so the guard only fires for new fulls.
         event("error", "backup destination already exists", vm=vm.name, destination=str(dest))
         return False
     if not runtime_backup_path_ok(config):
@@ -197,8 +133,16 @@ def _run_virtnbdbackup(
     return _ensure_safe(config, dest, "backup destination became unsafe after virtnbdbackup")
 
 
-def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker: Path) -> bool:
-    remove_marker(marker, vm.name)
+def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
+    if not is_safe_vm_name(vm.name):
+        raise ValueError(f"refusing unsafe VM name: {vm.name!r}")
+    if not is_safe_vm_uuid(vm.uuid):
+        raise ValueError(f"refusing unsafe VM uuid for {vm.name!r}: {vm.uuid!r}")
+    if not runtime_backup_path_ok(config):
+        return False
+    month_dir = backup_root(config) / vm.uuid / month
+    if not _ensure_safe(config, month_dir, "backup skipped because destination is unsafe"):
+        return False
     pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
     if pre_fingerprint is None:
         event("error", "domain XML fingerprint computation failed", vm=vm.name)
@@ -254,47 +198,17 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
     return True
 
 
-def _backup_inactive(config: Config, vm: VM, month_dir: Path, stamp: str, marker: Path) -> bool:
-    dest = month_dir / stamp
-    pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
-    if pre_fingerprint is None:
-        event("error", "inactive fingerprint computation failed", vm=vm.name)
-        return False
-    pre_copy_time = time.time()  # wall-clock; backward NTP step mid-copy is a tiny documented gap
-    if not _prepare_dest(config, vm, month_dir, dest, owns_chain_dir=True):
-        return False
-    event("info", "backup started", vm=vm.name, state=vm.state, backup_level="copy", destination=str(dest))
-    if not _run_virtnbdbackup(config, vm, _virtnbdbackup_cmd(config, vm, "copy", dest), dest, owns_chain_dir=True):
-        return False
-    return _finalize_inactive_marker(config, marker, month_dir, vm, pre_fingerprint, stamp, dest, pre_copy_time)
-
-
-def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
-    if not is_safe_vm_name(vm.name):
-        raise ValueError(f"refusing unsafe VM name: {vm.name!r}")
-    if not is_safe_vm_uuid(vm.uuid):
-        raise ValueError(f"refusing unsafe VM uuid for {vm.name!r}: {vm.uuid!r}")
-    if not runtime_backup_path_ok(config):
-        return False
-    month_dir = backup_root(config) / vm.uuid / month
-    if not _ensure_safe(config, month_dir, "backup skipped because destination is unsafe"):
-        return False
-    inactive_marker = month_dir / ".inactive-copy-complete"
-    if _maybe_reuse_inactive_backup(config, vm, month, month_dir, inactive_marker):
-        return True
-    if vm.inactive:
-        return _backup_inactive(config, vm, month_dir, stamp, inactive_marker)
-    return _backup_running(config, vm, month_dir, stamp, inactive_marker)
-
-
 def run_backups(config: Config, *, month: str | None = None) -> int:
     # ``stamp`` is recomputed per VM: a single run-start stamp across a
-    # minutes-to-hours sequential run would let ``restore --at`` pick a
-    # backup taken well after the requested moment. Same-second collisions
-    # are safe — ``_prepare_dest`` refuses overwrite on new-chain creation.
+    # minutes-to-hours sequential run would let ``restore`` pick a backup taken
+    # well after the requested moment. Same-second collisions are safe —
+    # ``_prepare_dest`` refuses overwrite on new-chain creation.
     month = month or current_month()
     ok = True
     for vm in list_vms(config):
+        if not vm.running:
+            event("info", "skipping vm because it is offline", vm=vm.name, state=vm.state)
+            continue
         if not backup_vm(config, vm, month, timestamp()):
             ok = False
     return 0 if ok else 1

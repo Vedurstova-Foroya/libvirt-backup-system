@@ -178,11 +178,12 @@ available, the runner also executes `tests/e2e/real_kvm_case.py`. That
 scenario creates two ephemeral domains under `qemu:///session` (one running, one
 shut off) backed by tiny qcow2 disks under a temp workdir, installs
 `libvirt-backup-system` into a `--prefix` sandbox, runs `check` /
-`list-vms --json` / `run` / `verify`, then re-runs to assert that the
-inactive-VM monthly marker actually suppresses a second copy while the running
-VM gets a new timestamp directory. Any leftover libvirt checkpoints and domains
-are torn down in a `finally` block. If KVM capability is missing the path is
-skipped with a clear reason instead of failing the suite.
+`list-vms --json` / `run` / `verify`, then re-runs to assert that the running
+VM gets a new timestamp directory and the offline VM is logged as
+``skipping vm because it is offline`` on both runs. Any leftover libvirt
+checkpoints and domains are torn down in a `finally` block. If KVM capability
+is missing the path is skipped with a clear reason instead of failing the
+suite.
 
 > **Coverage caveat.** The Docker Compose scenario runs the orchestrator against
 > a `PATH`-shadowed set of fake CLIs (`tests/e2e/fakes/virsh`,
@@ -203,8 +204,6 @@ skipped with a clear reason instead of failing the suite.
 >   service mode.
 > - Behavior under real production disk layouts (LVM, RBD, iSCSI block-backed
 >   disks). The real-KVM case uses tiny qcow2 files.
-> - Inactive-VM marker freshness across real disk mtime semantics on NFS, ext4,
->   xfs, etc. The real-KVM case uses local tmpfs/ext4 only.
 > - `qemu:///system` against unprivileged backup paths. The real-KVM case uses
 >   `qemu:///session` so it can run without root; production runs as root
 >   against `qemu:///system` (see [Install](install.md)).

@@ -41,7 +41,6 @@ def write_config() -> None:
                 "BACKUP_COMPRESS=true",
                 "BACKUP_REQUIRE_NFS_MOUNT=true",
                 "SPACE_MARGIN_PERCENT=20",
-                "INACTIVE_COPY_EVERY_RUN=false",
                 "BACKUP_ESTIMATE_GB_PER_VM=0.001",
                 "REQUIRE_ROOT=true",
                 "",
@@ -57,29 +56,37 @@ def assert_json_lines(output: str) -> None:
     assert all("level" in record and "message" in record for record in records)
 
 
-def _assert_restore_at_composes_with_until(month: str) -> None:
-    # Validate that restore --at composes into virtnbdrestore --until: pick the
-    # first timestamp recorded in runs.jsonl, drive restore through the fake,
-    # and confirm the fake received a --until that resolves to a known
-    # checkpoint in the chain dir. The fake fails closed on an unknown
-    # checkpoint, so a green exit here is proof of the composition.
+def _assert_restore_composes_with_until(month: str) -> None:
+    # Validate that ``restore <uuid> <ts>`` composes into ``virtnbdrestore
+    # --until <checkpoint>``: pick the first timestamp recorded in runs.jsonl,
+    # drive restore through the fake, and confirm the fake received a --until
+    # that resolves to a known checkpoint in the chain dir. The fake fails
+    # closed on an unknown checkpoint, so a green exit here is proof of the
+    # composition.
     alpha_runs_path = next(
         (BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).glob("[0-9]*T[0-9]*/runs.jsonl"),
         None,
     )
     if alpha_runs_path is None:
         return
-    restore_target = PREFIX / "restore-out"
-    shutil.rmtree(restore_target, ignore_errors=True)
     first_record = json.loads(alpha_runs_path.read_text(encoding="utf-8").splitlines()[0])
-    restore = run(
-        [str(BIN), "restore", "--vm", "alpha", "--output", str(restore_target), "--at", first_record["ts"]],
-    )
+    restore = run([str(BIN), "restore", VM_UUID["alpha"], first_record["ts"]])
     assert_json_lines(restore.stdout)
-    receipt_path = restore_target / "restore-receipt.json"
-    assert receipt_path.is_file(), "fake virtnbdrestore did not write its receipt"
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipts = list((PREFIX / "var/lib/libvirt-backup-system/restore").glob("*/restore-receipt.json"))
+    assert receipts, "fake virtnbdrestore did not write its receipt"
+    receipt = json.loads(receipts[-1].read_text(encoding="utf-8"))
     assert receipt["until"] == first_record["checkpoint"], receipt
+
+
+def _assert_list_restore_points_emits_uuid_and_timestamp(month: str) -> None:
+    # list-restore-points must print at least one row per recorded run. The
+    # first two whitespace-separated columns are the UUID and the timestamp
+    # so a copy of that pair feeds straight into ``restore``.
+    listing = run([str(BIN), "list-restore-points"])
+    output_lines = [line for line in listing.stdout.splitlines() if line.strip()]
+    assert any(VM_UUID["alpha"] in line and month.replace("-", "") in line for line in output_lines), listing.stdout
+    header = output_lines[0].split()
+    assert header[:2] == ["VM_UUID", "TIMESTAMP"], header
 
 
 def main() -> int:
@@ -105,21 +112,25 @@ def main() -> int:
 
     backup = run([str(BIN), "run"])
     assert_json_lines(backup.stdout)
+    # Only running VMs are backed up. ``beta`` is shut off (per fake virsh) so
+    # it must be skipped with the documented log line and produce no backup
+    # tree at all.
     month_dirs = list((BACKUP_PATH / "e2e-host" / VM_UUID["alpha"]).glob("????-??"))
     assert month_dirs, "running VM backup month missing"
-    assert list((BACKUP_PATH / "e2e-host" / VM_UUID["beta"]).glob("????-??")), "inactive VM backup month missing"
+    assert not (BACKUP_PATH / "e2e-host" / VM_UUID["beta"]).exists(), "offline VM must not produce a backup tree"
+    backup_records = [json.loads(line) for line in backup.stdout.splitlines() if line.strip()]
+    assert any(
+        r.get("message") == "skipping vm because it is offline" and r.get("vm") == "beta" for r in backup_records
+    ), backup_records
     month = month_dirs[0].name
 
-    assert (BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).is_dir(), "backup month missing"
-
-    for vm_name in ("alpha", "beta"):
-        timestamps = sorted((BACKUP_PATH / "e2e-host" / VM_UUID[vm_name] / month).glob("[0-9]*T[0-9]*"))
-        assert timestamps, f"no timestamped backup directory for {vm_name}"
-        metadata_path = timestamps[-1] / "metadata.json"
-        assert metadata_path.is_file(), f"metadata.json missing for {vm_name}"
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        assert metadata["domain"] == vm_name, metadata
-        assert metadata["disks"], f"no disks recorded for {vm_name}"
+    timestamps = sorted((BACKUP_PATH / "e2e-host" / VM_UUID["alpha"] / month).glob("[0-9]*T[0-9]*"))
+    assert timestamps, "no timestamped backup directory for alpha"
+    metadata_path = timestamps[-1] / "metadata.json"
+    assert metadata_path.is_file(), "metadata.json missing for alpha"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["domain"] == "alpha", metadata
+    assert metadata["disks"], "no disks recorded for alpha"
 
     # Second run lands in the same month and writes a new checkpoint as an
     # incremental; the restore composition test below needs at least two run
@@ -134,7 +145,8 @@ def main() -> int:
 
     run([str(BIN), "verify"])
 
-    _assert_restore_at_composes_with_until(month)
+    _assert_list_restore_points_emits_uuid_and_timestamp(month)
+    _assert_restore_composes_with_until(month)
 
     # A failing run must never wipe the chain dir for the failing VM, and must
     # leave older month dirs alone unless retention removes them. Disable the

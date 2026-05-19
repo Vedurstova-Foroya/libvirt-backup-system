@@ -106,24 +106,6 @@ def test_prune_preserves_full_backup_floor_with_recent_incremental_only_month(ba
     assert sum(1 for month in vm_dir.iterdir() if _has_full_backup(month)) == 3
 
 
-def test_copy_data_files_count_as_full_for_inactive_vms(backup_config: Config) -> None:
-    # Inactive VMs use ``virtnbdbackup -l copy`` which produces
-    # ``<vm>.<disk>.copy.data``; that file is restore-standalone so it
-    # satisfies the full-backup gate the same way ``.full.`` does.
-    cfg = _enable(backup_config, 1)
-    vm_dir = _vm_dir(cfg, ALPHA_UUID)
-    (vm_dir / "2025-12").mkdir()
-    chain = vm_dir / "2025-12" / "20251201T000000"
-    chain.mkdir(parents=True)
-    (chain / "vda.copy.data").write_bytes(b"x")
-    (vm_dir / "2026-01").mkdir()
-    cur = vm_dir / "2026-01" / "20260101T000000"
-    cur.mkdir(parents=True)
-    (cur / "vda.copy.data").write_bytes(b"x")
-    assert prune_old_months(cfg, current_month="2026-01") == 0
-    assert {p.name for p in vm_dir.iterdir()} == {"2026-01"}
-
-
 def test_has_full_backup_handles_unreadable_or_non_dir_entries(tmp_path: Path, monkeypatch) -> None:
     # iterdir on the month dir raising → False.
     monkeypatch.setattr(Path, "iterdir", lambda self: (_ for _ in ()).throw(OSError("denied")))

@@ -2,25 +2,19 @@
 
 from __future__ import annotations
 
-import datetime as dt
-import enum
 import json
 import os
 import stat
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
 
-from .inactive_markers import atomic_write
+from .atomic_io import atomic_write
 from .logging_json import event
 
 RUNS_FILE = "runs.jsonl"
 CHAIN_POISON_NAME = ".chain-poisoned"
 CPT_SUFFIX = ".cpt"
 CHECKPOINTS_SUBDIR = "checkpoints"
-# Matches backup.timestamp(): second-precision UTC, no offset suffix because
-# the chain dir name uses the same format and is implicitly UTC.
-STAMP_FORMAT = "%Y%m%dT%H%M%S"
 
 
 class CheckpointReadError(OSError):
@@ -184,88 +178,3 @@ def record_run(
     # commit the size update for an appended file.
     _fsync_directory(chain_dir)
     return True
-
-
-def _parse_records(chain_dir: Path) -> tuple[list[tuple[dt.datetime, str]], bool]:
-    """Return ``(records, has_corrupt)`` from the chain's ``runs.jsonl``.
-
-    ``has_corrupt`` is True when any non-empty line could not be parsed;
-    callers use it to refuse point-in-time restore since the corrupt line
-    may cover the operator's ``--at`` window.
-    """
-    try:
-        raw = (chain_dir / RUNS_FILE).read_text(encoding="utf-8")
-    except OSError:
-        return [], False
-    records: list[tuple[dt.datetime, str]] = []
-    has_corrupt = False
-    for raw_line in raw.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-            ts = dt.datetime.strptime(data["ts"], STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
-            checkpoint = data["checkpoint"]
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            has_corrupt = True
-            continue
-        if isinstance(checkpoint, str) and checkpoint:
-            records.append((ts, checkpoint))
-        else:
-            has_corrupt = True
-    records.sort(key=lambda item: item[0])
-    return records, has_corrupt
-
-
-class SelectStatus(enum.Enum):
-    """Outcome of a ``select_checkpoint`` call.
-
-    ``FOUND``: a matching checkpoint was found; use ``virtnbdrestore --until``.
-    ``CHAIN_END``: ``at`` is at-or-after the last recorded run; omit ``--until``.
-    ``POISONED``: the chain has an unrecorded later checkpoint, so chain-end
-        replay is unsafe.
-    ``MISSING``: ``runs.jsonl`` exists but has no record at-or-before ``at`` —
-        either every record is in the future, or the older records are
-        corrupt/truncated. Callers should refuse the restore rather than
-        silently fall back to chain end, because chain end may be newer
-        than the operator asked for.
-    """
-
-    FOUND = "found"
-    CHAIN_END = "chain_end"
-    POISONED = "poisoned"
-    MISSING = "missing"
-
-
-@dataclass(frozen=True)
-class Selection:
-    checkpoint: str | None
-    status: SelectStatus
-
-
-def select_checkpoint(chain_dir: Path, at: dt.datetime) -> Selection:
-    """Latest checkpoint whose recorded run-time is at-or-before ``at``.
-
-    The returned ``Selection`` distinguishes the three "omit ``--until``"
-    cases from a genuine "no matching record" so the caller can refuse the
-    restore for the latter rather than silently restoring chain end.
-    """
-    poisoned = chain_is_poisoned(chain_dir)
-    if not (chain_dir / RUNS_FILE).is_file():
-        if poisoned:
-            return Selection(None, SelectStatus.POISONED)
-        return Selection(None, SelectStatus.MISSING)
-    records, has_corrupt = _parse_records(chain_dir)
-    if not records or has_corrupt:
-        return Selection(None, SelectStatus.MISSING)
-    if at == records[-1][0] and poisoned:
-        return Selection(records[-1][1], SelectStatus.FOUND)
-    if at >= records[-1][0]:
-        if poisoned:
-            return Selection(None, SelectStatus.POISONED)
-        return Selection(None, SelectStatus.CHAIN_END)
-    for stamp, checkpoint in reversed(records):
-        if stamp <= at:
-            return Selection(checkpoint, SelectStatus.FOUND)
-    return Selection(None, SelectStatus.MISSING)

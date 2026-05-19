@@ -14,7 +14,7 @@ from tests.unit.conftest import ALPHA_UUID, virtnbdbackup_fake_success
 
 
 def _backup_config(cfg: Config) -> Config:
-    cfg.values.update({"BACKUP_COMPRESS": "true", "INACTIVE_COPY_EVERY_RUN": "false"})
+    cfg.values.update({"BACKUP_COMPRESS": "true"})
     return cfg
 
 

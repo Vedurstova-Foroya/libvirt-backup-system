@@ -19,12 +19,7 @@ from tests.unit.conftest import ALPHA_UUID, BETA_UUID, virtnbdbackup_fake_succes
 
 
 def _backup_config(cfg: Config) -> Config:
-    cfg.values.update(
-        {
-            "BACKUP_COMPRESS": "true",
-            "INACTIVE_COPY_EVERY_RUN": "false",
-        }
-    )
+    cfg.values.update({"BACKUP_COMPRESS": "true"})
     return cfg
 
 
@@ -84,62 +79,6 @@ def test_backup_vm_without_compression(tmp_path: Path, monkeypatch, backup_confi
     monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
     assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
     assert "--compress" not in calls[0]
-
-
-def test_backup_vm_inactive_marker_and_failure(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
-    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, marker: True)
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
-    legacy_fingerprint = marker.parent / ".inactive-copy-fingerprint"
-    # Stamp and fingerprint are stored together in one atomic marker file.
-    assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
-    assert not legacy_fingerprint.exists()
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "new")
-    assert "inactive VM already copied" in capsys.readouterr().out
-
-    cfg.values["INACTIVE_COPY_EVERY_RUN"] = "true"
-
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        raise CommandError(CommandResult(args, 9, "", "bad"))
-
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
-    assert not backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "new")
-    assert "backup failed" in capsys.readouterr().err
-
-
-def test_backup_vm_redoes_inactive_when_marker_is_stale(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    marker = tmp_path / f"backups/host/{BETA_UUID}/2026-05/.inactive-copy-complete"
-    marker.parent.mkdir(parents=True)
-    (marker.parent / "old").mkdir()
-    marker.write_text("old\nold-fp\n", encoding="utf-8")
-    calls: list[list[str]] = []
-
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        calls.append(args)
-        return virtnbdbackup_fake_success(args, check=check, env=env)
-
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
-    monkeypatch.setattr("libvirt_backup_system.backup.inactive_marker_is_fresh", lambda uri, name, m: False)
-
-    assert backup_vm(cfg, VM("beta", "shut off", BETA_UUID), "2026-05", "stamp")
-    assert calls
-    assert calls[0][:1] == ["virtnbdbackup"]
-    assert "inactive marker is stale" in capsys.readouterr().out
-    assert marker.read_text(encoding="utf-8") == "stamp\nfp-stub\n"
-
-
-def test_backup_vm_clears_marker_when_vm_running(tmp_path: Path, monkeypatch, backup_config) -> None:
-    cfg = _backup_config(backup_config)
-    marker = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/.inactive-copy-complete"
-    marker.parent.mkdir(parents=True)
-    marker.write_text("old\n", encoding="utf-8")
-    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
-
-    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp")
-    assert not marker.exists()
 
 
 def test_backup_vm_rejects_symlinked_backup_subpath(tmp_path: Path, capsys, backup_config) -> None:
@@ -213,6 +152,34 @@ def test_run_backups_success_and_failures(tmp_path: Path, monkeypatch, backup_co
 
     monkeypatch.setattr("libvirt_backup_system.backup.backup_vm", lambda config, vm, month, stamp: True)
     assert run_backups(cfg) == 0
+
+
+def test_run_backups_skips_offline_vms(monkeypatch, capsys, backup_config) -> None:
+    # Only running VMs are backed up. Offline VMs are logged and skipped: the
+    # log message ("skipping vm because it is offline") is the operator's
+    # signal that the VM was deliberately not backed up. ``backup_vm`` must
+    # never be invoked for a non-running state.
+    cfg = _backup_config(backup_config)
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.list_vms",
+        lambda config: [
+            VM("alpha", "running", ALPHA_UUID),
+            VM("beta", "shut off", BETA_UUID),
+            VM("gamma", "paused", BETA_UUID),
+        ],
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.backup.backup_vm",
+        lambda config, vm, month, stamp: (seen.append(vm.name) or True),
+    )
+
+    assert run_backups(cfg) == 0
+    assert seen == ["alpha"]
+    out = capsys.readouterr().out
+    assert "skipping vm because it is offline" in out
+    assert '"vm":"beta"' in out
+    assert '"vm":"gamma"' in out
 
 
 def test_run_backups_uses_per_vm_timestamp(monkeypatch, backup_config) -> None:

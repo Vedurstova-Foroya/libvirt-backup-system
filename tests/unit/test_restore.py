@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import datetime as dt
 import json
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.restore import _skipped_chain_spans_target, parse_at, restore
+from libvirt_backup_system.restore import restore
 from libvirt_backup_system.shell import CommandError, CommandResult
 from tests.unit.conftest import ALPHA_UUID
 
+ALPHA_NAME = "alpha"
 
-def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]]) -> Path:
-    vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
+
+def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]], *, host_id: str | None = None) -> Path:
+    host = host_id or cfg.get("HOST_ID")
+    vm_dir = cfg.path_value("BACKUP_PATH") / host / ALPHA_UUID
     vm_dir.mkdir(parents=True, exist_ok=True)
     for month, chains in months_and_chains.items():
         (vm_dir / month).mkdir(exist_ok=True)
@@ -22,11 +26,14 @@ def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]]) -> Path:
             checkpoint = f"virtnbdbackup.{chain}"
             record = json.dumps({"ts": chain, "checkpoint": checkpoint}, sort_keys=True, separators=(",", ":"))
             (chain_dir / "runs.jsonl").write_text(record + "\n", encoding="utf-8")
+            (chain_dir / "metadata.json").write_text(json.dumps({"domain": ALPHA_NAME}), encoding="utf-8")
     return vm_dir
 
 
-def _restore_config(cfg: Config) -> Config:
+def _restore_config(cfg: Config, tmp_path: Path) -> Config:
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
+    cfg.values["HOST_ID"] = "host"
+    cfg.values["LIBVIRT_BACKUP_ROOT_PREFIX"] = str(tmp_path)
     return cfg
 
 
@@ -34,258 +41,163 @@ def _stamp(month: str, day: int, hour: int = 12) -> str:
     return f"{month.replace('-', '')}{day:02d}T{hour:02d}0000"
 
 
-def test_restore_picks_latest_snapshot_across_months(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    cfg = _restore_config(backup_config)
-    older = _stamp("2025-12", 1, 8)
-    newer = _stamp("2026-01", 3, 9)
-    _seed_chain(cfg, {"2025-12": [older], "2026-01": [_stamp("2026-01", 2), newer]})
+def _stub_no_local_vm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the turnkey path: ``virsh domname`` reports no local match."""
+    monkeypatch.setattr(
+        "libvirt_backup_system.restore.run",
+        lambda args, **kwargs: (_ for _ in ()).throw(
+            CommandError(CommandResult(args, 1, "", "no domain with matching name 'x'"))
+        ),
+    )
+
+
+def _capture_streamed(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     captured: list[list[str]] = []
     monkeypatch.setattr(
         "libvirt_backup_system.restore.run_streamed",
         lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
     )
-
-    output = tmp_path / "out"
-    assert restore(cfg, ALPHA_UUID, output) == 0
-
-    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / newer
-    assert captured == [["virtnbdrestore", "-a", "restore", "-i", str(expected), "-o", str(output)]]
-    assert output.is_dir()
+    return captured
 
 
-def test_restore_skips_newer_chain_without_standalone_data(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    cfg = _restore_config(backup_config)
-    older = _stamp("2026-01", 3, 9)
-    newer = _stamp("2026-01", 4, 9)
-    vm_dir = _seed_chain(cfg, {"2026-01": [older]})
-    partial = vm_dir / "2026-01" / newer
-    partial.mkdir()
-    (partial / "vda.inc.virtnbdbackup.1.data").write_bytes(b"x")
-    captured: list[list[str]] = []
+def test_restore_turnkey_when_no_local_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
+) -> None:
+    # Backup belongs to this host but libvirt has no domain with that UUID:
+    # restore falls through to the turnkey define path rather than refusing.
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]})
+    _stub_no_local_vm(monkeypatch)
+    captured = _capture_streamed(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    cmd = captured[0]
+    assert cmd[:3] == ["virtnbdrestore", "-a", "restore"]
+    assert "-D" in cmd  # turnkey mode redefines the VM
+    assert cmd[cmd.index("-u") + 1] == f"virtnbdbackup.{stamp}"
+
+
+def test_restore_overwrite_when_local_vm_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
+) -> None:
+    # Same host AND libvirt has the VM: restore shuts the VM off, undefines it,
+    # then redefines from the backup. The sequence is asserted on the order of
+    # virsh subcommands captured.
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]})
+    virsh_calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
+        virsh_calls.append(args)
+        if "domname" in args:
+            return CommandResult(args, 0, ALPHA_NAME, "")
+        if "domstate" in args:
+            return CommandResult(args, 0, "shut off", "")
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
+    captured = _capture_streamed(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    actions = [tuple(call[1:5]) for call in virsh_calls]
+    assert ("-c", cfg.get("LIBVIRT_URI"), "destroy", "--") in actions
+    assert any("undefine" in call for call in virsh_calls)
+    assert captured[0][:3] == ["virtnbdrestore", "-a", "restore"]
+
+
+def test_restore_overwrite_refuses_if_destroy_leaves_vm_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]})
+
+    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
+        if "domname" in args:
+            return CommandResult(args, 0, ALPHA_NAME, "")
+        if "destroy" in args:
+            return CommandResult(args, 0, "", "")
+        if "domstate" in args:
+            return CommandResult(args, 0, "running", "")
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
     monkeypatch.setattr(
         "libvirt_backup_system.restore.run_streamed",
-        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
+        lambda args: (_ for _ in ()).throw(AssertionError("must not run when VM still up")),
     )
 
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 0
-    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / older
-    assert captured[0][captured[0].index("-i") + 1] == str(expected)
+    assert restore(cfg, ALPHA_UUID, stamp) == 1
+    assert "refusing to overwrite" in capsys.readouterr().err
 
 
-def test_restore_at_picks_closest_snapshot_going_backwards(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    # Three snapshots: Dec 1 08:00, Dec 31 12:00, Jan 3 09:00. Targeting
-    # Jan 1 03:00 must roll back to Dec 31 12:00, not forward to Jan 3 09:00.
-    cfg = _restore_config(backup_config)
-    dec_1 = _stamp("2025-12", 1, 8)
-    dec_31 = _stamp("2025-12", 31, 12)
-    jan_3 = _stamp("2026-01", 3, 9)
-    _seed_chain(cfg, {"2025-12": [dec_1, dec_31], "2026-01": [jan_3]})
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
-    )
+def test_restore_uses_cross_host_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config) -> None:
+    # Backup lives under a different host_id than this machine's; restore must
+    # still find it (cross-host recovery) and pick the turnkey define path.
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]}, host_id="other-host")
+    _stub_no_local_vm(monkeypatch)
+    captured = _capture_streamed(monkeypatch)
 
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-01-01T03:00:00") == 0
-
-    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2025-12" / dec_31
-    assert captured[0][captured[0].index("-i") + 1] == str(expected)
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    chain_dir = cfg.path_value("BACKUP_PATH") / "other-host" / ALPHA_UUID / "2026-05" / stamp
+    assert captured[0][captured[0].index("-i") + 1] == str(chain_dir)
 
 
-def test_restore_at_earlier_than_oldest_snapshot_errors(tmp_path: Path, backup_config: Config, capsys) -> None:
-    # Pinning to a time before any backup existed must be an explicit error,
-    # not silently restore the oldest available chain (which would be a lie
-    # about what state the operator is recovering).
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2025-01-01") == 1
-    assert "earlier than the oldest backup" in capsys.readouterr().err
+def test_restore_rejects_unknown_timestamp(
+    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
+
+    assert restore(cfg, ALPHA_UUID, _stamp("2026-05", 8)) == 1
+    assert "no backup matching uuid and timestamp" in capsys.readouterr().err
 
 
-def test_restore_at_accepts_compact_stamp(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    # ``--at`` accepts the exact chain dir name so operators can copy a stamp
-    # from a directory listing and pin to it verbatim.
-    cfg = _restore_config(backup_config)
-    older = _stamp("2026-01", 5, 8)
-    newer = _stamp("2026-01", 5, 12)
-    _seed_chain(cfg, {"2026-01": [older, newer]})
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
-    )
+def test_restore_rejects_malformed_timestamp(
+    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
 
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at=older) == 0
-    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / older
-    assert captured[0][captured[0].index("-i") + 1] == str(expected)
+    assert restore(cfg, ALPHA_UUID, "2026-05-07") == 1
+    assert "timestamp is malformed" in capsys.readouterr().err
 
 
-def test_restore_at_date_rolls_to_end_of_target_day(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    # A bare ``YYYY-MM-DD`` resolves to midnight UTC of that day. A snapshot
-    # taken later the same day is *after* the target, so the previous day's
-    # snapshot wins.
-    cfg = _restore_config(backup_config)
-    morning = _stamp("2026-01", 5, 8)
-    afternoon = _stamp("2026-01", 5, 14)
-    _seed_chain(cfg, {"2026-01": [morning, afternoon]})
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
-    )
-
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-01-05T09:00:00") == 0
-    expected = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID / "2026-01" / morning
-    assert captured[0][captured[0].index("-i") + 1] == str(expected)
+def test_restore_rejects_invalid_uuid(
+    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    assert restore(cfg, "not-a-uuid", _stamp("2026-05", 7, 10)) == 1
+    assert "not a valid UUID" in capsys.readouterr().err
 
 
-def test_restore_at_malformed(tmp_path: Path, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="not-a-time") == 1
-    assert "restore --at is malformed" in capsys.readouterr().err
-
-
-def test_parse_at_handles_supported_formats() -> None:
-    assert parse_at("2026-05-07") == dt.datetime(2026, 5, 7, tzinfo=dt.timezone.utc)
-    assert parse_at("2026-05-07T10:11:12") == dt.datetime(2026, 5, 7, 10, 11, 12, tzinfo=dt.timezone.utc)
-    assert parse_at("20260507T101112") == dt.datetime(2026, 5, 7, 10, 11, 12, tzinfo=dt.timezone.utc)
-    # Aware timestamps are converted to UTC for chain comparison.
-    aware = parse_at("2026-05-07T13:11:12+03:00")
-    assert aware == dt.datetime(2026, 5, 7, 10, 11, 12, tzinfo=dt.timezone.utc)
-    assert parse_at("garbage") is None
-    assert parse_at("   ") is None
-
-
-def test_restore_rejects_existing_non_empty_output(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    output = tmp_path / "out"
-    output.mkdir()
-    (output / "leftover").write_bytes(b"x")
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: (_ for _ in ()).throw(AssertionError("must not run")),
-    )
-    assert restore(cfg, ALPHA_UUID, output) == 1
-    assert "restore output is not empty" in capsys.readouterr().err
-
-
-def test_restore_allows_empty_existing_output(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    output = tmp_path / "out"
-    output.mkdir()
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: CommandResult(args, 0, "", ""),
-    )
-    assert restore(cfg, ALPHA_UUID, output) == 0
-
-
-def test_restore_invalid_vm_name(tmp_path: Path, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    assert restore(cfg, "../escape", tmp_path / "out") == 1
-    assert "restore target name is invalid" in capsys.readouterr().err
-
-
-def test_restore_missing_vm(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    (cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")).mkdir()
-    monkeypatch.setattr("libvirt_backup_system.restore.resolve_vm_uuid", lambda c, n: None)
-    assert restore(cfg, "missing", tmp_path / "out") == 1
-    assert "restore target not found" in capsys.readouterr().err
-
-
-def test_restore_resolved_uuid_dir_missing(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    (cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID")).mkdir(parents=True)
-    monkeypatch.setattr("libvirt_backup_system.restore.resolve_vm_uuid", lambda c, n: ALPHA_UUID)
-    assert restore(cfg, "alpha", tmp_path / "out") == 1
-    assert "restore target not found" in capsys.readouterr().err
-
-
-def test_restore_resolves_vm_name_via_virsh(tmp_path: Path, monkeypatch, backup_config: Config) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    monkeypatch.setattr("libvirt_backup_system.restore.resolve_vm_uuid", lambda c, n: ALPHA_UUID)
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: CommandResult(args, 0, "", ""),
-    )
-    assert restore(cfg, "alpha", tmp_path / "out") == 0
-
-
-def test_restore_no_snapshots_available(tmp_path: Path, backup_config: Config, capsys) -> None:
-    # Every shape of "no real chain dir" must surface as the same "no backups"
-    # error: an empty VM root, a month dir with no chain dirs inside, a stray
-    # file under VM root that is not a month dir, a stray file inside a month
-    # dir, an unsafe (dot-prefixed) chain name, and a chain dir whose name is
-    # not a timestamp at all (e.g. ``not-a-stamp``).
-    cfg = _restore_config(backup_config)
+def test_restore_legacy_chain_without_runs_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
+) -> None:
+    # A legacy chain (no runs.jsonl) is identified by its chain_id; restore
+    # uses chain-end semantics (no --until in the virtnbdrestore command).
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
     vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
-    vm_dir.mkdir(parents=True)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
-    assert "restore found no backups" in capsys.readouterr().err
+    chain_dir = vm_dir / "2026-05" / stamp
+    chain_dir.mkdir(parents=True)
+    (chain_dir / "vda.full.data").write_bytes(b"x")
+    _stub_no_local_vm(monkeypatch)
+    captured = _capture_streamed(monkeypatch)
 
-    (vm_dir / "README").write_text("operator notes", encoding="utf-8")
-    (vm_dir / "stray-dir").mkdir()
-    (vm_dir / "2026-01").mkdir()
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out2") == 1
-    assert "restore found no backups" in capsys.readouterr().err
-
-    (vm_dir / "2026-01" / "stray-file").write_text("noise", encoding="utf-8")
-    (vm_dir / "2026-01" / ".hidden-name").mkdir()
-    (vm_dir / "2026-01" / "not-a-stamp").mkdir()
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out3") == 1
-    assert "restore found no backups" in capsys.readouterr().err
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    assert "-u" not in captured[0]
 
 
-def test_restore_command_failure(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-
-    def fail(args: list[str]) -> CommandResult:
-        raise CommandError(CommandResult(args, 7, "", "bad"))
-
-    monkeypatch.setattr("libvirt_backup_system.restore.run_streamed", fail)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
-    assert "restore failed" in capsys.readouterr().err
-
-
-def test_restore_refuses_when_mount_missing(tmp_path: Path, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
+def test_restore_refuses_when_mount_missing(
+    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
+    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
+    assert restore(cfg, ALPHA_UUID, _stamp("2026-05", 7, 10)) == 1
     assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
-
-
-def test_restore_refuses_unsafe_backup_root(tmp_path: Path, monkeypatch, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    _seed_chain(cfg, {"2026-01": [_stamp("2026-01", 5)]})
-    monkeypatch.setattr("libvirt_backup_system.restore.subpath_is_safe", lambda root, path: False)
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out") == 1
-    assert "restore skipped because backup root is unsafe" in capsys.readouterr().err
-
-
-def test_skipped_chain_noop_when_selected_stamp_unparseable(tmp_path: Path) -> None:
-    bad_name = tmp_path / "not-a-stamp"
-    bad_name.mkdir()
-    at = dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)
-    assert _skipped_chain_spans_target([], bad_name, at) is None
-
-
-def test_restore_at_refuses_when_skipped_chain_spans_target(tmp_path: Path, backup_config: Config, capsys) -> None:
-    cfg = _restore_config(backup_config)
-    jan = _stamp("2026-01", 10)
-    feb = _stamp("2026-02", 15)
-    vm_dir = _seed_chain(cfg, {"2026-01": [jan]})
-    inc_only = vm_dir / "2026-02" / feb
-    inc_only.mkdir(parents=True)
-    (inc_only / "vda.inc.virtnbdbackup.1.data").write_bytes(b"x")
-    assert restore(cfg, ALPHA_UUID, tmp_path / "out", at="2026-02-20") == 1
-    err = capsys.readouterr().err
-    assert "full backup is missing" in err
-    assert feb in err

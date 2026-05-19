@@ -63,8 +63,8 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
     assert main(["verify", "--vm", "alpha"]) == 0
 
-    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm, output, *, at=None: 4)
-    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 4
+    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm_uuid, timestamp: 4)
+    assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 4
 
 
 def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) -> None:
@@ -117,7 +117,7 @@ def test_cli_restore_reports_validate_config(tmp_path: Path, monkeypatch) -> Non
         "libvirt_backup_system.cli.restore",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not run when validate fails")),
     )
-    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 7
+    assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 7
 
 
 def test_cli_restore_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -140,7 +140,7 @@ def test_cli_restore_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> N
         "libvirt_backup_system.cli.restore",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("restore must not run while lock is busy")),
     )
-    assert main(["restore", "--vm", "alpha", "--output", "/tmp/out"]) == 1
+    assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 1
     assert "another run in progress" in capsys.readouterr().err
 
 

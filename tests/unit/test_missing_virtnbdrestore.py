@@ -22,13 +22,19 @@ def test_restore_reports_missing_virtnbdrestore(tmp_path: Path, monkeypatch, bac
     # raise FileNotFoundError, which must surface as a clean operator error
     # rather than the cli's generic fatal-traceback path.
     backup_config.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
-    _seed_chain(backup_config, "2026-01", "20260105T120000")
+    stamp = "20260105T120000"
+    _seed_chain(backup_config, "2026-01", stamp)
 
     def missing(args: list[str]) -> CommandResult:
         raise FileNotFoundError(2, "No such file or directory: 'virtnbdrestore'")
 
+    # Force the turnkey define path: ``virsh domname`` reports no local match.
+    def no_local(args: list[str], **_kwargs: object) -> CommandResult:
+        return CommandResult(args, 1, "", "no domain with matching name")
+
+    monkeypatch.setattr("libvirt_backup_system.restore.run", no_local)
     monkeypatch.setattr("libvirt_backup_system.restore.run_streamed", missing)
-    assert restore(backup_config, ALPHA_UUID, tmp_path / "out") == 1
+    assert restore(backup_config, ALPHA_UUID, stamp) == 1
     err = capsys.readouterr().err
     assert "restore failed: virtnbdrestore unavailable" in err
     assert "Traceback" not in err

@@ -3,11 +3,10 @@ from __future__ import annotations
 import pytest
 
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.shell import CommandError, CommandResult
+from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.vms import (
     VM,
     _normalize_vm_name,
-    domain_state,
     is_safe_vm_uuid,
     list_vms,
     resolve_vm_uuid,
@@ -17,14 +16,8 @@ from tests.unit.conftest import ALPHA_UUID, BETA_UUID
 
 def test_vm_running_property() -> None:
     assert VM("alpha", " running ", ALPHA_UUID).running
-    assert not VM("beta", "shut off", BETA_UUID).running
-
-
-def test_vm_inactive_only_for_shut_off() -> None:
-    assert VM("beta", " shut off ", BETA_UUID).inactive
-    assert not VM("alpha", "running", ALPHA_UUID).inactive
-    for transitional in ("paused", "in shutdown", "crashed", "pmsuspended", "blocked"):
-        assert not VM("gamma", transitional).inactive, transitional
+    for non_running in ("shut off", "paused", "in shutdown", "crashed", "pmsuspended", "blocked"):
+        assert not VM("beta", non_running, BETA_UUID).running, non_running
 
 
 @pytest.mark.parametrize(
@@ -161,33 +154,3 @@ def test_list_vms_skips_malformed_listing_lines(monkeypatch) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
     assert list_vms(cfg) == [VM("alpha", "running", ALPHA_UUID)]
-
-
-def test_domain_state_returns_stripped_stdout(monkeypatch) -> None:
-    cfg = Config.load(prefix="/tmp")
-
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        assert "domstate" in args
-        return CommandResult(args, 0, "shut off\n", "")
-
-    monkeypatch.setattr("libvirt_backup_system.vms.run", fake_run)
-    assert domain_state(cfg, "alpha") == "shut off"
-
-
-def test_domain_state_returns_none_for_unsafe_name() -> None:
-    # Defense in depth: the caller already rejects unsafe names upstream, but
-    # domain_state belongs to the boundary that shells out to virsh and must
-    # not pass an unsafe value through.
-    cfg = Config.load(prefix="/tmp")
-    assert domain_state(cfg, "../escape") is None
-
-
-def test_domain_state_returns_none_on_command_failure(monkeypatch, capsys) -> None:
-    cfg = Config.load(prefix="/tmp")
-
-    def fail_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        raise CommandError(CommandResult(args, 1, "", "no such domain"))
-
-    monkeypatch.setattr("libvirt_backup_system.vms.run", fail_run)
-    assert domain_state(cfg, "alpha") is None
-    assert "VM state recheck failed" in capsys.readouterr().err

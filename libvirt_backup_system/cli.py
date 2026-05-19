@@ -5,12 +5,12 @@ import contextlib
 import json
 import sys
 import traceback
-from pathlib import Path
 
 from .backup import current_month, run_backups, verify
 from .config import Config
 from .doctor import doctor
 from .installer import install, uninstall
+from .list_restore_points import list_restore_points
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .preflight import check, validate_config
@@ -56,19 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("--vm")
 
+    sub.add_parser("list-restore-points")
+
     restore_parser = sub.add_parser("restore")
-    restore_parser.add_argument("--vm", required=True)
-    restore_parser.add_argument("--output", required=True)
     restore_parser.add_argument(
-        "--at",
-        help="Target time (e.g. 2026-05-07, 2026-05-07T10:11, 20260507T101112). "
-        "Restores to the latest backup run at-or-before this. Chains backed "
-        "up by this version record each run's checkpoint and restore stops "
-        "exactly there (``virtnbdrestore --until``); chains predating that "
-        "feature have no run records and replay end-to-end so the recovered "
-        "state may include later incrementals. A chain with a record file "
-        "that is unusable for the requested time is refused, not silently "
-        "replayed. Omit for the latest snapshot.",
+        "vm_uuid",
+        help="VM libvirt UUID copied from the first column of list-restore-points output.",
+    )
+    restore_parser.add_argument(
+        "timestamp",
+        help="Per-run timestamp (YYYYMMDDTHHMMSS) copied from the second column of list-restore-points output.",
     )
 
     return parser
@@ -114,10 +111,17 @@ def _restore_command(config: Config, args: argparse.Namespace) -> int:
         return config_code
     try:
         with acquire_run_lock(config):
-            return restore(config, args.vm, Path(args.output), at=args.at)
+            return restore(config, args.vm_uuid, args.timestamp)
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
+
+
+def _list_restore_points_command(config: Config) -> int:
+    config_code = validate_config(config)
+    if config_code != 0:
+        return config_code
+    return list_restore_points(config)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
         if args.command == "restore":
             return _restore_command(config, args)
+        if args.command == "list-restore-points":
+            return _list_restore_points_command(config)
     except KeyboardInterrupt:
         event("error", "interrupted")
         return 130

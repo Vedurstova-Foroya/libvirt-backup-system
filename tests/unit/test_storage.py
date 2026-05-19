@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from libvirt_backup_system.inactive_markers import stamp_is_safe
+from libvirt_backup_system.atomic_io import stamp_is_safe
 from libvirt_backup_system.storage import subpath_is_safe
 
 
@@ -32,7 +32,7 @@ def test_subpath_is_safe_rejects_real_symlink_escape(tmp_path: Path) -> None:
     assert not subpath_is_safe(root, root / "link" / "vm")
 
 
-@pytest.mark.parametrize("stamp", ["20260520T123456", "copy-1"])
+@pytest.mark.parametrize("stamp", ["20260520T123456", "chain-1"])
 def test_stamp_is_safe_accepts_plain_names(stamp: str) -> None:
     assert stamp_is_safe(stamp)
 

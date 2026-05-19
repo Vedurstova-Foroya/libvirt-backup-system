@@ -25,12 +25,19 @@ sudo libvirt-backup-system doctor
 ```sh
 sudo libvirt-backup-system list-vms
 sudo libvirt-backup-system verify
-sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
+sudo libvirt-backup-system list-restore-points
+sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 ```
+
+`list-restore-points` lists every restorable backup point across all hosts; copy the
+first two columns (VM UUID + run timestamp) straight into `restore`, which
+either overwrites the local VM (when the backup belongs to this host and the
+domain exists locally) or stages and defines the VM turnkey from the backup
+(everywhere else).
 
 ## Backup layout
 
-Backups live under `BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/`. Running VMs build a per-month incremental chain: the first run each calendar month writes a full into a new chain directory, later runs in the same month add `-l inc` snapshots to the same chain. Inactive (shut-off) VMs keep their `-l copy` semantics with a per-month `.inactive-copy-complete` marker.
+Only running VMs are backed up. Offline VMs are logged as `skipping vm because it is offline` and skipped — bring the VM up to back it up. Backups live under `BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/` as a per-month incremental chain: the first run each calendar month writes a full into a new chain directory, later runs in the same month add `-l inc` snapshots to the same chain.
 
 ## Retention
 

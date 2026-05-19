@@ -195,7 +195,7 @@ def test_write_chain_state_open_failure_reports_one_error(tmp_path: Path, monkey
     def fail_open(path: Path) -> int:
         raise OSError("denied")
 
-    monkeypatch.setattr("libvirt_backup_system.inactive_markers._open_excl_nofollow", fail_open)
+    monkeypatch.setattr("libvirt_backup_system.atomic_io._open_excl_nofollow", fail_open)
     assert not write_chain_state(tmp_path, "stamp", "fp", "alpha")
     err = capsys.readouterr().err
     # Single-file write means a failure is reported once, and the legacy

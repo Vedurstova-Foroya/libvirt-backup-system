@@ -56,7 +56,7 @@ sudo libvirt-backup-system start
 
 ## `run`
 
-Runs preflight, acquires the run lock, and backs up selected VMs. Running VMs build a per-month incremental chain: the first run each calendar month writes a `-l full` into a new chain directory, subsequent runs in the same month append `-l inc` snapshots into the same chain. Inactive (shut-off) VMs keep their `-l copy` semantics with a per-month freshness marker.
+Runs preflight, acquires the run lock, and backs up running VMs. Offline VMs are logged as `skipping vm because it is offline` and skipped — only running VMs are backed up. Each backed-up VM builds a per-month incremental chain: the first run each calendar month writes a `-l full` into a new chain directory, subsequent runs in the same month append `-l inc` snapshots into the same chain.
 
 Manual backups require the systemd schedule to have been activated first with a successful `start`. On a systemd host, `run` exits nonzero with a "backup service is not running" error instead of starting an ad-hoc backup when the service/timer has not been installed and activated.
 
@@ -93,36 +93,42 @@ sudo libvirt-backup-system verify
 sudo libvirt-backup-system verify --vm my-vm
 ```
 
-## `restore`
+## `list-restore-points`
 
-Reconstructs a VM into an empty staging directory using `virtnbdrestore -a restore`. The two required arguments are the VM identifier and the output directory; `--at` pins recovery to a target time and is the only knob beyond that.
+Prints every restorable backup point across all hosts and VMs. The first two
+columns are the VM UUID and the per-run timestamp; copy that pair straight
+into `restore`. Pipe through `less` or `grep` to filter by host, VM name, or
+month.
 
 ```sh
-# Latest snapshot for ``my-vm``
-sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm
-
-# Chain whose start time is at-or-before May 7th, 10:30 UTC
-sudo libvirt-backup-system restore --vm my-vm --output /var/tmp/restore/my-vm --at 2026-05-07T10:30:00
-
-# Pin to the exact chain dir name (copied from a directory listing)
-sudo libvirt-backup-system restore --vm <uuid> --output /var/tmp/restore/my-vm --at 20260507T101112
+sudo libvirt-backup-system list-restore-points
+sudo libvirt-backup-system list-restore-points | grep my-vm
+sudo libvirt-backup-system list-restore-points | less -S
 ```
 
-`--vm` accepts either a VM name (resolved via `virsh domuuid`) or a UUID directly. `--output` must either not exist or be an empty directory — restore refuses to overwrite existing data so an aborted recovery cannot blend with leftover files.
+Each row is one virtnbdbackup run: chains with `runs.jsonl` produce one row per recorded run, legacy chains (predating that file) produce a single chain-end row identified by the chain directory name.
 
-`--at` accepts:
+## `restore`
 
-- `YYYY-MM-DD` — interpreted as midnight UTC of that day; selects the latest chain whose start is at-or-before midnight. Note that `--at 2026-05-07` will not pick a chain started later that same day — use `--at 2026-05-07T23:59:59` to mean "end-of-day May 7th".
-- `YYYY-MM-DDTHH:MM:SS` (or `YYYY-MM-DD HH:MM:SS`) — UTC unless a timezone offset is included (e.g. `2026-05-07T13:11:12+03:00`).
-- `YYYYMMDDTHHMMSS` — the compact form chain directories themselves use.
+Restores a single backup run identified by the `(vm_uuid, timestamp)` pair from `list-restore-points`. The action is automatic:
 
-If omitted, the latest snapshot across all months wins. If `--at` is *earlier* than every chain start, restore exits with `restore --at is earlier than the oldest backup` rather than silently restoring the oldest available chain.
+- If the backup was taken on this host **and** a libvirt domain with that UUID exists locally, the VM is shut down, undefined, and redefined from the backup (in-place overwrite).
+- Otherwise the VM is staged and redefined from the backup XML on this host (turnkey one-click recovery on a different host or after the local VM has been removed).
 
-`--at` resolves at **per-run (checkpoint) granularity**. Each successful backup writes a `runs.jsonl` record into its chain directory mapping the run's UTC timestamp to the new `virtnbdbackup` checkpoint. Restore picks the chain whose start is at-or-before `--at`, then within that chain selects the latest recorded run at-or-before `--at` and passes `virtnbdrestore --until <checkpoint>` so replay stops exactly there. A May 1st chain with daily incrementals through May 20th plus `--at 2026-05-10T12:00:00` recovers the May 10th state — not May 20th and not May 1st.
+```sh
+sudo libvirt-backup-system restore <vm-uuid> <timestamp>
+sudo libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 20260507T101112
+```
 
-> **Legacy fallback.** Chain directories created before this feature shipped have no `runs.jsonl` at all. For those, `--at` still selects the right chain, but the replay runs to chain end (the old chain-end semantics) because there is no per-run record to target. A single fresh backup of the affected VM begins recording new runs going forward; the prior chain remains chain-end-only until a new chain starts.
->
-> Chains where `runs.jsonl` *is* present but unusable — truncated by power loss, hand-edited into invalid JSON, or with no record at-or-before `--at` — are **not** treated as legacy. Falling back to chain end there would silently restore a newer state than the operator asked for, so `restore` refuses with `restore --at has no matching run record` and the operator either fixes the file or picks a different `--at`.
+There are no other flags: the timestamp is the exact per-run target (no rounding, no closest-match), the staging directory lives under `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`, and the VM name/disks come from the backup's domain XML.
+
+Both modes call `virtnbdrestore -a restore -i <chain> -o <staging> [-u <checkpoint>] -D`. The `-u` argument is omitted for legacy chains (no `runs.jsonl`); for modern chains the checkpoint is looked up by the exact timestamp the operator copied from `list-restore-points`. The `-D` flag asks `virtnbdrestore` to register the domain in libvirt using the XML stored in the backup so the recovered VM is one `virsh start` away from booting.
+
+Poisoned chains (those flagged by the backup orchestrator as having a half-written incremental) are refused outright; the operator must either fix the chain or pick a different timestamp.
+
+### Cross-host recovery
+
+`list-restore-points` walks every host directory under `BACKUP_PATH`, not just the current `HOST_ID`, so a recovery host that mounted the backup tree can see and restore every host's backups. `restore` follows the same path: it picks up the chain from whichever host directory contains a matching `(uuid, timestamp)`. When that host does not match the local one (or no local VM with that UUID exists), the turnkey define path runs.
 
 ### How chains map to snapshots
 
@@ -136,10 +142,8 @@ BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
 
 - One `*-full-*.data` from the first run that opened the chain (`-l full`).
 - Subsequent runs the same month append `*-inc-*.data` snapshots and `<checkpoint>.checkpoint` files to the **same** chain dir (`-l inc`); the dir name does not change.
-- Inactive VMs use `-l copy` and get a fresh chain dir per run (no incremental tail).
 - `metadata.json` describing the disks and checkpoints (written by virtnbdbackup).
-- `runs.jsonl` — one JSON line per successful run (`{"ts": "<YYYYMMDDTHHMMSS>", "checkpoint": "<name>"}`) used by `restore --at` to map a target time to the specific `virtnbdrestore --until` checkpoint.
-- `<vm-name>.name` — empty marker we drop so operators can `find -name '<name>.name'` to map a current VM name back to its UUID dir.
+- `runs.jsonl` — one JSON line per successful run (`{"ts": "<YYYYMMDDTHHMMSS>", "checkpoint": "<name>"}`). `list-restore-points` reads it to emit one copy-paste row per run; `restore` looks up the operator-supplied timestamp here to derive the `virtnbdrestore --until` checkpoint.
 
 A new chain (a new full) is started when any of these happen:
 
@@ -147,7 +151,7 @@ A new chain (a new full) is started when any of these happen:
 - The VM's libvirt XML fingerprint changes (e.g. disk added).
 - The previous chain dir was deleted out-of-band.
 
-Restore's `--at` selection first picks a chain dir by its **chain start time** — the `<chain-id>` itself — and then picks a per-run **checkpoint** inside that chain by reading the `runs.jsonl` written alongside the backup files. `virtnbdrestore -a restore -i <chain-dir> -o <output> --until <checkpoint>` then replays the full plus only the incrementals up to that checkpoint, so the recovered state is the exact state captured by that backup run. Legacy chains without `runs.jsonl` omit `--until` and replay end-to-end.
+`restore` selects the chain from whichever host directory under `BACKUP_PATH` contains a run record (or, for legacy chains, a chain dir) whose timestamp equals the argument. Inside the chain it picks the recorded checkpoint and passes `virtnbdrestore -a restore -i <chain-dir> -o <staging> --until <checkpoint> -D`, so the replay stops exactly at the requested run and libvirt is left with a redefined domain pointing at the restored disks. Legacy chains without `runs.jsonl` omit `--until` and replay end-to-end.
 
 The restore command holds the same run-lock as `run` to avoid reading a chain dir that a concurrent backup is still writing into. See [Manual restore process](manual-restore.md) for the lower-level recovery procedure (useful when the source backup must first be staged onto local storage).
 

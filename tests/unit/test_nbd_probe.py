@@ -272,7 +272,7 @@ def test_socket_args_flow_into_backup_vm_argv(tmp_path: Path, monkeypatch, backu
     from libvirt_backup_system.backup import backup_vm
     from tests.unit.conftest import virtnbdbackup_fake_success
 
-    backup_config.values.update({"BACKUP_COMPRESS": "true", "INACTIVE_COPY_EVERY_RUN": "false"})
+    backup_config.values.update({"BACKUP_COMPRESS": "true"})
     sock = tmp_path / "domain-2-alpha" / "vnbd.sock"
     calls: list[list[str]] = []
 

@@ -4,15 +4,14 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic_io import atomic_write, is_regular_file, stamp_is_safe
 from .config import Config
-from .inactive_markers import atomic_write, marker_is_regular, stamp_is_safe
 from .logging_json import event
 from .run_records import chain_is_poisoned, poison_chain
 from .storage import subpath_is_safe
 
-# Single-file state lives directly under the month dir alongside the inactive
-# marker. ``.`` prefix matches the existing hidden-state convention used by
-# ``.inactive-copy-complete``.
+# Single-file state lives directly under the month dir. The ``.`` prefix marks
+# the file as state-only so it never collides with a chain timestamp directory.
 CHAIN_STATE_NAME = ".chain-state.json"
 
 
@@ -30,7 +29,7 @@ def _backup_subpath_is_safe(config: Config, path: Path) -> bool:
 
 
 def _read_json_chain_state(path: Path) -> tuple[str | None, str | None]:
-    if not marker_is_regular(path):
+    if not is_regular_file(path):
         return None, None
     try:
         raw = path.read_text(encoding="utf-8")

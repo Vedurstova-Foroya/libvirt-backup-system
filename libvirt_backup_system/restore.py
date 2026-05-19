@@ -1,294 +1,264 @@
+"""Turnkey restore: pick a (vm_uuid, timestamp) pair, route to the right action.
+
+``list-restore-points`` prints a (vm_uuid, run-timestamp) pair per restorable run.
+``restore <uuid> <timestamp>`` looks the pair up across every host directory
+under ``BACKUP_PATH`` and either overwrites the live VM (when the backup was
+taken on this host AND a domain with that UUID exists locally) or stages the
+disks and redefines the domain from the backup XML (otherwise). There is no
+``--at`` / ``--output`` knob: the timestamp is the explicit per-run target and
+the staging directory is fixed under ``/var/lib/libvirt-backup-system/restore/``
+so two operators on the same host never race on the same path.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
-import stat
+import shutil
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Config, is_month_dir_name
-from .inactive_markers import stamp_is_safe
+from .atomic_io import stamp_is_safe
+from .config import Config, prefixed
+from .list_restore_points import STAMP_FORMAT, BackupRow, enumerate_backups
 from .logging_json import event
-from .paths import backup_root, runtime_backup_path_ok
-from .retention import chain_has_full_backup_file
-from .run_records import SelectStatus, chain_is_poisoned, select_checkpoint
-from .shell import CommandError, run_streamed
-from .storage import resolved_path_is_within, subpath_is_safe
-from .vms import is_safe_vm_name, is_safe_vm_uuid, resolve_vm_uuid
+from .paths import runtime_backup_path_ok
+from .run_records import chain_is_poisoned
+from .shell import CommandError, run, run_streamed
+from .storage import subpath_is_safe
+from .vms import is_safe_vm_uuid
 
-# Chain dirs are named with backup.timestamp() in UTC, e.g. ``20260507T101112``.
-# strptime is the chain dir's authoritative parser: stamp_is_safe filters dot
-# files and traversal, but ``20260507T999999`` would pass it while being an
-# invalid timestamp; strptime rejects that here so the snapshot list only ever
-# contains chains with a real start time.
-STAMP_FORMAT = "%Y%m%dT%H%M%S"
+RESTORE_STAGING_DIR = Path("/var/lib/libvirt-backup-system/restore")
 
 
-def _resolve_vm_root(config: Config, root: Path, name_or_uuid: str) -> Path | None:
-    if not (is_safe_vm_name(name_or_uuid) or is_safe_vm_uuid(name_or_uuid)):
-        event("error", "restore target name is invalid", vm=name_or_uuid)
-        return None
-    candidate = root / name_or_uuid
-    if candidate.is_dir():
-        return candidate
-    uuid = resolve_vm_uuid(config, name_or_uuid)
-    if uuid is None:
-        event("error", "restore target not found", vm=name_or_uuid)
-        return None
-    resolved = root / uuid
-    if resolved.is_dir():
-        return resolved
-    event("error", "restore target not found", vm=name_or_uuid, uuid=uuid, path=str(resolved))
-    return None
+def _timestamp_is_well_formed(value: str) -> bool:
+    """Accept only the compact ``YYYYMMDDTHHMMSS`` form that list-restore-points emits.
 
-
-def _parse_chain_stamp(name: str) -> dt.datetime | None:
-    if not stamp_is_safe(name):
-        return None
-    try:
-        return dt.datetime.strptime(name, STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
-    except ValueError:
-        return None
-
-
-def parse_at(value: str) -> dt.datetime | None:
-    """Parse ``--at`` into a UTC datetime, or ``None`` when malformed.
-
-    Accepts the chain dir's compact ``YYYYMMDDTHHMMSS`` form and anything
-    ``datetime.fromisoformat`` handles: ``YYYY-MM-DD``, ``YYYY-MM-DDTHH:MM:SS``,
-    and the same with a space separator or trailing offset. Naive values are
-    interpreted as UTC because the chain dir names themselves are UTC.
+    The operator copies the timestamp verbatim from the listing, so the parser
+    matches that exact shape. Free-form ISO strings would tempt us to silently
+    pick the "closest" run, which is exactly the ``--at`` behavior we removed.
     """
-    candidate = value.strip()
-    if not candidate:
-        return None
+    if not stamp_is_safe(value):
+        return False
     try:
-        parsed = dt.datetime.fromisoformat(candidate)
+        dt.datetime.strptime(value, STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
     except ValueError:
-        try:
-            parsed = dt.datetime.strptime(candidate, STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
-        except ValueError:
-            return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
-
-
-def _enumerate_snapshots(vm_root: Path) -> list[tuple[dt.datetime, Path]]:
-    """Return ``(start_time, chain_dir)`` for every parseable chain under vm_root.
-
-    Walks month dirs in name order and chain dirs by directory listing; the
-    caller sorts by ``start_time`` so callers never depend on any particular
-    enumeration order.
-    """
-    snapshots: list[tuple[dt.datetime, Path]] = []
-    for month_dir in sorted(vm_root.iterdir(), key=lambda p: p.name):
-        if not month_dir.is_dir() or not is_month_dir_name(month_dir.name):
-            continue
-        for chain_dir in month_dir.iterdir():
-            if not chain_dir.is_dir():
-                continue
-            stamp = _parse_chain_stamp(chain_dir.name)
-            if stamp is None:
-                continue
-            snapshots.append((stamp, chain_dir))
-    snapshots.sort(key=lambda item: item[0])
-    return snapshots
-
-
-def _pick_snapshot(snapshots: list[tuple[dt.datetime, Path]], at: dt.datetime | None) -> Path | None:
-    restorable = [(stamp, chain_dir) for stamp, chain_dir in snapshots if chain_has_full_backup_file(chain_dir)]
-    if at is None:
-        return restorable[-1][1] if restorable else None
-    for stamp, chain_dir in reversed(restorable):
-        if stamp <= at:
-            return chain_dir
-    return None
-
-
-def _skipped_chain_spans_target(
-    snapshots: list[tuple[dt.datetime, Path]], selected: Path, at: dt.datetime
-) -> Path | None:
-    selected_stamp = _parse_chain_stamp(selected.name)
-    if selected_stamp is None:
-        return None
-    for stamp, chain_dir in snapshots:
-        if selected_stamp < stamp <= at and not chain_has_full_backup_file(chain_dir):
-            return chain_dir
-    return None
-
-
-def _validate_output(output: Path, backup_path: Path) -> bool:
-    # Reject symlinks before anything else: ``output.exists()`` follows the
-    # link, so an attacker-controlled symlink pointing at an empty directory
-    # would otherwise pass the "exists + empty" guard and let virtnbdrestore
-    # write through the symlink to a path of the attacker's choosing. ``lstat``
-    # does not follow, so a dangling symlink also fails here.
-    try:
-        link_st = output.lstat()
-    except FileNotFoundError:
-        link_st = None
-    except OSError as exc:
-        event("error", "restore output stat failed", output=str(output), error=str(exc))
-        return False
-    if link_st is not None and stat.S_ISLNK(link_st.st_mode):
-        event("error", "restore output is a symlink", output=str(output))
-        return False
-    try:
-        output_is_in_backup_path = resolved_path_is_within(backup_path, output)
-    except (OSError, RuntimeError) as exc:
-        event("error", "restore output path resolution failed", output=str(output), error=str(exc))
-        return False
-    if output_is_in_backup_path:
-        event("error", "restore output is inside BACKUP_PATH", output=str(output), backup_path=str(backup_path))
-        return False
-    if link_st is not None:
-        if not stat.S_ISDIR(link_st.st_mode):
-            event("error", "restore output is not a directory", output=str(output))
-            return False
-        try:
-            entries = list(output.iterdir())
-        except OSError as exc:
-            event("error", "restore output is not a usable directory", output=str(output), error=str(exc))
-            return False
-        if entries:
-            event("error", "restore output is not empty", output=str(output))
-            return False
-        return True
-    try:
-        output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    except OSError as exc:
-        event("error", "restore output directory creation failed", output=str(output), error=str(exc))
-        return False
-    # Re-verify after mkdir: a symlink swap on an intermediate parent between
-    # the initial lstat/resolve and mkdir(parents=True) could land the new
-    # directory inside BACKUP_PATH.
-    try:
-        post_inside = resolved_path_is_within(backup_path, output)
-    except (OSError, RuntimeError):
-        post_inside = True
-    if post_inside:
-        with suppress(OSError):
-            output.rmdir()
-        event("error", "restore output resolved inside BACKUP_PATH after mkdir", output=str(output))
         return False
     return True
 
 
-def restore(
-    config: Config,
-    vm_name_or_uuid: str,
-    output: Path,
-    *,
-    at: str | None = None,
-) -> int:
-    """Restore the run whose recorded time is at-or-before ``at`` (or the latest).
+def _find_match(config: Config, vm_uuid: str, timestamp: str) -> BackupRow | None:
+    for row in enumerate_backups(config, vm_uuid=vm_uuid):
+        if row.timestamp == timestamp:
+            return row
+    return None
 
-    ``--at`` resolves at per-run (checkpoint) granularity for chains backed up
-    by this version: each successful run writes ``runs.jsonl`` mapping the
-    run timestamp to the new virtnbdbackup checkpoint, and restore passes
-    ``virtnbdrestore --until <checkpoint>`` to stop exactly at that run.
 
-    Chains predating this feature ship with no ``runs.jsonl`` at all and
-    legitimately fall back to chain-end semantics (``--until`` is omitted and
-    the whole chain is replayed). Chains where ``runs.jsonl`` exists but is
-    unusable (truncated, hand-edited into invalid JSON, or with every record
-    in the future of ``at``) are refused: silently falling back to chain end
-    would restore a newer state than the operator asked for, and the safer
-    answer is an explicit failure that the operator can resolve manually.
+def _local_domain_name_for_uuid(config: Config, vm_uuid: str) -> str | None:
+    """Return the VM name for ``vm_uuid`` if libvirt knows about it locally.
 
-    ``VM_BLACKLIST`` is intentionally ignored here: a VM that has been
-    blacklisted today may still have valid backups taken before it was added,
-    and the operator must be able to recover from them. The blacklist scopes
-    to *taking* backups, not to restoring them.
+    ``virsh domname <uuid>`` exits non-zero when no domain matches, and a
+    libvirt that is entirely unreachable also fails. Either case returns
+    ``None`` so the caller picks the turnkey-define path rather than trying
+    to overwrite a nonexistent VM.
     """
-    if not runtime_backup_path_ok(config):
-        return 1
-    target: dt.datetime | None = None
-    if at is not None:
-        target = parse_at(at)
-        if target is None:
-            event("error", "restore --at is malformed", at=at)
-            return 1
-    backup_path = config.path_value("BACKUP_PATH")
-    root = backup_root(config)
-    if not subpath_is_safe(backup_path, root):
-        event("error", "restore skipped because backup root is unsafe", path=str(root))
-        return 1
-    vm_root = _resolve_vm_root(config, root, vm_name_or_uuid)
-    if vm_root is None or not subpath_is_safe(backup_path, vm_root):
-        if vm_root is not None:
-            event("error", "restore skipped because VM root is unsafe", path=str(vm_root))
-        return 1
-    snapshots = _enumerate_snapshots(vm_root)
-    if not snapshots:
-        event("error", "restore found no backups", vm_root=str(vm_root))
-        return 1
-    chain_dir = _pick_snapshot(snapshots, target)
-    if chain_dir is None:
-        event("error", "restore --at is earlier than the oldest backup", at=at, oldest=snapshots[0][1].name)
-        return 1
-    skipped = _skipped_chain_spans_target(snapshots, chain_dir, target) if target is not None else None
-    if skipped is not None:
-        event(
-            "error",
-            "restore refused: a newer chain spans --at but its full backup is missing",
-            at=at,
-            skipped_chain=str(skipped),
-            fallback_chain=str(chain_dir),
-        )
-        return 1
-    if not subpath_is_safe(backup_path, chain_dir):
-        event("error", "restore skipped because chain path is unsafe", path=str(chain_dir))
-        return 1
-    if not _validate_output(output, backup_path):
-        return 1
-    checkpoint: str | None = None
-    if target is None:
-        if chain_is_poisoned(chain_dir):
-            event(
-                "error",
-                "restore refused poisoned chain end",
-                chain_dir=str(chain_dir),
-            )
-            return 1
-    else:
-        selection = select_checkpoint(chain_dir, target)
-        if selection.status is SelectStatus.MISSING:
-            # ``runs.jsonl`` is present but has no record at-or-before ``at``
-            # (truncated first record, or every record is in the future).
-            # Falling back to chain end would silently restore a newer state
-            # than the operator asked for — refuse instead.
-            event(
-                "error",
-                "restore --at has no matching run record",
-                at=at,
-                chain_dir=str(chain_dir),
-            )
-            return 1
-        if selection.status is SelectStatus.POISONED:
-            event(
-                "error",
-                "restore --at would replay poisoned chain end",
-                at=at,
-                chain_dir=str(chain_dir),
-            )
-            return 1
-        checkpoint = selection.checkpoint
-    cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(output)]
+    try:
+        result = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domname", "--", vm_uuid])
+    except (CommandError, OSError):
+        return None
+    name = result.stdout.strip()
+    return name or None
+
+
+def _shutdown_domain(config: Config, vm_name: str) -> bool:
+    """Force the domain off so its disk files can be replaced.
+
+    ``virsh destroy`` on an already-stopped domain returns nonzero, so the
+    failure is logged at info level and we continue: a stopped domain is the
+    desired state. A genuine "could not shut it down" failure is detected by
+    the subsequent ``domstate`` check.
+    """
+    try:
+        run(["virsh", "-c", config.get("LIBVIRT_URI"), "destroy", "--", vm_name])
+    except CommandError as exc:
+        event("info", "destroy returned nonzero (likely already off)", vm=vm_name, stderr=exc.result.stderr.strip())
+    except OSError as exc:
+        event("error", "virsh destroy unavailable", vm=vm_name, error=str(exc))
+        return False
+    try:
+        state = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domstate", "--", vm_name]).stdout.strip()
+    except (CommandError, OSError) as exc:
+        event("error", "domstate check failed before restore", vm=vm_name, error=str(exc))
+        return False
+    if state.lower() != "shut off":
+        event("error", "VM is not shut off; refusing to overwrite", vm=vm_name, state=state)
+        return False
+    return True
+
+
+def _undefine_domain(config: Config, vm_name: str) -> bool:
+    # ``--checkpoints-metadata`` is required because virtnbdbackup leaves
+    # libvirt-side checkpoint metadata; ``undefine`` without it refuses.
+    try:
+        run(["virsh", "-c", config.get("LIBVIRT_URI"), "undefine", "--checkpoints-metadata", "--", vm_name])
+    except CommandError as exc:
+        event("error", "undefine failed", vm=vm_name, stderr=exc.result.stderr.strip())
+        return False
+    except OSError as exc:
+        event("error", "virsh undefine unavailable", vm=vm_name, error=str(exc))
+        return False
+    return True
+
+
+def _prepare_staging(root: Path, vm_uuid: str, timestamp: str) -> Path | None:
+    """Clear and recreate the per-restore staging directory under ``root``.
+
+    A leftover staging dir from a previous interrupted restore would otherwise
+    confuse ``virtnbdrestore``: its data files share names with the freshly
+    extracted ones. Removing the directory first guarantees the restore sees
+    only the chain it just wrote. The path lives under a root-owned state dir
+    so user-writable racing is not a concern, but ``subpath_is_safe`` still
+    refuses any value that escapes the staging root.
+    """
+    staging = root / f"{vm_uuid}-{timestamp}"
+    if not subpath_is_safe(root, staging):
+        event("error", "restore staging path is unsafe", path=str(staging))
+        return None
+    with suppress(FileNotFoundError):
+        shutil.rmtree(staging)
+    try:
+        staging.mkdir(parents=True, mode=0o700)
+    except OSError as exc:
+        event("error", "restore staging dir creation failed", path=str(staging), error=str(exc))
+        return None
+    return staging
+
+
+@dataclass(frozen=True)
+class _CheckpointDecision:
+    checkpoint: str | None
+    refused: bool
+
+
+def _resolve_checkpoint(row: BackupRow) -> _CheckpointDecision:
+    """Return the checkpoint or chain-end intent for a backup row.
+
+    A poisoned chain is refused outright: the chain end may include a half-
+    written checkpoint, so replaying past the last recorded run is unsafe.
+    Legacy chains (no ``runs.jsonl``) restore at chain-end so the checkpoint
+    is ``None`` and ``--until`` is omitted in the virtnbdrestore invocation.
+    Modern chains carry their checkpoint on the row itself; ``select_checkpoint``
+    is not consulted because list-restore-points already mapped the timestamp
+    to the exact checkpoint and there is no ambiguity to re-resolve.
+    """
+    if row.checkpoint is not None:
+        return _CheckpointDecision(row.checkpoint, refused=False)
+    if chain_is_poisoned(row.chain_dir):
+        event("error", "restore refused poisoned chain", chain_dir=str(row.chain_dir))
+        return _CheckpointDecision(None, refused=True)
+    return _CheckpointDecision(None, refused=False)
+
+
+def _virtnbdrestore_cmd(chain_dir: Path, staging: Path, checkpoint: str | None) -> list[str]:
+    # ``-D`` asks virtnbdrestore to re-register the VM in libvirt with the
+    # domain XML stored in the backup. Required for turnkey on a fresh host;
+    # in overwrite mode the caller shuts + undefines the existing domain first
+    # so the -D re-define lands cleanly either way.
+    cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(staging)]
     if checkpoint is not None:
         cmd.extend(["-u", checkpoint])
-    event("info", "restore started", source=str(chain_dir), output=str(output), checkpoint=checkpoint or "")
+    cmd.append("-D")
+    return cmd
+
+
+def _run_virtnbdrestore(cmd: list[str]) -> bool:
     try:
         run_streamed(cmd)
     except CommandError as exc:
         event("error", "restore failed", stderr=exc.result.stderr.strip(), returncode=exc.result.returncode)
-        return 1
+        return False
     except OSError as exc:
-        # FileNotFoundError / PermissionError from Popen — virtnbdrestore is
-        # missing on this host. Surface it as a clean operator error rather
-        # than the cli's generic fatal-traceback path so a recovery-host
-        # operator who skipped ``check`` gets a useful message.
         event("error", "restore failed: virtnbdrestore unavailable", error=str(exc))
+        return False
+    return True
+
+
+def _restore_overwrite(config: Config, row: BackupRow, staging: Path, checkpoint: str | None, vm_name: str) -> int:
+    """Same-host path: tear the existing VM down before redefining from backup.
+
+    Shutdown + undefine first so virtnbdrestore's own ``-D`` redefine does not
+    collide with an existing domain definition. Failure at any step short-
+    circuits with a nonzero return code; the staging directory is left in
+    place so the operator can inspect partial results.
+    """
+    if not _shutdown_domain(config, vm_name):
         return 1
-    event("info", "restore completed", source=str(chain_dir), output=str(output))
+    if not _undefine_domain(config, vm_name):
+        return 1
+    event("info", "restore overwrite started", vm=vm_name, source=str(row.chain_dir), staging=str(staging))
+    if not _run_virtnbdrestore(_virtnbdrestore_cmd(row.chain_dir, staging, checkpoint)):
+        return 1
+    event("info", "restore overwrite completed", vm=vm_name, staging=str(staging))
     return 0
+
+
+def _restore_turnkey(row: BackupRow, staging: Path, checkpoint: str | None) -> int:
+    """Cross-host / fresh path: virtnbdrestore -D defines the VM in libvirt."""
+    event("info", "restore turnkey started", vm_uuid=row.vm_uuid, source=str(row.chain_dir), staging=str(staging))
+    if not _run_virtnbdrestore(_virtnbdrestore_cmd(row.chain_dir, staging, checkpoint)):
+        return 1
+    event("info", "restore turnkey completed", vm_uuid=row.vm_uuid, host_id=row.host_id, staging=str(staging))
+    return 0
+
+
+def _ensure_staging_root(config: Config) -> Path | None:
+    """Create the shared staging root with restrictive permissions.
+
+    The path lives under ``/var/lib`` (or the test prefix) and is created with
+    ``0700`` so a non-root operator on the recovery host cannot read restored
+    disk images mid-replay.
+    """
+    root = prefixed(RESTORE_STAGING_DIR, config.prefix)
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        event("error", "restore staging root creation failed", path=str(root), error=str(exc))
+        return None
+    return root
+
+
+def restore(config: Config, vm_uuid: str, timestamp: str) -> int:
+    """Restore the run identified by ``(vm_uuid, timestamp)`` from list-restore-points.
+
+    Walks every host directory under ``BACKUP_PATH`` to find the chain
+    containing that timestamp. Same-host + local VM exists → shutdown,
+    undefine, redefine from backup. Otherwise → fresh turnkey define on this
+    host. ``VM_BLACKLIST`` is ignored: the blacklist scopes to *taking*
+    backups, not to recovering from existing ones.
+    """
+    if not is_safe_vm_uuid(vm_uuid):
+        event("error", "restore vm_uuid is not a valid UUID", vm_uuid=vm_uuid)
+        return 1
+    if not _timestamp_is_well_formed(timestamp):
+        event("error", "restore timestamp is malformed", timestamp=timestamp)
+        return 1
+    if not runtime_backup_path_ok(config):
+        return 1
+    row = _find_match(config, vm_uuid, timestamp)
+    if row is None:
+        event("error", "restore found no backup matching uuid and timestamp", vm_uuid=vm_uuid, timestamp=timestamp)
+        return 1
+    decision = _resolve_checkpoint(row)
+    if decision.refused:
+        return 1
+    staging_root = _ensure_staging_root(config)
+    if staging_root is None:
+        return 1
+    staging = _prepare_staging(staging_root, vm_uuid, timestamp)
+    if staging is None:
+        return 1
+    local_name = _local_domain_name_for_uuid(config, vm_uuid)
+    same_host = row.host_id == config.get("HOST_ID")
+    if same_host and local_name is not None:
+        return _restore_overwrite(config, row, staging, decision.checkpoint, local_name)
+    return _restore_turnkey(row, staging, decision.checkpoint)

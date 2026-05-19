@@ -8,19 +8,6 @@ from libvirt_backup_system.config import Config
 from libvirt_backup_system.paths import runtime_backup_path_ok
 
 
-def test_read_fingerprint_rejects_malformed_hex(tmp_path: Path) -> None:
-    # Validating against the 64-char hex SHA-256 shape turns a truncated /
-    # hand-edited marker into a clean "no fingerprint -> force recopy" path.
-    from libvirt_backup_system.inactive_markers import read_fingerprint
-
-    marker = tmp_path / "marker"
-    for malformed in ("short-hex", "   ", "a" * 63, "z" * 64):
-        marker.write_text(f"stamp\n{malformed}\n", encoding="utf-8")
-        assert read_fingerprint(marker) is None, malformed
-    marker.write_text("stamp\n" + "a" * 64 + "\n", encoding="utf-8")
-    assert read_fingerprint(marker) == "a" * 64
-
-
 def test_runtime_backup_path_ok_returns_false_when_is_mount_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

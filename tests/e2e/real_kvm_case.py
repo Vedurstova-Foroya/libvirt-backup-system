@@ -115,7 +115,6 @@ def _write_config(
         "BACKUP_COMPRESS=false",
         "BACKUP_REQUIRE_NFS_MOUNT=false",
         "SPACE_MARGIN_PERCENT=20",
-        "INACTIVE_COPY_EVERY_RUN=false",
         "BACKUP_ESTIMATE_GB_PER_VM=0.001",
         "REQUIRE_ROOT=false",
         "",
@@ -133,9 +132,8 @@ def _json_lines(output: str) -> list[dict[str, object]]:
     return records
 
 
-def _assert_backup_layout(backup_path: Path, host_id: str, vm_name: str, vm_uuid: str) -> Path:
-    # Backups are keyed by libvirt UUID; the operator-facing VM name lands in
-    # Running VMs build a monthly
+def _assert_backup_layout(backup_path: Path, host_id: str, vm_uuid: str) -> Path:
+    # Backups are keyed by libvirt UUID; running VMs build a monthly
     # incremental chain so the chain dir is the first stamp inside the month.
     vm_root = backup_path / host_id / vm_uuid
     months = list(vm_root.glob("????-??"))
@@ -148,14 +146,17 @@ def _assert_backup_layout(backup_path: Path, host_id: str, vm_name: str, vm_uuid
     return backup
 
 
-def _assert_inactive_marker(backup_path: Path, host_id: str, vm_uuid: str) -> None:
-    months = list((backup_path / host_id / vm_uuid).glob("????-??"))
-    assert months, f"no month directory for inactive VM {vm_uuid}"
-    marker = months[0] / ".inactive-copy-complete"
-    assert marker.is_file(), f"inactive marker missing under {months[0]}"
+def _assert_no_backup(backup_path: Path, host_id: str, vm_uuid: str) -> None:
+    vm_root = backup_path / host_id / vm_uuid
+    assert not vm_root.exists(), f"offline VM should not have a backup tree but {vm_root} exists"
 
 
-def _run_scenario(work: Path, running_name: str, inactive_name: str) -> None:
+def _assert_offline_skip_logged(records: list[dict[str, object]], vm_name: str) -> None:
+    matched = [r for r in records if r.get("message") == "skipping vm because it is offline" and r.get("vm") == vm_name]
+    assert matched, f"expected 'skipping vm because it is offline' log for {vm_name!r}, got {records}"
+
+
+def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     backup_path = work / "backup"
     backup_path.mkdir()
     prefix = work / "root"
@@ -175,7 +176,7 @@ def _run_scenario(work: Path, running_name: str, inactive_name: str) -> None:
     # test domains.
     test_uuids = {
         _virsh(["domuuid", running_name]).stdout.strip(),
-        _virsh(["domuuid", inactive_name]).stdout.strip(),
+        _virsh(["domuuid", offline_name]).stdout.strip(),
     }
     pre_existing = [uuid for uuid in _session_domain_uuids() if uuid not in test_uuids]
     _write_config(config_path, backup_path=backup_path, host_id=host_id, blacklist=pre_existing)
@@ -188,41 +189,35 @@ def _run_scenario(work: Path, running_name: str, inactive_name: str) -> None:
     listed = json.loads(vms_proc.stdout)
     names = {vm["name"] for vm in listed}
     assert running_name in names, f"running domain missing from list-vms: {listed}"
-    assert inactive_name in names, f"inactive domain missing from list-vms: {listed}"
+    assert offline_name in names, f"offline domain missing from list-vms: {listed}"
     states = {vm["name"]: vm["state"] for vm in listed}
     assert states[running_name] == "running", states
-    assert states[inactive_name] == "shut off", states
+    assert states[offline_name] == "shut off", states
     uuids = {vm["name"]: vm["uuid"] for vm in listed}
     running_uuid = uuids[running_name]
-    inactive_uuid = uuids[inactive_name]
+    offline_uuid = uuids[offline_name]
 
-    _run([str(bin_path), "run"])
-    backup_dir_running = _assert_backup_layout(backup_path, host_id, running_name, running_uuid)
-    backup_dir_inactive = _assert_backup_layout(backup_path, host_id, inactive_name, inactive_uuid)
-    _assert_inactive_marker(backup_path, host_id, inactive_uuid)
+    first_run = _run([str(bin_path), "run"])
+    backup_dir_running = _assert_backup_layout(backup_path, host_id, running_uuid)
+    # Offline VMs are skipped, not backed up: no backup tree is created and the
+    # operator sees ``skipping vm because it is offline`` in the run log.
+    _assert_no_backup(backup_path, host_id, offline_uuid)
+    _assert_offline_skip_logged(_json_lines(first_run.stdout), offline_name)
 
     _run([str(bin_path), "verify"])
 
-    # Inactive idempotency: a second run must reuse the existing copy, so no
-    # new timestamp directory is created under the inactive VM's month dir.
-    # Running VMs append a ``-l inc`` snapshot into the SAME chain dir, so
-    # the chain dir count stays at 1 across the month; only the incremental
-    # checkpoint files inside it grow.
-    inactive_stamps_before = sorted(backup_dir_inactive.parent.glob("[0-9]*T[0-9]*"))
+    # Second-run idempotency: the running VM appends a ``-l inc`` snapshot into
+    # the SAME chain dir (no new chain timestamp). The offline VM is logged as
+    # skipped again on the second run.
     running_stamps_before = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
-    # virtnbdbackup writes per-backup data files (vda.full.data, vda.inc.virtnbdbackup.N.data)
-    # plus a checkpoints/<name>.xml entry per backup. Either grows monotonically
-    # across full+inc within one chain, so use both as independent witnesses.
     running_data_before = sorted(backup_dir_running.glob("*.data"))
     running_checkpoint_xml_before = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
-    _run([str(bin_path), "run"])
-    inactive_stamps_after = sorted(backup_dir_inactive.parent.glob("[0-9]*T[0-9]*"))
+    second_run = _run([str(bin_path), "run"])
+    _assert_no_backup(backup_path, host_id, offline_uuid)
+    _assert_offline_skip_logged(_json_lines(second_run.stdout), offline_name)
     running_stamps_after = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
     running_data_after = sorted(backup_dir_running.glob("*.data"))
     running_checkpoint_xml_after = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
-    assert (
-        inactive_stamps_after == inactive_stamps_before
-    ), f"inactive marker did not prevent recopy: before={inactive_stamps_before} after={inactive_stamps_after}"
     assert running_stamps_after == running_stamps_before, (
         f"running VM second run created a second chain dir instead of incrementing: "
         f"before={running_stamps_before} after={running_stamps_after}"
@@ -250,17 +245,17 @@ def main() -> int:
         return 1
     tag = uuid.uuid4().hex[:8]
     running_name = f"lbs-e2e-{tag}-running"
-    inactive_name = f"lbs-e2e-{tag}-inactive"
+    offline_name = f"lbs-e2e-{tag}-offline"
     work = Path(tempfile.mkdtemp(prefix="lbs-e2e-real-"))
-    print(f"real KVM e2e: work={work} running={running_name} inactive={inactive_name}", flush=True)
+    print(f"real KVM e2e: work={work} running={running_name} offline={offline_name}", flush=True)
     try:
         _define_domain(work, running_name, running=True)
-        _define_domain(work, inactive_name, running=False)
-        _run_scenario(work, running_name, inactive_name)
+        _define_domain(work, offline_name, running=False)
+        _run_scenario(work, running_name, offline_name)
         print("real KVM e2e: PASS", flush=True)
         return 0
     finally:
-        _teardown_domains((running_name, inactive_name))
+        _teardown_domains((running_name, offline_name))
         shutil.rmtree(work, ignore_errors=True)
 
 

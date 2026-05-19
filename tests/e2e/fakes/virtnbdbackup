@@ -18,7 +18,7 @@ if len(sys.argv) == 2 and sys.argv[1] in {"--version", "-v"}:
 parser = argparse.ArgumentParser()
 parser.add_argument("-U", required=True)
 parser.add_argument("-d", required=True)
-parser.add_argument("-l", required=True, choices=["full", "auto", "copy", "inc"])
+parser.add_argument("-l", required=True, choices=["full", "auto", "inc"])
 parser.add_argument("-o", required=True)
 parser.add_argument("--compress", action="store_true")
 args, _ = parser.parse_known_args()
@@ -40,8 +40,8 @@ dest.mkdir(parents=True, exist_ok=True)
 
 disk_payload = f"disk-data:{args.d}:{args.l}:{secrets.token_hex(4)}".encode()
 # Real virtnbdbackup encodes the backup level into the data filename
-# (``vda.full.data``, ``vda.inc.virtnbdbackup.<N>.data``, ``vda.copy.data``).
-# Mirror that here so retention's full-backup gate sees the right shape.
+# (``vda.full.data`` or ``vda.inc.virtnbdbackup.<N>.data``). Mirror that here
+# so retention's full-backup gate sees the right shape.
 existing_incs = len(list(dest.glob("vda.inc.virtnbdbackup.*.data")))
 if args.l == "inc":
     disk_file = dest / f"vda.inc.virtnbdbackup.{existing_incs}.data"
