@@ -108,7 +108,7 @@ def test_start_rejects_invalid_timer_calendar(tmp_path: Path, monkeypatch, capsy
     assert "SYSTEMD_ON_CALENDAR must not start with '-'" in err
 
 
-def test_start_installs_units_enables_and_starts_timer(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_start_installs_units_enables_and_starts_timer_schedule(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
     config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
@@ -128,7 +128,8 @@ def test_start_installs_units_enables_and_starts_timer(tmp_path: Path, monkeypat
 
     assert calls == [
         ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", "--now", TIMER_UNIT_NAME],
+        ["systemctl", "enable", TIMER_UNIT_NAME],
+        ["systemctl", "start", TIMER_UNIT_NAME],
     ]
     systemd_dir = tmp_path / "etc/systemd/system"
     assert (systemd_dir / RUN_UNIT_NAME).exists()
@@ -136,7 +137,8 @@ def test_start_installs_units_enables_and_starts_timer(tmp_path: Path, monkeypat
     assert (systemd_dir / TIMER_UNIT_NAME).exists()
     out = capsys.readouterr().out
     assert "installed systemd units" in out
-    assert "started systemd timer" in out
+    assert "started systemd timer schedule" in out
+    assert "Persistent=true" not in (systemd_dir / TIMER_UNIT_NAME).read_text(encoding="utf-8")
 
 
 def test_start_configures_timeout_before_calendar_validation(tmp_path: Path, monkeypatch) -> None:
@@ -191,4 +193,5 @@ def test_start_returns_one_when_systemctl_fails(tmp_path: Path, monkeypatch, cap
     assert start(str(tmp_path)) == 1
     err = capsys.readouterr().err
     assert "systemctl daemon-reload failed" in err
-    assert "systemctl enable --now libvirt-backup-system.timer failed" in err
+    assert "systemctl enable libvirt-backup-system.timer failed" in err
+    assert "systemctl start libvirt-backup-system.timer failed" in err

@@ -90,6 +90,22 @@ def test_prune_skipped_when_months_with_full_count_at_floor(backup_config: Confi
     assert "2025-04" not in {p.name for p in vm_dir.iterdir()}
 
 
+def test_prune_preserves_full_backup_floor_with_recent_incremental_only_month(backup_config: Config) -> None:
+    # Four full-bearing months and one recent inc-only month with retention=3
+    # should prune only one full-bearing month. Pruning by total month dirs
+    # would delete two full-bearing months and leave only two restorable months.
+    cfg = _enable(backup_config, 3)
+    vm_dir = _seed_full(cfg, ALPHA_UUID, ["2026-01", "2026-02", "2026-03", "2026-05"])
+    inc_chain = vm_dir / "2026-04" / "20260401T000000"
+    inc_chain.mkdir(parents=True)
+    (inc_chain / "vda.inc.virtnbdbackup.1.data").write_bytes(b"x")
+
+    assert prune_old_months(cfg, current_month="2026-05") == 0
+
+    assert sorted(p.name for p in vm_dir.iterdir()) == ["2026-02", "2026-03", "2026-04", "2026-05"]
+    assert sum(1 for month in vm_dir.iterdir() if _has_full_backup(month)) == 3
+
+
 def test_copy_data_files_count_as_full_for_inactive_vms(backup_config: Config) -> None:
     # Inactive VMs use ``virtnbdbackup -l copy`` which produces
     # ``<vm>.<disk>.copy.data``; that file is restore-standalone so it

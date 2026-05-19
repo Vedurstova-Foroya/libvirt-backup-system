@@ -70,9 +70,10 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
         root,
         [
             ["systemctl", "daemon-reload"],
-            ["systemctl", "enable", "--now", TIMER_UNIT_NAME],
+            ["systemctl", "enable", TIMER_UNIT_NAME],
+            ["systemctl", "start", TIMER_UNIT_NAME],
         ],
     )
     if ok:
-        event("info", "started systemd timer", unit=TIMER_UNIT_NAME)
+        event("info", "started systemd timer schedule", unit=TIMER_UNIT_NAME)
     return 0 if ok else 1

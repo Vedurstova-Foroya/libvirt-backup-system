@@ -30,7 +30,6 @@ Description=Run libvirt VM backups on schedule
 
 [Timer]
 OnCalendar={calendar}
-Persistent=true
 
 [Install]
 WantedBy=timers.target

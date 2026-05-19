@@ -7,7 +7,7 @@ from pathlib import Path
 from .config import Config
 from .inactive_markers import atomic_write, marker_is_regular, stamp_is_safe
 from .logging_json import event
-from .run_records import chain_is_poisoned
+from .run_records import chain_is_poisoned, poison_chain
 from .storage import subpath_is_safe
 
 # Single-file state lives directly under the month dir alongside the inactive
@@ -80,6 +80,40 @@ def write_chain_state(month_dir: Path, chain_id: str, fingerprint: str, vm_name:
         payload,
         vm_name,
         "chain state write failed",
+    )
+
+
+def disable_chain_reuse(month_dir: Path, chain_dir: Path, vm_name: str, reason: str) -> None:
+    """Stop ``resolve_chain`` from picking this chain on the next run.
+
+    Primary path: write the ``.chain-poisoned`` sentinel inside ``chain_dir``.
+    Fallback when that write fails (read-only mount, ENOSPC, permission flip):
+    unlink the month-level chain pointer so the next run sees "no chain" and
+    starts a fresh full. Either step is sufficient; the fallback is the
+    safety net that keeps an unwritable sentinel from leaving a dirty chain
+    reusable. If both fail we log loudly so the operator sees the residual
+    risk in the run log.
+    """
+    if poison_chain(chain_dir, vm_name, reason):
+        return
+    try:
+        (month_dir / CHAIN_STATE_NAME).unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        event(
+            "error",
+            "chain poison and pointer removal both failed; chain may be reused",
+            vm=vm_name,
+            chain_dir=str(chain_dir),
+            error=str(exc),
+        )
+        return
+    event(
+        "warning",
+        "chain poison failed; removed chain pointer as fallback",
+        vm=vm_name,
+        chain_dir=str(chain_dir),
     )
 
 

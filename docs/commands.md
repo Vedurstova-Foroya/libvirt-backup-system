@@ -48,7 +48,7 @@ sudo libvirt-backup-system doctor
 
 ## `start`
 
-Installs or refreshes the systemd unit files from the current environment file, reloads systemd, and enables/starts `libvirt-backup-system.timer`. Use this after `install`, editing `/etc/libvirt-backup-system/libvirt-backup.env`, and `check`; use `run` when you want to execute a backup immediately.
+Installs or refreshes the systemd unit files from the current environment file, reloads systemd, and enables/starts `libvirt-backup-system.timer`. This activates the schedule only; it does not run a backup immediately. Use this after `install`, editing `/etc/libvirt-backup-system/libvirt-backup.env`, and `check`; use `run` when you want to execute a manual backup.
 
 ```sh
 sudo libvirt-backup-system start
@@ -57,6 +57,8 @@ sudo libvirt-backup-system start
 ## `run`
 
 Runs preflight, acquires the run lock, and backs up selected VMs. Running VMs build a per-month incremental chain: the first run each calendar month writes a `-l full` into a new chain directory, subsequent runs in the same month append `-l inc` snapshots into the same chain. Inactive (shut-off) VMs keep their `-l copy` semantics with a per-month freshness marker.
+
+Manual backups require the systemd schedule to have been activated first with a successful `start`. On a systemd host, `run` exits nonzero with a "backup service is not running" error instead of starting an ad-hoc backup when the service/timer has not been installed and activated.
 
 When `BACKUP_CLEANUP_ON_RUN=true` (the default) the run finishes by pruning month directories older than `BACKUP_RETENTION_MONTHS`. Pruning failure does not roll back successful backups — the run returns the higher of the backup and prune exit codes.
 

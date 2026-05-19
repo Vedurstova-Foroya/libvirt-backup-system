@@ -133,18 +133,19 @@ def _tee_stream(
 
 
 def _kill_process_group(proc: subprocess.Popen[str], pgid: int) -> None:
-    if proc.poll() is not None:
-        return
+    # The leader can exit before descendants release inherited stdout/stderr
+    # pipes, so leader status alone is not proof that the process group is
+    # drained. Always attempt the full TERM/KILL sequence for the group.
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
         except (OSError, ProcessLookupError):
             return
-        try:
-            proc.wait(timeout=TERMINATE_GRACE_SECONDS)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                continue
 
 
 def _signal_group(pgid: int, sig: int) -> bool:

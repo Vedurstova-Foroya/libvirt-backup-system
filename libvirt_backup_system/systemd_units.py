@@ -11,6 +11,7 @@ from pathlib import Path
 from .config import bool_value, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
+from .systemd_run_gate import manual_run_ready
 from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 
 RUN_UNIT_NAME = "libvirt-backup-system.service"
@@ -227,7 +228,17 @@ def dispatch_via_systemd(
         return None
     unit = unit_name_for(subcommand)
     if not (prefixed("/etc/systemd/system", root) / unit).exists():
+        if subcommand == "run":
+            event(
+                "error",
+                "backup service is not running; run start before run",
+                unit=unit,
+                timer=TIMER_UNIT_NAME,
+            )
+            return 1
         return None
+    if subcommand == "run" and not manual_run_ready(root, run_unit_name=RUN_UNIT_NAME, timer_unit_name=TIMER_UNIT_NAME):
+        return 1
     event("info", "dispatching to systemd unit", unit=unit, subcommand=subcommand)
     rc = _await_unit(unit)
     # ``systemctl show`` returns the most-recent invocation id even after the

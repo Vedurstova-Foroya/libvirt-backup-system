@@ -47,7 +47,10 @@ def _record_subprocess(monkeypatch, *, start_returncode: int = 0, invocation_id:
         calls.append(args)
         if args[:3] == ["systemctl", "start", "--wait"]:
             return _Result(start_returncode)
-        if args[:2] == ["systemctl", "show"]:
+        if tuple(args) in {
+            ("systemctl", "show", RUN_UNIT_NAME, "--property=InvocationID", "--value"),
+            ("systemctl", "show", CHECK_UNIT_NAME, "--property=InvocationID", "--value"),
+        }:
             return _Result(0, invocation_id + "\n")
         if args[:1] == ["journalctl"]:
             return _Result(0)
@@ -58,13 +61,19 @@ def _record_subprocess(monkeypatch, *, start_returncode: int = 0, invocation_id:
 
 
 def test_dispatch_skipped_when_inside_systemd_invocation(tmp_path: Path, monkeypatch) -> None:
-    # Recursion guard: the unit's own ExecStart re-enters the CLI, and dispatch
-    # must not re-dispatch — that would loop until systemd kills the unit.
     _fake_systemd_host(tmp_path, monkeypatch)
     (tmp_path / "etc/systemd/system" / CHECK_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
     monkeypatch.setenv("INVOCATION_ID", "abc")
 
     assert dispatch_via_systemd("check", prefix=None, config_path=None) is None
+
+
+def test_dispatch_run_skipped_when_inside_systemd_invocation(tmp_path: Path, monkeypatch) -> None:
+    _fake_systemd_host(tmp_path, monkeypatch)
+    (tmp_path / "etc/systemd/system" / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
+    monkeypatch.setenv("INVOCATION_ID", "abc")
+
+    assert dispatch_via_systemd("run", prefix=None, config_path=None) is None
 
 
 def test_dispatch_skipped_when_opt_out_env_set(tmp_path: Path, monkeypatch) -> None:
@@ -73,16 +82,6 @@ def test_dispatch_skipped_when_opt_out_env_set(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv(DISPATCH_OPT_OUT_ENV, "1")
 
     assert dispatch_via_systemd("run", prefix=None, config_path=None) is None
-
-
-def test_dispatch_opt_out_env_zero_does_not_skip(tmp_path: Path, monkeypatch) -> None:
-    systemd_dir = _fake_systemd_host(tmp_path, monkeypatch)
-    (systemd_dir / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
-    monkeypatch.setenv(DISPATCH_OPT_OUT_ENV, "0")
-    calls = _record_subprocess(monkeypatch)
-
-    assert dispatch_via_systemd("run", prefix=None, config_path=None) == 0
-    assert calls[0] == ["systemctl", "start", "--wait", RUN_UNIT_NAME]
 
 
 def test_dispatch_skipped_when_prefix_passed(tmp_path: Path, monkeypatch) -> None:
@@ -134,15 +133,6 @@ def test_dispatch_invokes_systemctl_and_returns_exit_code(tmp_path: Path, monkey
     out = capsys.readouterr().out
     assert "dispatching to systemd unit" in out
     assert CHECK_UNIT_NAME in out
-
-
-def test_dispatch_run_targets_run_unit(tmp_path: Path, monkeypatch) -> None:
-    systemd_dir = _fake_systemd_host(tmp_path, monkeypatch)
-    (systemd_dir / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
-    calls = _record_subprocess(monkeypatch)
-
-    assert dispatch_via_systemd("run", prefix=None, config_path=None) == 0
-    assert calls[0] == ["systemctl", "start", "--wait", RUN_UNIT_NAME]
 
 
 def test_dispatch_skips_journalctl_when_invocation_id_missing(tmp_path: Path, monkeypatch) -> None:
@@ -273,6 +263,20 @@ def test_cli_run_uses_dispatch_when_available(tmp_path: Path, monkeypatch) -> No
 
     assert cli.main(["run"]) == 7
     assert called["args"] == ("run", None, None)
+
+
+def test_cli_run_does_not_fall_through_when_dispatch_reports_not_started(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.cli.dispatch_via_systemd", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.Config.load",
+        lambda *args, **kwargs: pytest.fail("Config.load must not run when dispatch reports an error"),
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.run_backups",
+        lambda *args, **kwargs: pytest.fail("run_backups must not run when service is not started"),
+    )
+
+    assert cli.main(["run"]) == 1
 
 
 def test_cli_check_falls_through_to_in_process_when_dispatch_returns_none(tmp_path: Path, monkeypatch) -> None:

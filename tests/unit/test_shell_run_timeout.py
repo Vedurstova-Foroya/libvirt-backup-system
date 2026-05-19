@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import textwrap
 import time
@@ -114,6 +115,42 @@ def test_run_timeout_falls_back_to_exception_output_when_drain_hangs(monkeypatch
     assert result.returncode == shell.TIMEOUT_RETURN_CODE
     assert result.stdout == "partial"
     assert result.stderr == "oops"
+
+
+def test_run_timeout_signals_group_after_leader_exited_with_open_pipe(monkeypatch) -> None:
+    # communicate(timeout=...) can expire after the leader has already exited
+    # if a child inherited stdout/stderr and keeps the pipe open. The captured
+    # process group still needs a signal in that state.
+    killed: list[int] = []
+
+    class _ExitedLeaderOpenPipePopen:
+        pid = 4242
+        returncode = 0
+
+        def __init__(self) -> None:
+            self._communicate_calls = 0
+
+        def communicate(self, timeout=None):
+            self._communicate_calls += 1
+            if self._communicate_calls == 1:
+                raise subprocess.TimeoutExpired(cmd=["cmd"], timeout=timeout)
+            return "", ""
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            del timeout
+            return self.returncode
+
+    monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *a, **k: _ExitedLeaderOpenPipePopen())
+    monkeypatch.setattr("libvirt_backup_system.shell.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("libvirt_backup_system.shell.os.killpg", lambda pgid, sig: killed.append(sig))
+
+    result = run(["cmd"], check=False, timeout=1)
+
+    assert result.returncode == shell.TIMEOUT_RETURN_CODE
+    assert killed == [signal.SIGTERM, signal.SIGKILL]
 
 
 def test_run_timeout_kills_grandchildren(tmp_path) -> None:

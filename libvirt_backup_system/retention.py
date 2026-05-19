@@ -184,7 +184,8 @@ def _prune_vm(
         # least one full each" before the oldest is dropped — a chain that
         # collected only increments, or a leftover empty month dir, will
         # not raise the count toward the floor.
-        months_with_full = sum(1 for p in month_dirs if _has_full_backup(p))
+        full_month_dirs = [p for p in month_dirs if _has_full_backup(p)]
+        months_with_full = len(full_month_dirs)
         if months_with_full <= keep:
             event(
                 "info",
@@ -194,11 +195,13 @@ def _prune_vm(
                 required_floor=keep + 1,
             )
             return True
+        to_delete = full_month_dirs[: months_with_full - keep]
+    else:
+        to_delete = month_dirs[: len(month_dirs) - keep]
     # Defensive: never drop the most recent month even if it somehow ends up in
     # the to-delete slice. Single-month VMs hit this branch too: if keep == 0
     # the slice is the whole list, but we still keep the newest dir so an
     # accidental retention=0 misconfiguration cannot wipe every backup at once.
-    to_delete = month_dirs[: len(month_dirs) - keep]
     most_recent = month_dirs[-1]
     ok = True
     for month_dir in to_delete:

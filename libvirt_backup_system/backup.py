@@ -5,14 +5,14 @@ import shutil
 import time
 from pathlib import Path
 
-from .chains import ChainResolution, resolve_chain, write_chain_state
+from .chains import ChainResolution, disable_chain_reuse, resolve_chain, write_chain_state
 from .config import Config
 from .disks import domain_xml_fingerprint, inactive_marker_is_fresh
 from .inactive_markers import marked_backup_dir, marker_is_regular, remove_marker, write_marker
 from .logging_json import event
 from .nbd_probe import virtnbdbackup_socket_args
 from .paths import backup_root, runtime_backup_path_ok
-from .run_records import CheckpointReadError, list_checkpoints, poison_chain, record_run
+from .run_records import CheckpointReadError, list_checkpoints, record_run
 from .shell import CommandError, run_streamed
 from .storage import subpath_is_safe
 from .verify import verify
@@ -173,19 +173,24 @@ def _run_virtnbdbackup(
     *,
     owns_chain_dir: bool,
 ) -> bool:
+    def _disable(state: str) -> None:
+        if not dest.exists():
+            return
+        if owns_chain_dir:
+            _attempt_partial_cleanup(config, dest, vm.name)
+        else:
+            disable_chain_reuse(dest.parent, dest, vm.name, f"virtnbdbackup {state} during incremental backup")
+
     try:
         run_streamed(cmd)
     except CommandError as exc:
-        # Incrementals reuse the chain dir; only end-to-end-owned dirs (new
-        # full / inactive copy) are safe to clean on failure. A failed
-        # incremental may already have changed checkpoint metadata or partial
-        # data in-place, so preserve old data but prevent future reuse.
-        if owns_chain_dir and dest.exists():
-            _attempt_partial_cleanup(config, dest, vm.name)
-        elif "-l" in cmd and cmd[cmd.index("-l") + 1] == "inc" and dest.exists():
-            poison_chain(dest, vm.name, "virtnbdbackup failed during incremental backup")
+        _disable("failed")
         event("error", "backup failed", vm=vm.name, returncode=exc.result.returncode, stderr=exc.result.stderr.strip())
         return False
+    except BaseException:
+        # run_streamed re-raises KeyboardInterrupt / SystemExit after killing the PG.
+        _disable("interrupted")
+        raise
     if not dest.is_dir():
         event("error", "backup reported success but destination is missing", vm=vm.name, destination=str(dest))
         return False
@@ -232,7 +237,7 @@ def _backup_running(config: Config, vm: VM, month_dir: Path, stamp: str, marker:
         msg = "run record write failed; dangling checkpoints" if dangling else "run record write failed"
         event("error", msg, vm=vm.name, chain_dir=str(resolution.chain_dir))
         level = "new" if resolution.is_new_chain else "incremental"
-        poison_chain(resolution.chain_dir, vm.name, f"record_run failed after {level} backup")
+        disable_chain_reuse(month_dir, resolution.chain_dir, vm.name, f"record_run failed after {level} backup")
         if resolution.is_new_chain:
             _attempt_partial_cleanup(config, resolution.chain_dir, vm.name)
         return False

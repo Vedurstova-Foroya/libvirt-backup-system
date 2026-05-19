@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.backup import backup_vm
 from libvirt_backup_system.chains import CHAIN_STATE_NAME
 from libvirt_backup_system.config import Config
@@ -211,3 +213,58 @@ def test_incremental_record_run_failure_poisons_chain_and_next_run_starts_full(
     assert calls[-1][calls[-1].index("-l") + 1] == "full"
     assert calls[-1][calls[-1].index("-o") + 1] == str(chain_c)
     assert "current chain is poisoned; starting new chain" in capsys.readouterr().out
+
+
+def test_keyboard_interrupt_during_incremental_poisons_chain(
+    tmp_path: Path, monkeypatch, capsys, backup_config
+) -> None:
+    # run_streamed re-raises KeyboardInterrupt after killing the child PG. The
+    # incremental chain dir may already contain dirty checkpoint state, so the
+    # backup layer must poison the chain before letting the exception propagate
+    # — otherwise the lock releases and the next run reuses the dirty chain.
+    cfg = _backup_config(backup_config)
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        if args[args.index("-l") + 1] == "full":
+            return virtnbdbackup_fake_success(args, check=check, env=env)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-a")
+    with pytest.raises(KeyboardInterrupt):
+        backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-b")
+    chain_a = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp-a"
+    assert (chain_a / CHAIN_POISON_NAME).is_file()
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", virtnbdbackup_fake_success)
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-c")
+    chain_c = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05/stamp-c"
+    assert chain_c.is_dir()
+    assert chain_c != chain_a
+    assert "current chain is poisoned; starting new chain" in capsys.readouterr().out
+
+
+def test_incremental_failure_falls_back_to_chain_pointer_removal(
+    tmp_path: Path, monkeypatch, capsys, backup_config
+) -> None:
+    # If the poison sentinel write itself fails (read-only mount, ENOSPC), the
+    # chain must still be made unreusable. The fallback removes the month-level
+    # chain pointer so resolve_chain() sees "no chain" on the next run.
+    cfg = _backup_config(backup_config)
+
+    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
+        if args[args.index("-l") + 1] == "full":
+            return virtnbdbackup_fake_success(args, check=check, env=env)
+        raise CommandError(CommandResult(args, 9, "", "incremental boom"))
+
+    monkeypatch.setattr("libvirt_backup_system.backup.run_streamed", fake_run)
+    monkeypatch.setattr("libvirt_backup_system.chains.poison_chain", lambda *args, **kwargs: False)
+
+    assert backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-a")
+    month_dir = tmp_path / f"backups/host/{ALPHA_UUID}/2026-05"
+    assert (month_dir / CHAIN_STATE_NAME).is_file()
+
+    assert not backup_vm(cfg, VM("alpha", "running", ALPHA_UUID), "2026-05", "stamp-b")
+    assert not (month_dir / CHAIN_STATE_NAME).exists()
+    err = capsys.readouterr().err
+    assert "chain poison failed; removed chain pointer as fallback" in err

@@ -199,7 +199,7 @@ def test_run_streamed_kills_process_group_on_exception(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="simulated"):
         run_streamed(["dummy"])
 
-    assert killed == [(proc.pid, signal.SIGTERM)]
+    assert killed == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
 
 
 def test_run_streamed_escalates_to_sigkill_after_timeout(monkeypatch) -> None:
@@ -228,7 +228,7 @@ def test_run_streamed_escalates_to_sigkill_after_timeout(monkeypatch) -> None:
     assert killed == [signal.SIGTERM, signal.SIGKILL]
 
 
-def test_run_streamed_skips_kill_when_process_already_exited(monkeypatch) -> None:
+def test_run_streamed_signals_group_even_when_leader_already_exited(monkeypatch) -> None:
     proc = _FakeProc(wait_raises=RuntimeError("after-exit"), poll_alive=False)
     killed: list[int] = []
     monkeypatch.setattr("libvirt_backup_system.shell.subprocess.Popen", lambda *args, **kwargs: proc)
@@ -237,7 +237,7 @@ def test_run_streamed_skips_kill_when_process_already_exited(monkeypatch) -> Non
     with pytest.raises(RuntimeError, match="after-exit"):
         run_streamed(["dummy"])
 
-    assert killed == []
+    assert killed == [signal.SIGTERM, signal.SIGKILL]
 
 
 def test_run_streamed_falls_through_when_sigkill_also_times_out(monkeypatch) -> None:
