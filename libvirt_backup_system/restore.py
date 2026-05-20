@@ -1,18 +1,7 @@
-"""Turnkey restore: pick a (vm_uuid, timestamp) pair, route to the right action.
-
-``list-restore-points`` prints a (vm_uuid, run-timestamp) pair per restorable run.
-``restore <uuid> <timestamp>`` looks the pair up across every host directory
-under ``BACKUP_PATH`` and either overwrites the live VM (when the backup was
-taken on this host AND a domain with that UUID exists locally) or stages the
-disks and redefines the domain from the backup XML (otherwise). There is no
-``--at`` / ``--output`` knob: the timestamp is the explicit per-run target and
-the staging directory is fixed under ``/var/lib/libvirt-backup-system/restore/``
-so two operators on the same host never race on the same path.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
+import re
 import shutil
 from contextlib import suppress
 from dataclasses import dataclass
@@ -23,12 +12,15 @@ from .config import Config, prefixed
 from .list_restore_points import STAMP_FORMAT, BackupRow, enumerate_backups
 from .logging_json import event
 from .paths import runtime_backup_path_ok
+from .restore_define import RESTORED_CONFIG_FILE, define_restored_domain
+from .restore_metadata import BackupDomainConfig, read_backup_domain_config
 from .run_records import chain_is_poisoned
 from .shell import CommandError, run, run_streamed
 from .storage import subpath_is_safe
-from .vms import is_safe_vm_uuid
+from .vms import is_safe_vm_name, is_safe_vm_uuid
 
 RESTORE_STAGING_DIR = Path("/var/lib/libvirt-backup-system/restore")
+_TARGET_EXISTS_RE = re.compile(r"Target file already exists: \[(?P<path>[^\]]+)\]")
 
 
 def _timestamp_is_well_formed(value: str) -> bool:
@@ -140,6 +132,14 @@ class _CheckpointDecision:
     refused: bool
 
 
+@dataclass(frozen=True)
+class _RestoreTarget:
+    staging: Path
+    checkpoint: str | None
+    backup_config: BackupDomainConfig
+    verbose: bool
+
+
 def _resolve_checkpoint(row: BackupRow) -> _CheckpointDecision:
     """Return the checkpoint or chain-end intent for a backup row.
 
@@ -159,23 +159,55 @@ def _resolve_checkpoint(row: BackupRow) -> _CheckpointDecision:
     return _CheckpointDecision(None, refused=False)
 
 
-def _virtnbdrestore_cmd(chain_dir: Path, staging: Path, checkpoint: str | None) -> list[str]:
-    # ``-D`` asks virtnbdrestore to re-register the VM in libvirt with the
-    # domain XML stored in the backup. Required for turnkey on a fresh host;
-    # in overwrite mode the caller shuts + undefines the existing domain first
-    # so the -D re-define lands cleanly either way.
-    cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(staging)]
+def _restore_target_name(
+    row: BackupRow, backup_config: BackupDomainConfig, preferred_name: str | None = None
+) -> str | None:
+    for name in (preferred_name, row.vm_name, backup_config.name):
+        if name is not None and is_safe_vm_name(name):
+            return name
+    return None
+
+
+def _remove_existing_disk_files(disk_paths: tuple[Path, ...]) -> bool:
+    for path in disk_paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            event("error", "restore could not remove existing disk file", path=str(path), error=str(exc))
+            return False
+    return True
+
+
+def _virtnbdrestore_cmd(chain_dir: Path, output_dir: Path, checkpoint: str | None, name: str | None) -> list[str]:
+    cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(output_dir)]
     if checkpoint is not None:
         cmd.extend(["-u", checkpoint])
-    cmd.append("-D")
+    if name is not None:
+        cmd.extend(["--name", name])
+    cmd.extend(["-c", "-C", RESTORED_CONFIG_FILE])
     return cmd
 
 
-def _run_virtnbdrestore(cmd: list[str]) -> bool:
+def _run_virtnbdrestore(cmd: list[str], *, verbose: bool) -> bool:
     try:
-        run_streamed(cmd)
+        if verbose:
+            run_streamed(cmd)
+        else:
+            run(cmd)
     except CommandError as exc:
-        event("error", "restore failed", stderr=exc.result.stderr.strip(), returncode=exc.result.returncode)
+        stderr = exc.result.stderr.strip()
+        if verbose:
+            event("error", "restore failed", stderr=stderr, returncode=exc.result.returncode)
+        else:
+            event("error", "restore failed; rerun with --verbose for full output", returncode=exc.result.returncode)
+        if match := _TARGET_EXISTS_RE.search(stderr):
+            event(
+                "error",
+                "restore target disk already exists; move or remove it before retrying",
+                path=match.group("path"),
+            )
         return False
     except OSError as exc:
         event("error", "restore failed: virtnbdrestore unavailable", error=str(exc))
@@ -183,41 +215,47 @@ def _run_virtnbdrestore(cmd: list[str]) -> bool:
     return True
 
 
-def _restore_overwrite(config: Config, row: BackupRow, staging: Path, checkpoint: str | None, vm_name: str) -> int:
-    """Same-host path: tear the existing VM down before redefining from backup.
-
-    Shutdown + undefine first so virtnbdrestore's own ``-D`` redefine does not
-    collide with an existing domain definition. Failure at any step short-
-    circuits with a nonzero return code; the staging directory is left in
-    place so the operator can inspect partial results.
-    """
+def _restore_overwrite(
+    config: Config,
+    row: BackupRow,
+    target: _RestoreTarget,
+    vm_name: str,
+) -> int:
     if not _shutdown_domain(config, vm_name):
         return 1
     if not _undefine_domain(config, vm_name):
         return 1
-    event("info", "restore overwrite started", vm=vm_name, source=str(row.chain_dir), staging=str(staging))
-    if not _run_virtnbdrestore(_virtnbdrestore_cmd(row.chain_dir, staging, checkpoint)):
+    output_dir = target.backup_config.disk_output_dir or target.staging
+    if output_dir != target.staging and not _remove_existing_disk_files(target.backup_config.disk_paths):
         return 1
-    event("info", "restore overwrite completed", vm=vm_name, staging=str(staging))
+    if target.verbose:
+        event("info", "restore overwrite started", vm=vm_name, source=str(row.chain_dir), output=str(output_dir))
+    name = _restore_target_name(row, target.backup_config, vm_name)
+    cmd = _virtnbdrestore_cmd(row.chain_dir, output_dir, target.checkpoint, name)
+    if not _run_virtnbdrestore(cmd, verbose=target.verbose):
+        return 1
+    if not define_restored_domain(config, output_dir / RESTORED_CONFIG_FILE, row.vm_uuid, name):
+        return 1
+    event("info", "restore overwrite completed", vm=vm_name, output=str(output_dir))
     return 0
 
 
-def _restore_turnkey(row: BackupRow, staging: Path, checkpoint: str | None) -> int:
-    """Cross-host / fresh path: virtnbdrestore -D defines the VM in libvirt."""
-    event("info", "restore turnkey started", vm_uuid=row.vm_uuid, source=str(row.chain_dir), staging=str(staging))
-    if not _run_virtnbdrestore(_virtnbdrestore_cmd(row.chain_dir, staging, checkpoint)):
+def _restore_turnkey(config: Config, row: BackupRow, target: _RestoreTarget) -> int:
+    """Cross-host / fresh path: restore disks, then define the adjusted domain XML."""
+    output_dir = target.backup_config.disk_output_dir or target.staging
+    if target.verbose:
+        event("info", "restore turnkey started", vm_uuid=row.vm_uuid, source=str(row.chain_dir), output=str(output_dir))
+    name = _restore_target_name(row, target.backup_config)
+    cmd = _virtnbdrestore_cmd(row.chain_dir, output_dir, target.checkpoint, name)
+    if not _run_virtnbdrestore(cmd, verbose=target.verbose):
         return 1
-    event("info", "restore turnkey completed", vm_uuid=row.vm_uuid, host_id=row.host_id, staging=str(staging))
+    if not define_restored_domain(config, output_dir / RESTORED_CONFIG_FILE, row.vm_uuid, name):
+        return 1
+    event("info", "restore turnkey completed", vm_uuid=row.vm_uuid, host_id=row.host_id, output=str(output_dir))
     return 0
 
 
 def _ensure_staging_root(config: Config) -> Path | None:
-    """Create the shared staging root with restrictive permissions.
-
-    The path lives under ``/var/lib`` (or the test prefix) and is created with
-    ``0700`` so a non-root operator on the recovery host cannot read restored
-    disk images mid-replay.
-    """
     root = prefixed(RESTORE_STAGING_DIR, config.prefix)
     try:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -227,15 +265,7 @@ def _ensure_staging_root(config: Config) -> Path | None:
     return root
 
 
-def restore(config: Config, vm_uuid: str, timestamp: str) -> int:
-    """Restore the run identified by ``(vm_uuid, timestamp)`` from list-restore-points.
-
-    Walks every host directory under ``BACKUP_PATH`` to find the chain
-    containing that timestamp. Same-host + local VM exists → shutdown,
-    undefine, redefine from backup. Otherwise → fresh turnkey define on this
-    host. ``VM_BLACKLIST`` is ignored: the blacklist scopes to *taking*
-    backups, not to recovering from existing ones.
-    """
+def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = True) -> int:
     if not is_safe_vm_uuid(vm_uuid):
         event("error", "restore vm_uuid is not a valid UUID", vm_uuid=vm_uuid)
         return 1
@@ -259,6 +289,7 @@ def restore(config: Config, vm_uuid: str, timestamp: str) -> int:
         return 1
     local_name = _local_domain_name_for_uuid(config, vm_uuid)
     same_host = row.host_id == config.get("HOST_ID")
+    target = _RestoreTarget(staging, decision.checkpoint, read_backup_domain_config(row.chain_dir), verbose)
     if same_host and local_name is not None:
-        return _restore_overwrite(config, row, staging, decision.checkpoint, local_name)
-    return _restore_turnkey(row, staging, decision.checkpoint)
+        return _restore_overwrite(config, row, target, local_name)
+    return _restore_turnkey(config, row, target)

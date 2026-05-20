@@ -119,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
         sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION
     )
     restore_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Stream full virtnbdrestore output instead of only summary success/error events.",
+    )
+    restore_parser.add_argument(
         "vm_uuid",
         metavar="VM_UUID",
         help="VM libvirt UUID copied verbatim from the first column of list-restore-points output.",
@@ -175,7 +181,7 @@ def _restore_command(config: Config, args: argparse.Namespace) -> int:
         return config_code
     try:
         with acquire_run_lock(config):
-            return restore(config, args.vm_uuid, args.timestamp)
+            return restore(config, args.vm_uuid, args.timestamp, verbose=args.verbose)
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1

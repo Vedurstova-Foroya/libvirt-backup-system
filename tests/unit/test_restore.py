@@ -30,6 +30,29 @@ def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]], *, host_id
     return vm_dir
 
 
+def _chain_dir(cfg: Config, stamp: str, *, host_id: str | None = None) -> Path:
+    return cfg.path_value("BACKUP_PATH") / (host_id or cfg.get("HOST_ID")) / ALPHA_UUID / "2026-05" / stamp
+
+
+def _write_vmconfig(chain_dir: Path, name: str, disk_path: Path) -> None:
+    chain_dir.joinpath("vmconfig.virtnbdbackup.0.xml").write_text(
+        "\n".join(
+            [
+                "<domain>",
+                f"  <name>{name}</name>",
+                "  <devices>",
+                "    <disk type='file' device='disk'>",
+                f"      <source file='{disk_path}'/>",
+                "    </disk>",
+                "  </devices>",
+                "</domain>",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _restore_config(cfg: Config, tmp_path: Path) -> Config:
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
     cfg.values["HOST_ID"] = "host"
@@ -60,6 +83,15 @@ def _capture_streamed(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return captured
 
 
+def _stub_define(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str, str | None]]:
+    captured: list[tuple[Path, str, str | None]] = []
+    monkeypatch.setattr(
+        "libvirt_backup_system.restore.define_restored_domain",
+        lambda _cfg, path, uuid, name: captured.append((path, uuid, name)) or True,
+    )
+    return captured
+
+
 def test_restore_turnkey_when_no_local_vm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
 ) -> None:
@@ -69,13 +101,35 @@ def test_restore_turnkey_when_no_local_vm(
     stamp = _stamp("2026-05", 7, 10)
     _seed_chain(cfg, {"2026-05": [stamp]})
     _stub_no_local_vm(monkeypatch)
+    defined = _stub_define(monkeypatch)
     captured = _capture_streamed(monkeypatch)
 
     assert restore(cfg, ALPHA_UUID, stamp) == 0
     cmd = captured[0]
     assert cmd[:3] == ["virtnbdrestore", "-a", "restore"]
-    assert "-D" in cmd  # turnkey mode redefines the VM
+    assert "-D" not in cmd
+    assert cmd[cmd.index("-C") + 1] == "libvirt-backup-system-restored.xml"
+    assert "-c" in cmd
     assert cmd[cmd.index("-u") + 1] == f"virtnbdbackup.{stamp}"
+    assert defined[0][1] == ALPHA_UUID
+
+
+def test_restore_turnkey_uses_backup_name_and_original_disk_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]})
+    disk_path = tmp_path / "libvirt-images" / "vm-0.qcow2"
+    _write_vmconfig(_chain_dir(cfg, stamp), "vm-0", disk_path)
+    _stub_no_local_vm(monkeypatch)
+    _stub_define(monkeypatch)
+    captured = _capture_streamed(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    cmd = captured[0]
+    assert cmd[cmd.index("--name") + 1] == "vm-0"
+    assert cmd[cmd.index("-o") + 1] == str(disk_path.parent)
 
 
 def test_restore_overwrite_when_local_vm_exists(
@@ -98,6 +152,7 @@ def test_restore_overwrite_when_local_vm_exists(
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
+    _stub_define(monkeypatch)
     captured = _capture_streamed(monkeypatch)
 
     assert restore(cfg, ALPHA_UUID, stamp) == 0
@@ -105,6 +160,35 @@ def test_restore_overwrite_when_local_vm_exists(
     assert ("-c", cfg.get("LIBVIRT_URI"), "destroy", "--") in actions
     assert any("undefine" in call for call in virsh_calls)
     assert captured[0][:3] == ["virtnbdrestore", "-a", "restore"]
+
+
+def test_restore_overwrite_uses_local_name_and_removes_old_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = _stamp("2026-05", 7, 10)
+    _seed_chain(cfg, {"2026-05": [stamp]})
+    disk_path = tmp_path / "libvirt-images" / "vm-0.qcow2"
+    disk_path.parent.mkdir()
+    disk_path.write_bytes(b"old")
+    _write_vmconfig(_chain_dir(cfg, stamp), "backup-name", disk_path)
+
+    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
+        if "domname" in args:
+            return CommandResult(args, 0, "vm-0", "")
+        if "domstate" in args:
+            return CommandResult(args, 0, "shut off", "")
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
+    _stub_define(monkeypatch)
+    captured = _capture_streamed(monkeypatch)
+
+    assert restore(cfg, ALPHA_UUID, stamp) == 0
+    cmd = captured[0]
+    assert cmd[cmd.index("--name") + 1] == "vm-0"
+    assert cmd[cmd.index("-o") + 1] == str(disk_path.parent)
+    assert not disk_path.exists()
 
 
 def test_restore_overwrite_refuses_if_destroy_leaves_vm_running(
@@ -140,6 +224,7 @@ def test_restore_uses_cross_host_chain(tmp_path: Path, monkeypatch: pytest.Monke
     stamp = _stamp("2026-05", 7, 10)
     _seed_chain(cfg, {"2026-05": [stamp]}, host_id="other-host")
     _stub_no_local_vm(monkeypatch)
+    _stub_define(monkeypatch)
     captured = _capture_streamed(monkeypatch)
 
     assert restore(cfg, ALPHA_UUID, stamp) == 0
@@ -187,6 +272,7 @@ def test_restore_legacy_chain_without_runs_jsonl(
     chain_dir.mkdir(parents=True)
     (chain_dir / "vda.full.data").write_bytes(b"x")
     _stub_no_local_vm(monkeypatch)
+    _stub_define(monkeypatch)
     captured = _capture_streamed(monkeypatch)
 
     assert restore(cfg, ALPHA_UUID, stamp) == 0

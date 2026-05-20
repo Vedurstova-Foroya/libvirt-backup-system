@@ -38,6 +38,7 @@ def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         "libvirt_backup_system.restore.run_streamed",
         lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
     )
+    monkeypatch.setattr("libvirt_backup_system.restore.define_restored_domain", lambda *_args: True)
     return captured
 
 

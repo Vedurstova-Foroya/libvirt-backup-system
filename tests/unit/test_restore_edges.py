@@ -33,6 +33,14 @@ def _seed_chain(cfg: Config, stamp: str) -> Path:
     return chain_dir
 
 
+def _write_vmconfig(chain_dir: Path, disk_paths: list[Path]) -> None:
+    disks = "\n".join(f"    <disk type='file' device='disk'><source file='{path}'/></disk>" for path in disk_paths)
+    chain_dir.joinpath("vmconfig.virtnbdbackup.0.xml").write_text(
+        f"<domain><name>{ALPHA_NAME}</name><devices>\n{disks}\n</devices></domain>\n",
+        encoding="utf-8",
+    )
+
+
 def _restore_config(cfg: Config, tmp_path: Path) -> Config:
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
     cfg.values["HOST_ID"] = "host"
@@ -78,6 +86,7 @@ def test_restore_overwrite_destroy_command_error_is_tolerated(
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr("libvirt_backup_system.restore.run", fake)
+    monkeypatch.setattr("libvirt_backup_system.restore.define_restored_domain", lambda *_args: True)
     monkeypatch.setattr(
         "libvirt_backup_system.restore.run_streamed",
         lambda args: CommandResult(args, 0, "", ""),
@@ -262,3 +271,25 @@ def test_restore_overwrite_virtnbdrestore_failure_returns_one(
     monkeypatch.setattr("libvirt_backup_system.restore.run_streamed", fail)
     assert restore(cfg, ALPHA_UUID, stamp) == 1
     assert "restore failed" in capsys.readouterr().err
+
+
+def test_restore_overwrite_refuses_when_existing_disk_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _restore_config(backup_config, tmp_path)
+    stamp = "20260507T100000"
+    chain_dir = _seed_chain(cfg, stamp)
+    disk_dir = tmp_path / "libvirt-images"
+    disk_dir.mkdir()
+    missing = disk_dir / "missing.qcow2"
+    blocked = disk_dir / "blocked.qcow2"
+    blocked.mkdir()
+    _write_vmconfig(chain_dir, [missing, blocked])
+    monkeypatch.setattr("libvirt_backup_system.restore.run", _virsh_local_vm())
+    monkeypatch.setattr(
+        "libvirt_backup_system.restore.run_streamed",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not restore when old disk removal fails")),
+    )
+
+    assert restore(cfg, ALPHA_UUID, stamp) == 1
+    assert "could not remove existing disk file" in capsys.readouterr().err

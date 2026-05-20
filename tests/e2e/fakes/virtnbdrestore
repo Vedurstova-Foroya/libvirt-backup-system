@@ -19,6 +19,8 @@ parser.add_argument("-a", "--action", default="restore", choices=("dump", "resto
 # e2e covers only verify mode and the whole at→until composition path goes
 # untested outside the optional nested-KVM case.
 parser.add_argument("-u", "--until", dest="until", default=None)
+parser.add_argument("-C", "--config-file", dest="config_file", default="vmconfig.xml")
+parser.add_argument("--name", dest="name", default="restored-vm")
 args, _ = parser.parse_known_args()
 
 source = pathlib.Path(args.i)
@@ -76,6 +78,9 @@ if mode == "restore":
     }
     (output / "restore-receipt.json").write_text(
         json.dumps(receipt, sort_keys=True), encoding="utf-8"
+    )
+    (output / pathlib.Path(args.config_file).name).write_text(
+        f"<domain><name>{args.name}</name><devices /></domain>\n", encoding="utf-8"
     )
     target = args.until or "<chain-end>"
     print(f"restored from {source} to {output} (until={target})")

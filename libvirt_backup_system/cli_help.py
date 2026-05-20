@@ -69,18 +69,21 @@ What action is chosen:
              shutdown fails.
 
   TURNKEY    Anything else: cross-host recovery, or the local VM no longer
-             exists. The backup is staged under
-             /var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/ and
-             ``virtnbdrestore -D`` registers the domain in libvirt using the
-             XML stored inside the backup. The recovered VM is one
-             ``virsh start`` away from booting.
+             exists. If the backup XML records file-backed disks in one
+             directory, restored disks are written there; otherwise the backup
+             is staged under
+             /var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/.
+             The restored XML is adjusted back to the original VM name and UUID
+             before ``virsh define``. The recovered VM is one ``virsh start``
+             away from booting.
 
 What the underlying command runs:
   Both modes invoke
-    virtnbdrestore -a restore -i <chain> -o <staging> -u <checkpoint> -D
+    virtnbdrestore -a restore -i <chain> -o <output> -u <checkpoint> --name <vm> -c -C <xml>
   with the checkpoint resolved by exact timestamp match against the chain's
   runs.jsonl. Legacy chains predating runs.jsonl omit ``-u`` and replay end-
-  to-end.
+  to-end. By default restore prints only summary success/error events; pass
+  ``-v``/``--verbose`` to stream the full virtnbdrestore output.
 
 Safety guarantees:
   * VM_BLACKLIST is ignored: blacklisting scopes to *taking* new backups, not

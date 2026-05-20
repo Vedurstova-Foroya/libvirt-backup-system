@@ -7,7 +7,9 @@ sudo libvirt-backup-system list-restore-points
 sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 ```
 
-`list-restore-points` prints every recorded run across all hosts and VMs; the first two columns are the UUID and the per-run timestamp. `restore` looks the pair up, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <staging> --until <checkpoint> -D` against the matching chain. The `-D` flag asks `virtnbdrestore` to redefine the domain in libvirt; same-host restores destroy and undefine the existing VM first.
+`list-restore-points` prints every recorded run across all hosts and VMs; the first two columns are the UUID and the per-run timestamp. `restore` looks the pair up, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <output-dir> --until <checkpoint> --name <vm-name> -D` against the matching chain. The output directory is the original disk directory when the backup XML has one safe file-backed disk directory, otherwise a private staging directory is used. The `-D` flag asks `virtnbdrestore` to redefine the domain in libvirt; same-host restores destroy and undefine the existing VM first.
+
+The wrapper is quiet by default: it captures virtnbdrestore's detailed output and prints only summary success/error events. Use `sudo libvirt-backup-system restore --verbose ...` when you need the full virtnbdrestore stream.
 
 This page covers the manual procedure for situations where the source backup must first be staged onto local storage (e.g. NFS read-only, off-host recovery), or where the operator needs full control over each step.
 

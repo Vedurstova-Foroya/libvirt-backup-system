@@ -63,7 +63,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
     assert main(["verify", "--vm", "alpha"]) == 0
 
-    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm_uuid, timestamp: 4)
+    monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm_uuid, timestamp, *, verbose=False: 4)
     assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 4
 
 

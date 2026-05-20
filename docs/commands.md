@@ -120,9 +120,11 @@ sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 sudo libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 20260507T101112
 ```
 
-There are no other flags: the timestamp is the exact per-run target (no rounding, no closest-match), the staging directory lives under `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`, and the VM name/disks come from the backup's domain XML.
+There are no other flags: the timestamp is the exact per-run target (no rounding, no closest-match). When the backup XML records file-backed disks in a single directory, restored disks are written back to that original disk directory and the VM is defined with the original VM name. Legacy or unsupported layouts fall back to a staging directory under `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`.
 
-Both modes call `virtnbdrestore -a restore -i <chain> -o <staging> [-u <checkpoint>] -D`. The `-u` argument is omitted for legacy chains (no `runs.jsonl`); for modern chains the checkpoint is looked up by the exact timestamp the operator copied from `list-restore-points`. The `-D` flag asks `virtnbdrestore` to register the domain in libvirt using the XML stored in the backup so the recovered VM is one `virsh start` away from booting.
+Both modes call `virtnbdrestore -a restore -i <chain> -o <output-dir> [-u <checkpoint>] [--name <vm-name>] -D`. The `-u` argument is omitted for legacy chains (no `runs.jsonl`); for modern chains the checkpoint is looked up by the exact timestamp the operator copied from `list-restore-points`. The `--name` argument preserves the backed-up VM name instead of virtnbdrestore's default `restore_` prefix. The `-D` flag asks `virtnbdrestore` to register the domain in libvirt using the XML stored in the backup so the recovered VM is one `virsh start` away from booting.
+
+By default, restore captures virtnbdrestore's detailed output and prints only summary success/error events. Pass `-v` or `--verbose` to stream the full virtnbdrestore output while the restore runs.
 
 Poisoned chains (those flagged by the backup orchestrator as having a half-written incremental) are refused outright; the operator must either fix the chain or pick a different timestamp.
 
@@ -151,7 +153,7 @@ A new chain (a new full) is started when any of these happen:
 - The VM's libvirt XML fingerprint changes (e.g. disk added).
 - The previous chain dir was deleted out-of-band.
 
-`restore` selects the chain from whichever host directory under `BACKUP_PATH` contains a run record (or, for legacy chains, a chain dir) whose timestamp equals the argument. Inside the chain it picks the recorded checkpoint and passes `virtnbdrestore -a restore -i <chain-dir> -o <staging> --until <checkpoint> -D`, so the replay stops exactly at the requested run and libvirt is left with a redefined domain pointing at the restored disks. Legacy chains without `runs.jsonl` omit `--until` and replay end-to-end.
+`restore` selects the chain from whichever host directory under `BACKUP_PATH` contains a run record (or, for legacy chains, a chain dir) whose timestamp equals the argument. Inside the chain it picks the recorded checkpoint and passes `virtnbdrestore -a restore -i <chain-dir> -o <output-dir> --until <checkpoint> --name <vm-name> -D`, so the replay stops exactly at the requested run and libvirt is left with a redefined domain pointing at the restored disks. Legacy chains without `runs.jsonl` omit `--until` and replay end-to-end.
 
 The restore command holds the same run-lock as `run` to avoid reading a chain dir that a concurrent backup is still writing into. See [Manual restore process](manual-restore.md) for the lower-level recovery procedure (useful when the source backup must first be staged onto local storage).
 
