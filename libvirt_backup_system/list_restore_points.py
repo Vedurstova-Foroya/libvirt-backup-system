@@ -39,10 +39,6 @@ class BackupRow:
     chain_dir: Path
     checkpoint: str | None  # None for legacy chains restored at chain-end
 
-    @property
-    def sort_key(self) -> tuple[str, str, str]:
-        return (self.host_id, self.vm_uuid, self.timestamp)
-
 
 def _parse_chain_stamp(name: str) -> dt.datetime | None:
     if not stamp_is_safe(name):
@@ -207,7 +203,14 @@ def enumerate_backups(config: Config, *, vm_uuid: str | None = None) -> list[Bac
                 if not subpath_is_safe(backup_path, chain_dir):
                     continue
                 rows.extend(_rows_for_chain(host_dir.name, vm_dir.name, month, chain_id, chain_dir))
-    rows.sort(key=lambda row: row.sort_key)
+    # Two-stage stable sort: descend by timestamp first, then stably sort by
+    # (host_id, vm_uuid). Python's stable sort preserves the per-VM newest-
+    # first ordering established by the first pass, while the second pass
+    # keeps each VM's restore points grouped together in the listing. The
+    # fish completion menu reads this output, so the operator sees the most
+    # recent restore point at the top of the menu without an extra sort -r.
+    rows.sort(key=lambda row: row.timestamp, reverse=True)
+    rows.sort(key=lambda row: (row.host_id, row.vm_uuid))
     return rows
 
 

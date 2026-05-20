@@ -12,6 +12,7 @@ def _patch_prefixed_to_tmp(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.fish_completion.prefixed", fake_prefixed)
 
 
 def _fake_config_factory(tmp_path: Path) -> object:

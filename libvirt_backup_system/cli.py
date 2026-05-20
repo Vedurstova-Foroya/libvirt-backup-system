@@ -6,6 +6,7 @@ import json
 import sys
 import traceback
 
+from . import cli_help
 from .backup import current_month, run_backups, verify
 from .config import Config
 from .doctor import doctor
@@ -22,50 +23,113 @@ from .systemd_units import dispatch_via_systemd, status
 from .vms import list_vms
 
 
+def _add_subparser(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],  # pyright: ignore[reportPrivateUsage]
+    name: str,
+    *,
+    help_text: str,
+    description: str | None = None,
+    aliases: list[str] | None = None,
+) -> argparse.ArgumentParser:
+    return sub.add_parser(
+        name,
+        help=help_text,
+        description=description or help_text,
+        aliases=aliases or [],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="libvirt-backup-system")
+    parser = argparse.ArgumentParser(
+        prog="libvirt-backup-system",
+        description=cli_help.PROGRAM_DESCRIPTION,
+        epilog=cli_help.PROGRAM_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--config",
+        metavar="PATH",
         help=(
-            "Path to libvirt-backup.env. Supplying this flag forces ``run``/"
-            "``check`` to execute in-process (the installed systemd unit "
-            "bakes in a fixed config path, so honoring a different path means "
-            "skipping systemd dispatch)."
+            "Path to libvirt-backup.env. Supplying this flag forces ``run``/``check`` to "
+            "execute in-process (the installed systemd unit bakes in a fixed config path, "
+            "so honoring a different path means skipping systemd dispatch)."
         ),
     )
-    parser.add_argument("--prefix", help="Root prefix for install paths")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--prefix",
+        metavar="DIR",
+        help=(
+            "Root prefix for every install/runtime path. Defaults to / on production "
+            "hosts and to a per-test tmpdir under the unit suite. Set this when you want "
+            "to install into a sandbox instead of the real filesystem."
+        ),
+    )
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        title="subcommands",
+        metavar="<subcommand>",
+    )
 
-    sub.add_parser("install")
+    _add_subparser(sub, "install", help_text=cli_help.INSTALL_HELP, description=cli_help.INSTALL_DESCRIPTION)
 
-    uninstall_parser = sub.add_parser("uninstall")
-    uninstall_parser.add_argument("--purge-config", action="store_true")
-    uninstall_parser.add_argument("--purge-state", action="store_true")
-    uninstall_parser.add_argument("--purge-logs", action="store_true")
+    uninstall_parser = _add_subparser(
+        sub, "uninstall", help_text=cli_help.UNINSTALL_HELP, description=cli_help.UNINSTALL_DESCRIPTION
+    )
+    uninstall_parser.add_argument(
+        "--purge-config", action="store_true", help="Also remove /etc/libvirt-backup-system/libvirt-backup.env."
+    )
+    uninstall_parser.add_argument(
+        "--purge-state", action="store_true", help="Also remove /var/lib/libvirt-backup-system/ (lock, host-id stamp)."
+    )
+    uninstall_parser.add_argument(
+        "--purge-logs", action="store_true", help="Also remove /var/log/libvirt-backup-system/."
+    )
 
-    sub.add_parser("check", aliases=["preflight"])
-    sub.add_parser("doctor")
-    sub.add_parser("run")
-    sub.add_parser("start")
-    sub.add_parser("status")
+    _add_subparser(
+        sub, "check", help_text=cli_help.CHECK_HELP, description=cli_help.CHECK_DESCRIPTION, aliases=["preflight"]
+    )
+    _add_subparser(sub, "doctor", help_text=cli_help.DOCTOR_HELP, description=cli_help.DOCTOR_DESCRIPTION)
+    _add_subparser(sub, "run", help_text=cli_help.RUN_HELP, description=cli_help.RUN_DESCRIPTION)
+    _add_subparser(sub, "start", help_text=cli_help.START_HELP, description=cli_help.START_DESCRIPTION)
+    _add_subparser(sub, "status", help_text=cli_help.STATUS_HELP)
 
-    list_parser = sub.add_parser("list-vms")
-    list_parser.add_argument("--json", action="store_true")
-    list_parser.add_argument("--include-blacklisted", action="store_true")
+    list_parser = _add_subparser(
+        sub, "list-vms", help_text=cli_help.LIST_VMS_HELP, description=cli_help.LIST_VMS_DESCRIPTION
+    )
+    list_parser.add_argument("--json", action="store_true", help="Emit JSON array instead of tab-separated rows.")
+    list_parser.add_argument(
+        "--include-blacklisted", action="store_true", help="Also list VMs filtered out by VM_BLACKLIST."
+    )
 
-    verify_parser = sub.add_parser("verify")
-    verify_parser.add_argument("--vm")
+    verify_parser = _add_subparser(
+        sub, "verify", help_text=cli_help.VERIFY_HELP, description=cli_help.VERIFY_DESCRIPTION
+    )
+    verify_parser.add_argument("--vm", metavar="NAME_OR_UUID", help="Restrict verification to one VM by name or UUID.")
 
-    sub.add_parser("list-restore-points")
+    _add_subparser(
+        sub,
+        "list-restore-points",
+        help_text=cli_help.LIST_RESTORE_POINTS_HELP,
+        description=cli_help.LIST_RESTORE_POINTS_DESCRIPTION,
+    )
 
-    restore_parser = sub.add_parser("restore")
+    restore_parser = _add_subparser(
+        sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION
+    )
     restore_parser.add_argument(
         "vm_uuid",
-        help="VM libvirt UUID copied from the first column of list-restore-points output.",
+        metavar="VM_UUID",
+        help="VM libvirt UUID copied verbatim from the first column of list-restore-points output.",
     )
     restore_parser.add_argument(
         "timestamp",
-        help="Per-run timestamp (YYYYMMDDTHHMMSS) copied from the second column of list-restore-points output.",
+        metavar="TIMESTAMP",
+        help=(
+            "Per-run timestamp (YYYYMMDDTHHMMSS) copied verbatim from the second column of "
+            "list-restore-points output. Exact match against the chain's runs.jsonl."
+        ),
     )
 
     return parser

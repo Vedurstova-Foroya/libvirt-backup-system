@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from .config import Config, prefixed
+from .fish_completion import remove_fish_completion
 from .logging_json import event
 
 
@@ -23,6 +24,7 @@ def remove_installed_files(root: Path) -> bool:
         except (PermissionError, OSError) as exc:
             event("error", "failed to remove file", path=str(path), error=str(exc))
             ok = False
+    ok = remove_fish_completion(root) and ok
     opt_dir = prefixed("/opt/libvirt-backup-system", root)
     if opt_dir.exists():
         try:

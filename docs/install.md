@@ -68,12 +68,25 @@ The installer creates:
 - `/opt/libvirt-backup-system`
 - `/usr/local/bin/libvirt-backup-system`
 - `/etc/libvirt-backup-system/libvirt-backup.env`
+- `/usr/share/fish/vendor_completions.d/libvirt-backup-system.fish`
 
 When `BACKUP_PATH` is configured, it also creates:
 
 - `/etc/systemd/system/libvirt-backup-system.service`
 - `/etc/systemd/system/libvirt-backup-system-check.service`
 - `/etc/systemd/system/libvirt-backup-system.timer`
+
+### Shell completion
+
+The fish completion file is auto-installed by `install` and removed by `uninstall`; fish picks it up from `/usr/share/fish/vendor_completions.d/` without any `source` line in `config.fish`. TAB at any subcommand position will offer the available subcommands and flags. The completion file ships as package data inside `libvirt-backup-system` itself, so the install path needs no PyPI access — it is a plain file copy.
+
+If fish is not installed the file is still written; it just sits unused until the operator installs fish.
+
+#### Dynamic restore completion
+
+`sudo libvirt-backup-system restore <TAB>` queries `list-restore-points` and suggests the available VM UUIDs (with the VM name in the description). After picking a UUID, a second `<TAB>` lists the timestamps recorded for that VM, each labelled with kind (full/inc) and month so the operator can pick the right run from the menu.
+
+The query runs `sudo -n libvirt-backup-system list-restore-points` so the completion never prompts for a password mid-TAB: it relies on the sysadmin's active sudo token (the same token the operator used to type `sudo libvirt-backup-system restore` in the first place, normally cached by sudo for 5–15 minutes). When the token has lapsed the completion silently falls back to a non-sudo invocation; on a default install where `/etc/libvirt-backup-system/libvirt-backup.env` is mode `0600 root:root` that fallback produces no rows, and the operator either re-runs `sudo true` to refresh the token or copy-pastes from a `sudo libvirt-backup-system list-restore-points` run instead.
 
 The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`. `install` writes the units when `BACKUP_PATH` is already configured, but does not enable the timer. `start` re-renders the units from the current environment file, reloads systemd, and enables/starts the timer after `check` has passed. Activating the timer does not run a backup immediately; the next backup waits for the configured schedule unless you run `sudo libvirt-backup-system run`.
 

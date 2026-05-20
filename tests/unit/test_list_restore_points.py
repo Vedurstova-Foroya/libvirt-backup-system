@@ -49,7 +49,9 @@ def test_enumerate_emits_one_row_per_run_record(backup_config: Config) -> None:
     _append_run(chain_dir, "20260503T100000", "virtnbdbackup.2")
 
     rows = enumerate_backups(cfg)
-    assert [r.timestamp for r in rows] == ["20260501T080000", "20260502T120000", "20260503T100000"]
+    # Newest restore point first: the typical "restore to the latest run" intent
+    # lands at the top of both the listing and the fish completion menu.
+    assert [r.timestamp for r in rows] == ["20260503T100000", "20260502T120000", "20260501T080000"]
     assert {r.checkpoint for r in rows} == {"virtnbdbackup.0", "virtnbdbackup.1", "virtnbdbackup.2"}
     assert all(r.vm_name == "alpha" for r in rows)
     assert all(r.host_id == "host" for r in rows)
@@ -71,13 +73,35 @@ def test_enumerate_legacy_chain_emits_chain_end_row(backup_config: Config) -> No
 
 def test_enumerate_walks_across_host_directories(backup_config: Config) -> None:
     # Cross-host visibility: a recovery host can list backups taken on another
-    # host. Rows must be sorted by (host_id, vm_uuid, timestamp).
+    # host. The outer sort is by (host_id, vm_uuid) so each VM's backups stay
+    # grouped together; within a group timestamps come newest-first.
     cfg = _no_mount(backup_config)
     _seed_running_chain(cfg, "host-a", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
     _seed_running_chain(cfg, "host-b", BETA_UUID, "beta", "2026-05", "20260502T080000")
 
     rows = enumerate_backups(cfg)
     assert [r.host_id for r in rows] == ["host-a", "host-b"]
+
+
+def test_enumerate_newest_first_within_vm_grouping(backup_config: Config) -> None:
+    # Two VMs with two runs each. The outer sort groups by (host, vm) but
+    # within each VM the most recent run lands first, so a stable sort over a
+    # mixed-VM tree keeps each VM's block intact in newest-first order.
+    cfg = _no_mount(backup_config)
+    alpha_chain = _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
+    _append_run(alpha_chain, "20260501T080000", "virtnbdbackup.0")
+    _append_run(alpha_chain, "20260503T080000", "virtnbdbackup.1")
+    beta_chain = _seed_running_chain(cfg, "host", BETA_UUID, "beta", "2026-05", "20260502T080000")
+    _append_run(beta_chain, "20260502T080000", "virtnbdbackup.0")
+    _append_run(beta_chain, "20260504T080000", "virtnbdbackup.1")
+
+    rows = enumerate_backups(cfg)
+    assert [(r.vm_uuid, r.timestamp) for r in rows] == [
+        (ALPHA_UUID, "20260503T080000"),
+        (ALPHA_UUID, "20260501T080000"),
+        (BETA_UUID, "20260504T080000"),
+        (BETA_UUID, "20260502T080000"),
+    ]
 
 
 def test_enumerate_filters_to_vm_uuid(backup_config: Config) -> None:

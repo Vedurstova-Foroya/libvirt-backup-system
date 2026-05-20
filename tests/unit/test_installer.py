@@ -57,10 +57,13 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     assert "BACKUP_PATH=\n" in config_path.read_text(encoding="utf-8")
     assert not service_path.exists()
 
+    fish_path = tmp_path / "usr/share/fish/vendor_completions.d/libvirt-backup-system.fish"
+    assert fish_path.is_file()
     (tmp_path / "var/lib/libvirt-backup-system").mkdir(parents=True, exist_ok=True)
     (tmp_path / "var/log/libvirt-backup-system").mkdir(parents=True)
     assert uninstall(str(tmp_path)) == 0
     assert not bin_path.exists()
+    assert not fish_path.exists()
     assert config_path.exists()
 
     config_path.write_text(

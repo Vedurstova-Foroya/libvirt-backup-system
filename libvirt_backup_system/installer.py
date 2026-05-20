@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import Config, default_config_path, prefixed, root_prefix
+from .fish_completion import install_fish_completion
 from .installer_uninstall import purge_paths, remove_installed_files, resolve_purge_paths
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
@@ -208,6 +209,7 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     opt_dir.mkdir(parents=True, exist_ok=True)
     _install_package(package_src, package_dst)
     _write_wrapper(bin_path, root, opt_dir)
+    install_fish_completion(root)
 
     resolved_config.parent.mkdir(parents=True, exist_ok=True)
     if not resolved_config.exists():

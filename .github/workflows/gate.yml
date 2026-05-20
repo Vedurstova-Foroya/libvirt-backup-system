@@ -29,5 +29,13 @@ jobs:
       - name: Install Python toolchain
         run: uv python install 3.12
 
+      - name: Install fish
+        # The fish completion dynamic-suggestion tests shell out to ``fish``
+        # to exercise the awk pipelines in
+        # libvirt_backup_system/data/libvirt-backup-system.fish. Without fish
+        # those tests skip (still safe) but we install it here so the gate
+        # actually verifies the completion logic on every push.
+        run: sudo apt-get update && sudo apt-get install -y fish
+
       - name: Run gates
         run: uv run --locked --extra dev python -m tools.gates

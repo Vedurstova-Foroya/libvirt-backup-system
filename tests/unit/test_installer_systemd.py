@@ -226,6 +226,7 @@ def test_uninstall_is_idempotent_when_units_are_absent(tmp_path: Path, monkeypat
     monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
+    monkeypatch.setattr("libvirt_backup_system.fish_completion.prefixed", fake_prefixed)
     monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
     monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
