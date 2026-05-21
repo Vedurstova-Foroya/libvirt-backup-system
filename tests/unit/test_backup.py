@@ -10,6 +10,7 @@ each file stays under the project's 300-LOC ceiling.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,6 +27,24 @@ from libvirt_backup_system.vm_snapshot import DiskTarget, FrozenSnapshot
 from libvirt_backup_system.vms import VM
 
 from .conftest import ALPHA_UUID
+
+
+def _find_event(captured: str, message: str) -> dict[str, Any]:
+    """Locate a structured ``event`` record by message in captured stdout/stderr.
+
+    ``logging_json.event`` writes one JSON document per line; tests assert
+    on the parsed dict rather than substring-matching the message and the
+    field side-by-side. Raises ``AssertionError`` so test failures point at
+    the missing event rather than a ``KeyError`` later in the call chain.
+    """
+    for line in captured.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("message") == message:
+            return dict(record)
+    raise AssertionError(f"no event with message {message!r} in: {captured!r}")
 
 
 @dataclass
@@ -56,10 +75,12 @@ class FakeSnapper:
         *,
         quiesced: bool = True,
         commit_error: CommandError | None = None,
+        stream_error: BaseException | None = None,
     ) -> None:
         self.disks = disks
         self.quiesced = quiesced
         self.commit_error = commit_error
+        self.stream_error = stream_error
         self.list_disks_calls: list[str] = []
         self.freeze_calls: list[tuple[str, list[DiskTarget]]] = []
         self.stream_calls: list[Path] = []
@@ -82,6 +103,13 @@ class FakeSnapper:
     @contextmanager
     def stream_disk(self, base: Path) -> Iterator[_FakeUpstream]:
         self.stream_calls.append(base)
+        if self.stream_error is not None:
+            # Raise *after* yielding so the caller's ``with`` block enters
+            # before the failure, mirroring how a ``qemu-nbd``/``nbdcopy``
+            # pipeline dies mid-stream. The orchestrator must still run
+            # ``commit`` to fold the overlay back into the live disk.
+            yield _FakeUpstream(args=["qemu-nbd", str(base)])
+            raise self.stream_error
         yield _FakeUpstream(args=["qemu-nbd", str(base)])
 
     def commit(self, snapshot: FrozenSnapshot) -> None:
@@ -162,28 +190,7 @@ def _install_stubs(
     monkeypatch.setattr(backup, "runtime_backup_path_ok", fake_mount)
     monkeypatch.setattr(kopia_snapshots, "snapshot_create_stdin", default_create_stdin)
     monkeypatch.setattr(kopia_snapshots, "snapshot_create_path", default_create_path)
-    # The default ``LibvirtSnapshotter`` constructed inside ``_stream_single_disk``
-    # would shell out to virsh/qemu-nbd. Substitute a no-op stand-in whose
-    # ``stream_disk`` simply yields a fake upstream so the kopia stub sees the
-    # exact object backup.py would have passed in.
-    monkeypatch.setattr(backup, "LibvirtSnapshotter", _NoopLibvirtSnapshotter)
     return captured
-
-
-class _NoopLibvirtSnapshotter:
-    """Replacement for ``LibvirtSnapshotter`` used in ``_stream_single_disk``.
-
-    The real implementation spawns ``qemu-nbd`` + ``nbdcopy``; here we only
-    need ``stream_disk`` to provide an iterable context manager that yields
-    something the patched ``snapshot_create_stdin`` accepts.
-    """
-
-    def __init__(self, *, libvirt_uri: str) -> None:
-        self.libvirt_uri = libvirt_uri
-
-    @contextmanager
-    def stream_disk(self, base: Path) -> Iterator[_FakeUpstream]:
-        yield _FakeUpstream(args=["nbdcopy", str(base)])
 
 
 def test_current_month_uses_provided_datetime() -> None:
@@ -201,17 +208,19 @@ def test_timestamp_wraps_utc_timestamp() -> None:
 
 
 def test_backup_vm_happy_path_quiesces_and_streams_each_disk(
-    monkeypatch: pytest.MonkeyPatch, backup_config: Config
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
     disk_entries = [_disk_entry("vda", "/img/vda.qcow2"), _disk_entry("vdb", "/img/vdb.qcow2")]
     captured = _install_stubs(monkeypatch, disks=disk_entries, virtual_size=4096)
     snapper = FakeSnapper(disks=[_disk_target("vda", "/img/vda.qcow2"), _disk_target("vdb", "/img/vdb.qcow2")])
     assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is True
     assert snapper.freeze_calls and snapper.commit_calls
-    # ``_stream_single_disk`` builds a *fresh* ``LibvirtSnapshotter`` for
-    # the actual streaming (patched here to the no-op stand-in); the snapper
-    # passed to ``backup_vm`` only owns ``list_disks`` / ``freeze`` / ``commit``.
+    # The injected snapper is the *same* object every disk streams through;
+    # backup.py no longer constructs a fresh ``LibvirtSnapshotter`` inside
+    # ``_stream_single_disk``. The fake records each stream call so we can
+    # pin the architectural contract.
     assert snapper.list_disks_calls == ["alpha"]
+    assert sorted(p.name for p in snapper.stream_calls) == ["vda.qcow2", "vdb.qcow2"]
     stdin_targets = sorted(call["stdin_file"] for call in captured["create_stdin"])
     assert stdin_targets == ["vda.raw", "vdb.raw"]
     # Two disk snapshots + one meta snapshot; the meta carries the kind tag.
@@ -219,6 +228,10 @@ def test_backup_vm_happy_path_quiesces_and_streams_each_disk(
     assert captured["create_path"][0]["tags"]["kind"] == "meta"
     # Mount check fires at preflight and again post-meta.
     assert len(captured["mount_checks"]) == 2
+    # The completion event must surface the quiesce outcome so operators can
+    # grep run logs for VMs that fell back to crash-consistent snapshots.
+    completion = _find_event(capsys.readouterr().out, "backup completed")
+    assert completion["consistency"] == "quiesced"
 
 
 def test_backup_vm_rejects_unsafe_name(backup_config: Config) -> None:
@@ -260,9 +273,9 @@ def test_backup_vm_uses_default_snapper_when_none(monkeypatch: pytest.MonkeyPatc
             instantiated.append(libvirt_uri)
             super().__init__(disks=[_disk_target()])
 
-    # backup.LibvirtSnapshotter is already replaced with the no-op; we only
-    # need a Snapshotter-shaped class for the ``snapper or LibvirtSnapshotter``
-    # fallback to construct on its own.
+    # When no snapper is injected, ``backup_vm`` constructs one from
+    # ``backup.LibvirtSnapshotter``; the patched ``FakeDefault`` exercises
+    # that fallback while keeping the streaming path off virsh/qemu-nbd.
     monkeypatch.setattr(backup, "LibvirtSnapshotter", FakeDefault)
     assert backup.backup_vm(backup_config, _vm()) is True
     assert instantiated  # at least the orchestrator's fallback used the default

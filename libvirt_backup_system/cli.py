@@ -6,11 +6,13 @@ import json
 import sys
 import traceback
 
-from . import cli_help
 from .backup import run_backups
+from .cli_parser import build_parser
+from .cli_parser import password_spec_from_args as _password_spec_from_args
 from .config import Config
 from .doctor import doctor
 from .installer import install, uninstall
+from .installer_password import change_password as _change_password_impl
 from .list_restore_points import list_restore_points
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
@@ -22,127 +24,7 @@ from .systemd_units import dispatch_via_systemd, status
 from .verify import verify
 from .vms import list_vms
 
-
-def _add_subparser(
-    sub: argparse._SubParsersAction[argparse.ArgumentParser],  # pyright: ignore[reportPrivateUsage]
-    name: str,
-    *,
-    help_text: str,
-    description: str | None = None,
-    aliases: list[str] | None = None,
-) -> argparse.ArgumentParser:
-    return sub.add_parser(
-        name,
-        help=help_text,
-        description=description or help_text,
-        aliases=aliases or [],
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="libvirt-backup-system",
-        description=cli_help.PROGRAM_DESCRIPTION,
-        epilog=cli_help.PROGRAM_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--config",
-        metavar="PATH",
-        help=(
-            "Path to libvirt-backup.env. Supplying this flag forces ``run``/``check`` to "
-            "execute in-process (the installed systemd unit bakes in a fixed config path, "
-            "so honoring a different path means skipping systemd dispatch)."
-        ),
-    )
-    parser.add_argument(
-        "--prefix",
-        metavar="DIR",
-        help=(
-            "Root prefix for every install/runtime path. Defaults to / on production "
-            "hosts and to a per-test tmpdir under the unit suite. Set this when you want "
-            "to install into a sandbox instead of the real filesystem."
-        ),
-    )
-    sub = parser.add_subparsers(
-        dest="command",
-        required=True,
-        title="subcommands",
-        metavar="<subcommand>",
-    )
-
-    _add_subparser(sub, "install", help_text=cli_help.INSTALL_HELP, description=cli_help.INSTALL_DESCRIPTION)
-
-    uninstall_parser = _add_subparser(
-        sub, "uninstall", help_text=cli_help.UNINSTALL_HELP, description=cli_help.UNINSTALL_DESCRIPTION
-    )
-    uninstall_parser.add_argument(
-        "--purge-config", action="store_true", help="Also remove /etc/libvirt-backup-system/libvirt-backup.env."
-    )
-    uninstall_parser.add_argument(
-        "--purge-state", action="store_true", help="Also remove /var/lib/libvirt-backup-system/ (lock, host-id stamp)."
-    )
-    uninstall_parser.add_argument(
-        "--purge-logs", action="store_true", help="Also remove /var/log/libvirt-backup-system/."
-    )
-
-    _add_subparser(
-        sub, "check", help_text=cli_help.CHECK_HELP, description=cli_help.CHECK_DESCRIPTION, aliases=["preflight"]
-    )
-    _add_subparser(sub, "doctor", help_text=cli_help.DOCTOR_HELP, description=cli_help.DOCTOR_DESCRIPTION)
-    _add_subparser(sub, "run", help_text=cli_help.RUN_HELP, description=cli_help.RUN_DESCRIPTION)
-    _add_subparser(sub, "start", help_text=cli_help.START_HELP, description=cli_help.START_DESCRIPTION)
-    _add_subparser(sub, "status", help_text=cli_help.STATUS_HELP)
-
-    list_parser = _add_subparser(
-        sub, "list-vms", help_text=cli_help.LIST_VMS_HELP, description=cli_help.LIST_VMS_DESCRIPTION
-    )
-    list_parser.add_argument("--json", action="store_true", help="Emit JSON array instead of tab-separated rows.")
-    list_parser.add_argument(
-        "--include-blacklisted", action="store_true", help="Also list VMs filtered out by VM_BLACKLIST."
-    )
-
-    verify_parser = _add_subparser(
-        sub, "verify", help_text=cli_help.VERIFY_HELP, description=cli_help.VERIFY_DESCRIPTION
-    )
-    verify_parser.add_argument(
-        "--include-hosts",
-        metavar="HOST_ID[,HOST_ID...]",
-        help="Comma-separated peer host_ids whose repos to verify in addition to the local repo.",
-    )
-
-    _add_subparser(
-        sub,
-        "list-restore-points",
-        help_text=cli_help.LIST_RESTORE_POINTS_HELP,
-        description=cli_help.LIST_RESTORE_POINTS_DESCRIPTION,
-    )
-
-    restore_parser = _add_subparser(
-        sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION
-    )
-    restore_parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Stream full virtnbdrestore output instead of only summary success/error events.",
-    )
-    restore_parser.add_argument(
-        "vm_uuid",
-        metavar="VM_UUID",
-        help="VM libvirt UUID copied verbatim from the first column of list-restore-points output.",
-    )
-    restore_parser.add_argument(
-        "timestamp",
-        metavar="TIMESTAMP",
-        help=(
-            "Per-run timestamp (YYYYMMDDTHHMMSS) copied verbatim from the second column of "
-            "list-restore-points output. Exact match against the chain's runs.jsonl."
-        ),
-    )
-
-    return parser
+__all__ = ["build_parser", "main"]
 
 
 def _run_command(config: Config) -> int:
@@ -179,13 +61,30 @@ def _list_restore_points_command(config: Config) -> int:
     return list_restore_points(config)
 
 
+def _change_password_command(args: argparse.Namespace) -> int:
+    config = Config.load(config_path=args.config, prefix=args.prefix)
+    spec = _password_spec_from_args(args, prefix="new_")
+    try:
+        with acquire_run_lock(config):
+            return _change_password_impl(config, spec)
+    except LockBusyError as exc:
+        event("error", "another run in progress", lock_path=str(exc.path))
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
         if args.command == "install":
-            return install(args.prefix, config_path=args.config)
+            return install(
+                args.prefix,
+                config_path=args.config,
+                password_spec=_password_spec_from_args(args, prefix=""),
+            )
+        if args.command == "change-password":
+            return _change_password_command(args)
         if args.command == "start":
             return start(args.prefix, config_path=args.config)
         if args.command == "status":

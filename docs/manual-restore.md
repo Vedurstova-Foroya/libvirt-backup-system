@@ -1,60 +1,126 @@
 # Manual restore process
 
-Most operators should use the built-in `list-restore-points` and `restore` subcommands:
+Most operators should use the built-in `list-restore-points` and `restore`
+subcommands:
 
 ```sh
 sudo libvirt-backup-system list-restore-points
 sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 ```
 
-`list-restore-points` prints every recorded run across all hosts and VMs; the first two columns are the UUID and the per-run timestamp. `restore` looks the pair up, holds the same run-lock as `run`, and invokes `virtnbdrestore -a restore -i <chain-dir> -o <output-dir> --until <checkpoint> --name <vm-name> -D` against the matching chain. The output directory is the original disk directory when the backup XML has one safe file-backed disk directory, otherwise a private staging directory is used. The `-D` flag asks `virtnbdrestore` to redefine the domain in libvirt; same-host restores destroy and undefine the existing VM first.
+`list-restore-points` prints every recorded run across every per-host repo
+under `BACKUP_PATH`. The first two columns are the VM UUID and the per-run
+timestamp; copy that pair straight into `restore`. `restore` connects to the
+matching host's kopia repo with the shared password, reads the meta
+snapshot's `manifest.json`, materializes each disk snapshot through
+`qemu-img convert -f raw -O qcow2 -S 4096`, and re-defines the domain.
 
-The wrapper is quiet by default: it captures virtnbdrestore's detailed output and prints only summary success/error events. Use `sudo libvirt-backup-system restore --verbose ...` when you need the full virtnbdrestore stream.
+The wrapper is quiet by default: it prints summary success/error events.
+Use `sudo libvirt-backup-system restore --verbose ...` for per-disk
+progress.
 
-This page covers the manual procedure for situations where the source backup must first be staged onto local storage (e.g. NFS read-only, off-host recovery), or where the operator needs full control over each step.
+This page covers the manual procedure for situations where the operator
+needs full control over each step (off-host recovery onto a freshly
+provisioned KVM host, recovering selected files out of a snapshot without
+defining a VM, debugging a corrupted snapshot, etc).
 
-Backups are stored as:
+## Repo layout
 
-```text
-BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
+Each host writes to its own repo:
+
+```
+BACKUP_PATH/<host-id>/kopia-repo/
+  kopia.repository.f       # repo sentinel
+  _log_*, _v*, indexes/    # kopia internals
+  p<...>/                  # encrypted, deduplicated chunks
 ```
 
-The `<chain-id>` is the timestamp of the first backup in the monthly incremental chain. Running VMs accumulate per-run incrementals into the same chain directory; each run also appends its `{ts, checkpoint}` entry to `runs.jsonl` inside the chain dir (see [Command reference — How chains map to snapshots](commands.md#how-chains-map-to-snapshots) for the exact JSON-line schema). To restore a specific intermediate run by hand, read any line's `checkpoint` field from `runs.jsonl` and pass it to `virtnbdrestore --until <checkpoint>`; without `--until` the whole chain replays.
+All repos share the same password. The password file lives at
+`$KOPIA_PASSWORD_FILE` (default `/etc/libvirt-backup-system/kopia.pw`,
+mode 600 root-owned). See [Kopia operations](kopia.md) for the details on
+repo identity, peer discovery, and password recovery.
 
-## Recovery outline
+## Manual recovery outline
 
-Pick the exact backup snapshot to recover — the chain directory under the desired calendar month:
+Pick the source host's repo on the NFS mount:
 
 ```sh
-SOURCE=/mnt/qnap-backups/myhost/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/2026-05/20260507T023000
+SRC=/mnt/qnap-backups/host-a/kopia-repo
+PW=/etc/libvirt-backup-system/kopia.pw
 ```
 
-Copy it to local storage on the recovery host:
+Connect a local kopia config-file to the repo read-only:
 
 ```sh
-sudo mkdir -p /var/tmp/libvirt-restore/my-vm-backup
-sudo rsync -aH --numeric-ids "$SOURCE"/ /var/tmp/libvirt-restore/my-vm-backup/
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     repository connect filesystem --path "$SRC" --readonly
 ```
 
-Verify the copied backup before restoring from it (`-a` selects the action; `-o` is required even for verify but should point at a separate staging directory so a future upstream change cannot mutate the source backup):
+List the meta snapshots for the VM you want to restore:
 
 ```sh
-sudo mkdir -p /var/tmp/libvirt-restore/verify-staging
-sudo virtnbdrestore -a verify -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/verify-staging
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     snapshot list --all --json --tags=vm-uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa --tags=kind:meta
 ```
 
-Restore into an empty staging directory. `-o` is the restore *target directory* (not an action keyword), and `-D` is an optional boolean flag for registering the VM after restore — omit it unless you want `virtnbdrestore` to redefine the VM:
+Each entry's `id` is a kopia snapshot ID. Pick the one whose `startTime`
+matches the run you want.
+
+Pull the meta snapshot into a staging dir:
 
 ```sh
-sudo mkdir -p /var/tmp/libvirt-restore/my-vm-restored
-sudo virtnbdrestore -a restore -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/my-vm-restored
+sudo mkdir -p /var/tmp/lbs-restore/meta
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     snapshot restore <meta-snap-id> /var/tmp/lbs-restore/meta
+cat /var/tmp/lbs-restore/meta/manifest.json
 ```
 
-To stop replay at an intermediate run, read `runs.jsonl` from the chain dir, pick the `checkpoint` for the timestamp you want, and pass `--until`:
+The manifest names the run id, the disks, and embeds the domain XML.
+For each disk in the manifest, find its disk snapshot via the shared
+`run-id` tag:
 
 ```sh
-cat /var/tmp/libvirt-restore/my-vm-backup/runs.jsonl
-sudo virtnbdrestore -a restore -i /var/tmp/libvirt-restore/my-vm-backup -o /var/tmp/libvirt-restore/my-vm-restored --until virtnbdbackup.3
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     snapshot list --all --json \
+       --tags=run-id:<run-id-from-manifest> \
+       --tags=kind:disk \
+       --tags=disk:vda
 ```
 
-After the restore completes, inspect the restored files, move the disk images to the intended libvirt storage location, define or update the VM using your site’s normal libvirt process, and boot it only after confirming the recovered disks, network identity, and any existing production instance will not conflict.
+Pipe the disk snapshot's `vda.raw` file through `qemu-img convert` to get a
+sparse qcow2 on local storage:
+
+```sh
+sudo mkdir -p /var/tmp/lbs-restore/disks
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     snapshot restore <disk-snap-id>/vda.raw - \
+   | sudo qemu-img convert -f raw -O qcow2 -S 4096 - /var/tmp/lbs-restore/disks/vda.qcow2
+```
+
+Repeat for each disk in the manifest.
+
+To verify a single snapshot before relying on it:
+
+```sh
+sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+     --config-file=/tmp/lbs-manual.config \
+     snapshot verify --max-failures=0 <snap-id>
+```
+
+After the disks are on local storage, move them to the intended libvirt
+storage location, edit the manifest's domain XML to point at the new paths
+(or to renumber NIC MACs / change the network if you are running this side-
+by-side with the original), and `virsh define` the XML.
+
+## When the wrapper is faster
+
+The `restore` subcommand does exactly the steps above with safety rails:
+exclusive run-lock, atomic staging-dir creation, automatic discovery of the
+peer repo, manifest schema validation, sparse-qcow2 conversion, and
+domain redefine. Use this manual procedure only when you genuinely need
+something the wrapper does not do.

@@ -34,3 +34,34 @@ OnCalendar={calendar}
 [Install]
 WantedBy=timers.target
 """
+
+
+UNIT_GENERIC_SERVICE = """[Unit]
+Description={description}
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile={environment_file}
+ExecStart={bin_path} --config {config_arg} {subcommand}
+StateDirectory=libvirt-backup-system
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+"""
+
+
+UNIT_INTERVAL_TIMER = """[Unit]
+Description={description}
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec={interval}
+
+[Install]
+WantedBy=timers.target
+"""

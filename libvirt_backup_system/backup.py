@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import datetime as dt
 import shutil
+import subprocess
 import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 from . import kopia_repo, kopia_snapshots
 from .config import Config
@@ -158,50 +160,78 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
     stamp = utc_timestamp()
     event("info", "backup started", vm=vm.name, run_id=run_id, timestamp=stamp)
     manifest = _build_manifest(config, vm, run_id, stamp)
-    if not _stream_all_disks(config, vm, manifest, run_id, snapper_obj):
+    success, consistency = _stream_all_disks(config, vm, manifest, run_id, snapper_obj)
+    if not success:
         return False
     if not _write_meta_snapshot(config, vm, manifest, run_id):
         return False
     if not runtime_backup_path_ok(config):
         event("error", "backup completed but backup path no longer mounted", vm=vm.name)
         return False
-    event("info", "backup completed", vm=vm.name, run_id=run_id, disks=len(manifest.disks))
+    event(
+        "info",
+        "backup completed",
+        vm=vm.name,
+        run_id=run_id,
+        disks=len(manifest.disks),
+        consistency=consistency,
+    )
     return True
 
 
-def _stream_all_disks(config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter) -> bool:
-    disks = [(disk.target, disk.source_path) for disk in manifest.disks]
+def _stream_all_disks(
+    config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter
+) -> tuple[bool, str]:
+    """Drive freeze → stream each disk → commit, all through the same snapper.
+
+    Returns ``(ok, consistency)`` where ``consistency`` is ``"quiesced"`` when
+    QGA flushed the guest filesystems and ``"crash"`` when the freeze fell back
+    to a crash-consistent snapshot. The flag is sourced from
+    ``FrozenSnapshot.quiesced`` so operators can grep run logs to tell which
+    VMs ran without QGA. ``commit`` is always invoked in the ``finally`` block
+    so an overlay is never left wedged on the running domain even if a stream
+    raises mid-flight.
+    """
     snapper_disks = snapper.list_disks(vm.name)
     frozen = snapper.freeze(vm.name, snapper_disks)
+    consistency = "quiesced" if frozen.quiesced else "crash"
+    ok = True
     try:
         for disk in manifest.disks:
             base = next((d.source for d in snapper_disks if d.target == disk.target), None)
             if base is None:
                 event("error", "missing snapshot base for disk", vm=vm.name, target=disk.target)
-                return False
-            if not _stream_single_disk(config, vm, run_id, disk.target, base):
-                return False
+                ok = False
+                break
+            if not _stream_single_disk(config, vm, run_id, disk.target, base, snapper):
+                ok = False
+                break
     finally:
         try:
             snapper.commit(frozen)
         except CommandError as exc:
             event("error", "snapshot commit failed", vm=vm.name, stderr=exc.result.stderr.strip())
-            return False
-    _ = disks  # disks parameter kept for symmetry; data lives in the manifest
-    return True
+            ok = False
+    return ok, consistency
 
 
-def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: Path) -> bool:
-    snapper = LibvirtSnapshotter(libvirt_uri=config.get("LIBVIRT_URI"))
+def _stream_single_disk(
+    config: Config, vm: VM, run_id: str, target: str, base: Path, snapper: VmSnapshotter
+) -> bool:
     try:
         with snapper.stream_disk(base) as upstream:
+            # The protocol pins ``stream_disk`` to ``AbstractContextManager[object]``
+            # so a future Hyper-V provider isn't forced to yield a ``Popen`` —
+            # the kopia stdin shim still wants the concrete type, so we narrow
+            # at the boundary. Any snapper that yields something else has to
+            # adapt to the same interface ``snapshot_create_stdin`` expects.
             kopia_snapshots.snapshot_create_stdin(
                 config_file=kopia_repo.local_config_file(config),
                 password_file=kopia_repo.password_file_path(config),
                 cache_dir=kopia_repo.cache_dir(config),
                 stdin_file=snapshot_filename_for_target(target),
                 tags=_disk_tags(config, vm, run_id, target),
-                source_stream=upstream,
+                source_stream=cast("subprocess.Popen[bytes] | None", upstream),
                 override_source=_override_source(config, vm.uuid, target),
                 parallelism=_parallelism(config),
             )

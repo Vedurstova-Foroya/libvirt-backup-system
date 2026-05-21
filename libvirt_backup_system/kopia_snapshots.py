@@ -221,7 +221,10 @@ def snapshot_restore_to_stdout(
     """
     env = build_kopia_env(password_file, cache_dir)
     spec = f"{snapshot_id}/{file_in_snapshot}"
-    args = [KOPIA_BINARY, *build_config_args(config_file), "snapshot", "restore", spec, "-"]
+    # ``--shallow=0`` forces a full materialization of the referenced file
+    # in the snapshot rather than a placeholder, matching the plan's
+    # explicit restore command for streaming single-file output.
+    args = [KOPIA_BINARY, *build_config_args(config_file), "snapshot", "restore", "--shallow=0", spec, "-"]
     return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 
 

@@ -21,7 +21,7 @@ from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
 
 from .conftest import ALPHA_UUID, BETA_UUID
-from .test_backup import FakeSnapper, _disk_entry, _disk_target, _install_stubs, _vm
+from .test_backup import FakeSnapper, _disk_entry, _disk_target, _find_event, _install_stubs, _vm
 
 
 def test_stream_disk_failure_returns_false_and_still_commits(
@@ -36,6 +36,45 @@ def test_stream_disk_failure_returns_false_and_still_commits(
     # ``commit`` always runs (it's in the ``finally`` block) so the overlay
     # is folded back even when the disk snapshot bombs.
     assert snapper.commit_calls
+    assert "disk snapshot failed" in capsys.readouterr().err
+
+
+def test_backup_vm_completion_event_marks_crash_consistent_when_quiesce_fails(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Gap B: the per-VM success event carries the quiesce outcome.
+
+    When ``freeze`` falls back to a crash-consistent snapshot (QGA not
+    answering, no guest agent installed, etc.) the ``backup completed``
+    event must surface that fact so operators can grep run logs and tell
+    which VMs need a guest-agent fix before the next backup window.
+    """
+    _install_stubs(monkeypatch)
+    snapper = FakeSnapper(disks=[_disk_target()], quiesced=False)
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is True
+    completion = _find_event(capsys.readouterr().out, "backup completed")
+    assert completion["consistency"] == "crash"
+
+
+def test_backup_vm_runs_commit_even_when_streaming_fails(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Gap D: ``commit`` must run when ``stream_disk`` raises mid-yield.
+
+    The orchestrator's contract is that no overlay is ever left wedged on a
+    running domain — even if the streaming context manager dies inside the
+    ``with`` block, the surrounding ``try/finally`` in ``_stream_all_disks``
+    has to fold the overlay back in. The ``FakeSnapper.stream_disk`` raises
+    a ``CommandError`` *after* yielding, mirroring how a real
+    ``qemu-nbd``/``nbdcopy`` pipeline dies once kopia is already reading.
+    """
+    _install_stubs(monkeypatch)
+    boom = CommandError(CommandResult(["nbdcopy"], 5, "", "broken pipe"))
+    snapper = FakeSnapper(disks=[_disk_target()], stream_error=boom)
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    # ``commit`` ran exactly once despite the streamer raising. The capture
+    # also pins the structured-error log so operators see the disk-level fault.
+    assert len(snapper.commit_calls) == 1
     assert "disk snapshot failed" in capsys.readouterr().err
 
 

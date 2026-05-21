@@ -221,3 +221,26 @@ by the chain directory name."""
 
 
 RESTORE_HELP = "Restore a backup run identified by VM_UUID and TIMESTAMP."
+
+
+CHANGE_PASSWORD_HELP = "Rotate the shared kopia password on the local host."
+CHANGE_PASSWORD_DESCRIPTION = """\
+Rotate the kopia repo password the local host writes to. The same shared
+password lives on every participating host: run this command (with the same
+new value) on each host independently. Order does not matter; each host
+rotates its own local repo and password file.
+
+Pick one of:
+  --new-kopia-password=VALUE         password on the command line (visible to ps/journald)
+  --new-kopia-password-file=PATH     read from file; '-' means stdin
+  --new-kopia-password-env=VAR       read from the named environment variable
+
+Behavior:
+  1. Validate the current password file decrypts the local repo.
+  2. ``kopia repository change-password`` rewraps the master key.
+  3. Atomically replace the password file with the new value.
+
+If step 3 fails after step 2 succeeds, the repo decrypts only with the new
+password but the file still holds the old one. The log line names both
+values; restore the new value into the file manually and re-run
+``doctor``."""

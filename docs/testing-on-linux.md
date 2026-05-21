@@ -96,23 +96,20 @@ the tests.
 
 ## Install Linux Test Dependencies
 
-Inside the L1 VM or on a direct Linux/KVM host, install the normal libvirt and
-test dependencies:
+Inside the L1 VM or on a direct Linux/KVM host, install the libvirt and QEMU
+tooling plus `nbdcopy`, which the backup engine pipes the NBD export through:
 
 ```bash
 sudo apt update
 sudo apt install -y \
-  docker.io \
-  docker-compose-v2 \
   qemu-kvm \
+  qemu-utils \
   libvirt-daemon-system \
-  libvirt-clients
+  libvirt-clients \
+  libnbd-bin
 ```
 
-On older distributions, the Compose package may be named
-`docker-compose-plugin` or `docker-compose`. The e2e runner accepts either
-`docker compose` or `docker-compose`, so verify that one of them is available
-before running the suite.
+Install `kopia` separately — see [install.md](install.md#install-kopia).
 
 Install `uv` if it is not already present:
 
@@ -120,21 +117,7 @@ Install `uv` if it is not already present:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-If you want to run Docker without `sudo`, add your user to the Docker group and
-start a new login session:
-
-```bash
-sudo usermod -aG docker "$USER"
-```
-
-## Verify the Host Can Run the Linux E2E Path
-
-From the repository checkout, confirm Docker is available:
-
-```bash
-docker version
-docker compose version
-```
+## Verify the Host Can Run the Real-KVM E2E Path
 
 Confirm the host exposes KVM:
 
@@ -142,14 +125,21 @@ Confirm the host exposes KVM:
 test -r /dev/kvm
 ```
 
-Confirm a privileged Docker container can see `/dev/kvm`:
+Confirm libvirt's session URI is reachable for your user (the e2e case uses
+`qemu:///session` so it can run without root):
 
 ```bash
-docker run --rm --privileged --device /dev/kvm alpine:3.20 test -r /dev/kvm
+virsh -c qemu:///session uri
 ```
 
-If that command exits successfully, the adaptive e2e runner will detect KVM
-capability. If it fails, the real KVM path is skipped with a clear reason.
+Confirm the binaries the engine shells out to are on `PATH`:
+
+```bash
+command -v virsh qemu-img qemu-nbd nbdcopy kopia
+```
+
+If any of those is missing, the real-KVM case is skipped with a clear reason
+instead of failing the suite.
 
 ## Run the E2E Suite
 
@@ -159,43 +149,44 @@ Install locked development dependencies with `uv`:
 uv sync --locked --extra dev
 ```
 
-Run the adaptive end-to-end suite:
+Run the end-to-end suite:
 
 ```bash
 uv run --locked --extra dev python -m tests.e2e
 ```
 
-The runner always executes the Docker Compose orchestration scenario. That path
-uses a runner container, a mounted backup volume, and fake libvirt tools to test
-install/uninstall behavior, preflight checks, backup orchestration, structured
-logging, and failure handling. Retention behavior is covered by the unit suite
-(`tests/unit/test_retention.py`) — the Compose scenario keeps `BACKUP_RETENTION_MONTHS`
-at the default and focuses on the install/run/uninstall flow rather than
-exercising the pruning code path.
+The runner executes a single scenario: `tests/e2e/real_kvm_case.py`. It probes
+the host for `/dev/kvm`, libvirt, `kopia`, and `nbdcopy`; if any probe fails the
+case is skipped with a notice. When the probes pass it defines two ephemeral
+domains under `qemu:///session` (one running, one shut off) backed by tiny
+qcow2 disks under a temporary workdir, installs `libvirt-backup-system` into a
+`--prefix` sandbox with a generated kopia password, then drives `check`,
+`list-vms --json`, `run`, `verify`, and `restore` against the sandbox. It
+asserts that:
 
-On Linux hosts with `/dev/kvm`, libvirt, and `virtnbdbackup`/`virtnbdrestore`
-available, the runner also executes `tests/e2e/real_kvm_case.py`. That
-scenario creates two ephemeral domains under `qemu:///session` (one running, one
-shut off) backed by tiny qcow2 disks under a temp workdir, installs
-`libvirt-backup-system` into a `--prefix` sandbox, runs `check` /
-`list-vms --json` / `run` / `verify`, then re-runs to assert that the running
-VM gets a new timestamp directory and the offline VM is logged as
-``skipping vm because it is offline`` on both runs. Any leftover libvirt
-checkpoints and domains are torn down in a `finally` block. If KVM capability
-is missing the path is skipped with a clear reason instead of failing the
-suite.
+- the kopia repo materializes under `BACKUP_PATH/<host-id>/kopia-repo/`,
+- the running VM gets new kopia snapshots on every `run` and the offline VM is
+  logged as `skipping vm because it is offline` on every run,
+- a delete + restore + re-backup cycle adds only a small bounded number of
+  bytes to the repo (the post-restore dedup invariant — proves the
+  post-restore-bloat problem that the old chain engine had is fixed),
+- a `kopia policy set --global --keep-latest=1` followed by `kopia maintenance
+  run --full` prunes older snapshots.
 
-> **Coverage caveat.** The Docker Compose scenario runs the orchestrator against
-> a `PATH`-shadowed set of fake CLIs (`tests/e2e/fakes/virsh`,
-> `tests/e2e/fakes/virtnbdbackup`, `tests/e2e/fakes/virtnbdrestore`,
-> `tests/e2e/fakes/qemu-img`, `tests/e2e/fakes/df`) rather than real libvirt
-> tooling. It exercises argument shape, exit codes, and orchestration logic.
-> The real-KVM path (`tests/e2e/real_kvm_case.py`) drives actual
-> `virtnbdbackup`/`virtnbdrestore` against `qemu:///session` domains, which
-> validates that the produced backup directory verifies cleanly on this host.
->
-> What this **still does not** prove, and therefore must be exercised manually
-> before any production deploy:
+Domains and the temp workdir are torn down in a `finally` block.
+
+### Skipping the case
+
+To skip the real-KVM case entirely (for example, on a workstation without
+`/dev/kvm` access):
+
+```bash
+uv run --locked --extra dev python -m tests.e2e --skip-kvm
+```
+
+> **Coverage caveat.** Even when the real-KVM case runs end-to-end, it does
+> not exercise everything you depend on in production. The following must be
+> validated by hand before any production deploy:
 >
 > - The systemd unit environment (kernel-tunable/module restrictions,
 >   `StateDirectory=`, `RequiresMountsFor=BACKUP_PATH`, scratch dir under
@@ -208,34 +199,22 @@ suite.
 >   `qemu:///session` so it can run without root; production runs as root
 >   against `qemu:///system` (see [Install](install.md)).
 
-To skip the Docker Compose orchestration and only run the real-KVM case:
-
-```bash
-uv run --locked --extra dev python -m tests.e2e --skip-docker
-```
-
-To skip the real-KVM case:
-
-```bash
-uv run --locked --extra dev python -m tests.e2e --skip-kvm
-```
-
 ## Production reliance: real-KVM gate
 
 The default e2e is permissive about missing KVM capability — it skips with a
-notice when `/dev/kvm`, libvirt, or `virtnbdbackup` are unavailable. **Before
-any production reliance on libvirt-backup-system**, wire up a self-hosted or
-nightly CI gate that runs the suite with `--require-real-kvm`:
+notice when `/dev/kvm`, libvirt, `kopia`, or `nbdcopy` are unavailable.
+**Before any production reliance on libvirt-backup-system**, wire up a self-
+hosted or nightly CI gate that runs the suite with `--require-real-kvm`:
 
 ```bash
 uv run --locked --extra dev python -m tests.e2e --require-real-kvm
 ```
 
 That flag turns SKIP-on-missing-capability into a hard failure, so a CI host
-that lost `/dev/kvm` or its libvirt tooling cannot silently pass a build that
-depends on real virtnbdbackup behavior. Once the capability probe succeeds the
-real-KVM case runs unconditionally; a backup or verify failure is fatal whether
-or not `--require-real-kvm` was passed.
+that lost `/dev/kvm` or its libvirt/kopia tooling cannot silently pass a build
+that depends on real backup-engine behavior. Once the capability probe succeeds
+the real-KVM case runs unconditionally; a backup or verify failure is fatal
+whether or not `--require-real-kvm` was passed.
 
 ## Run the Full Local Gate
 
@@ -255,7 +234,7 @@ uv run --locked --extra dev python -m tools.gates
 ```
 
 That gate checks formatting, linting, strict typing, type completeness, warnings
-as errors, unit coverage, the adaptive e2e suite, and the 300-line maximum per
+as errors, unit coverage, the e2e suite, and the 300-line maximum per
 authored text file.
 
 ## Networking Notes

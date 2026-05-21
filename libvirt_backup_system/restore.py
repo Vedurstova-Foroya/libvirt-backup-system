@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,13 +186,22 @@ def _shutdown_and_undefine(config: Config, vm_name: str) -> bool:
     return True
 
 
-def _materialize_disks(ctx: _RestoreContext, config: Config, dest_dir: Path) -> bool:
-    dest_dir.mkdir(parents=True, exist_ok=True)
+def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str, Path]) -> bool:
+    """Restore each disk in the manifest to the path ``dest_map[disk.target]``.
+
+    The caller chooses where each disk lands. For overwrite, that is the
+    disk's original ``source_path``; for turnkey, a path under the staging
+    dir. Any pre-existing file at ``dest`` is removed before
+    ``qemu-img convert`` writes the new qcow2.
+    """
     for disk in ctx.manifest.disks:
+        dest = dest_map[disk.target]
+        dest.parent.mkdir(parents=True, exist_ok=True)
         snap_id = _disk_snapshot_id(config, ctx.row, disk.target)
         if snap_id is None:
             return False
-        dest = dest_dir / f"{disk.target}.qcow2"
+        with suppress(FileNotFoundError):
+            dest.unlink()
         if not _stream_disk_to_qcow2(config, ctx.row, snap_id, disk.snapshot_filename, dest):
             return False
         if ctx.verbose:
@@ -199,31 +209,73 @@ def _materialize_disks(ctx: _RestoreContext, config: Config, dest_dir: Path) -> 
     return True
 
 
-def _write_restored_xml(ctx: _RestoreContext) -> Path:
-    """Persist the manifest's domain XML so ``define_restored_domain`` can read it."""
+def _overwrite_dest_map(manifest: Manifest) -> dict[str, Path]:
+    """Per-disk destination paths for the overwrite branch: the original locations."""
+    return {disk.target: Path(disk.source_path) for disk in manifest.disks}
+
+
+def _turnkey_dest_map(manifest: Manifest, staging: Path) -> dict[str, Path]:
+    """Per-disk destination paths for the turnkey branch: under ``staging``."""
+    return {disk.target: staging / f"{disk.target}.qcow2" for disk in manifest.disks}
+
+
+def _rewrite_domain_disk_sources(domain_xml: str, dest_map: dict[str, Path]) -> str:
+    """Rewrite each ``<disk>/<source>`` to point at the restored qcow2.
+
+    Mapping is by ``<target dev="..."/>``: the source under each ``<disk>``
+    is rewritten to ``dest_map[target_dev]``. Disks whose target dev is not
+    present in the map are left alone. Handles ``<source file=...>`` and
+    ``<source dev=...>``; other source forms (volume / network) are skipped
+    because the plan only restores file-backed qcow2 disks.
+    """
+    root = ET.fromstring(domain_xml)  # noqa: S314
+    for disk_el in root.findall(".//devices/disk"):
+        target_el = disk_el.find("target")
+        if target_el is None:
+            continue
+        target_dev = target_el.get("dev")
+        if target_dev is None or target_dev not in dest_map:
+            continue
+        source_el = disk_el.find("source")
+        if source_el is None:
+            continue
+        new_path = str(dest_map[target_dev])
+        if "file" in source_el.attrib:
+            source_el.set("file", new_path)
+        elif "dev" in source_el.attrib:
+            source_el.set("dev", new_path)
+    return ET.tostring(root, encoding="unicode")
+
+
+def _write_restored_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
+    """Persist the (possibly rewritten) domain XML for ``define_restored_domain``."""
     path = ctx.staging / RESTORED_CONFIG_FILE
-    path.write_text(ctx.manifest.domain_xml, encoding="utf-8")
+    path.write_text(domain_xml, encoding="utf-8")
     return path
 
 
 def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> int:
     if not _shutdown_and_undefine(config, vm_name):
         return 1
-    dest_dir = _existing_disk_dir(ctx.manifest) or ctx.staging
-    if not _materialize_disks(ctx, config, dest_dir):
+    dest_map = _overwrite_dest_map(ctx.manifest)
+    if not _materialize_disks(ctx, config, dest_map):
         return 1
-    xml_path = _write_restored_xml(ctx)
+    # The manifest XML already references these original paths, so no
+    # source-path rewrite is necessary; identity (name + uuid) is fixed up
+    # downstream by ``define_restored_domain``.
+    xml_path = _write_restored_xml(ctx, ctx.manifest.domain_xml)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
         return 1
-    event("info", "restore overwrite completed", vm=vm_name, output=str(dest_dir))
+    event("info", "restore overwrite completed", vm=vm_name, output=str(ctx.staging))
     return 0
 
 
 def _restore_turnkey(config: Config, ctx: _RestoreContext) -> int:
-    dest_dir = _existing_disk_dir(ctx.manifest) or ctx.staging
-    if not _materialize_disks(ctx, config, dest_dir):
+    dest_map = _turnkey_dest_map(ctx.manifest, ctx.staging)
+    if not _materialize_disks(ctx, config, dest_map):
         return 1
-    xml_path = _write_restored_xml(ctx)
+    rewritten = _rewrite_domain_disk_sources(ctx.manifest.domain_xml, dest_map)
+    xml_path = _write_restored_xml(ctx, rewritten)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, ctx.manifest.vm_name):
         return 1
     event(
@@ -231,14 +283,9 @@ def _restore_turnkey(config: Config, ctx: _RestoreContext) -> int:
         "restore turnkey completed",
         vm_uuid=ctx.manifest.vm_uuid,
         host_id=ctx.row.host_id,
-        output=str(dest_dir),
+        output=str(ctx.staging),
     )
     return 0
-
-
-def _existing_disk_dir(manifest: Manifest) -> Path | None:
-    parents = {Path(disk.source_path).parent for disk in manifest.disks}
-    return next(iter(parents)) if len(parents) == 1 else None
 
 
 def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = True) -> int:

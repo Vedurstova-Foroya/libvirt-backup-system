@@ -1,0 +1,35 @@
+{
+  "retention": {
+    "keepLatest": 10,
+    "keepHourly": 48,
+    "keepDaily": 14,
+    "keepWeekly": 8,
+    "keepMonthly": 12,
+    "keepAnnual": 3
+  },
+  "files": {
+    "ignore": [],
+    "ignoreDotFiles": []
+  },
+  "errorHandling": {
+    "ignoreFileErrors": false,
+    "ignoreDirectoryErrors": false,
+    "ignoreUnknownTypes": true
+  },
+  "scheduling": {
+    "intervalSeconds": 0,
+    "timeOfDay": []
+  },
+  "compression": {
+    "compressorName": "zstd-fastest"
+  },
+  "splitter": {
+    "algorithm": "FIXED-4M"
+  },
+  "upload": {
+    "maxParallelFileReads": 0,
+    "parallelUploadAboveSize": 0
+  },
+  "actions": {},
+  "noParent": true
+}

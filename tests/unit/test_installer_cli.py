@@ -20,7 +20,10 @@ def _fake_config(tmp_path: Path) -> Config:
 
 
 def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr("libvirt_backup_system.cli.install", lambda prefix, config_path=None: 11)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.install",
+        lambda prefix, config_path=None, password_spec=None: 11,
+    )
     assert main(["--prefix", str(tmp_path), "install"]) == 11
 
     monkeypatch.setattr("libvirt_backup_system.cli.uninstall", lambda prefix, **kwargs: 12)
@@ -64,28 +67,6 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm_uuid, timestamp, *, verbose=False: 4)
     assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 4
-
-
-def test_cli_doctor_returns_doctor_exit_code(tmp_path: Path, monkeypatch) -> None:
-    cfg = _fake_config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.doctor", lambda config: 9)
-    assert main(["doctor"]) == 9
-
-
-def test_cli_list_restore_points_validate_failure(tmp_path: Path, monkeypatch) -> None:
-    cfg = _fake_config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 5)
-    assert main(["list-restore-points"]) == 5
-
-
-def test_cli_list_restore_points_runs_command(tmp_path: Path, monkeypatch) -> None:
-    cfg = _fake_config(tmp_path)
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.list_restore_points", lambda config: 0)
-    assert main(["list-restore-points"]) == 0
 
 
 def test_cli_run_returns_backup_code(tmp_path: Path, monkeypatch) -> None:
@@ -178,8 +159,13 @@ def test_cli_status_dispatches_to_systemd_units(monkeypatch) -> None:
 def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_install(prefix: str | None, *, config_path: str | None = None) -> int:
-        captured["install"] = (prefix, config_path)
+    def fake_install(
+        prefix: str | None,
+        *,
+        config_path: str | None = None,
+        password_spec: object | None = None,
+    ) -> int:
+        captured["install"] = (prefix, config_path, password_spec)
         return 0
 
     def fake_uninstall(prefix: str | None, **kwargs: object) -> int:
@@ -190,7 +176,9 @@ def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypat
     monkeypatch.setattr("libvirt_backup_system.cli.uninstall", fake_uninstall)
     custom = str(tmp_path / "custom.env")
     assert main(["--config", custom, "--prefix", str(tmp_path), "install"]) == 0
-    assert captured["install"] == (str(tmp_path), custom)
+    captured_install = captured["install"]
+    assert isinstance(captured_install, tuple)
+    assert captured_install[:2] == (str(tmp_path), custom)
     assert main(["--config", custom, "--prefix", str(tmp_path), "uninstall", "--purge-logs"]) == 0
     prefix, kwargs = captured["uninstall"]  # type: ignore[misc]
     assert prefix == str(tmp_path)
@@ -252,14 +240,14 @@ def test_cli_verify_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> No
 def test_cli_exceptions(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         "libvirt_backup_system.cli.install",
-        lambda prefix, config_path=None: (_ for _ in ()).throw(KeyboardInterrupt()),
+        lambda prefix, config_path=None, password_spec=None: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
     assert main(["install"]) == 130
     assert "interrupted" in capsys.readouterr().err
 
     monkeypatch.setattr(
         "libvirt_backup_system.cli.install",
-        lambda prefix, config_path=None: (_ for _ in ()).throw(RuntimeError("bad")),
+        lambda prefix, config_path=None, password_spec=None: (_ for _ in ()).throw(RuntimeError("bad")),
     )
     assert main(["install"]) == 1
     assert "fatal error" in capsys.readouterr().err

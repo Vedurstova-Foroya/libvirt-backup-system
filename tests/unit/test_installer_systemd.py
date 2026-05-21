@@ -5,6 +5,7 @@ from pathlib import Path
 from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import install, uninstall
 from libvirt_backup_system.shell import CommandResult
+from tests.unit.conftest import stub_ensure_kopia_repo, write_kopia_password_file
 
 
 def _fake_config_factory(
@@ -53,6 +54,7 @@ def _fake_systemd_root(tmp_path: Path, monkeypatch) -> None:
 def test_install_rejects_control_char_calendar(tmp_path: Path, monkeypatch, capsys) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="daily\nOnBootSec=1"),
@@ -67,6 +69,7 @@ def test_install_rejects_control_char_calendar(tmp_path: Path, monkeypatch, caps
 def test_install_rejects_empty_calendar(tmp_path: Path, monkeypatch, capsys) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="  "),
@@ -83,6 +86,7 @@ def test_install_rejects_flag_shaped_calendar(tmp_path: Path, monkeypatch, capsy
     # "-" would pass the rc check and render a broken unit file.
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="--help"),
@@ -96,6 +100,7 @@ def test_install_rejects_flag_shaped_calendar(tmp_path: Path, monkeypatch, capsy
 def test_install_rejects_non_positive_command_timeout(tmp_path: Path, monkeypatch, capsys) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), timeout_seconds="0"),
@@ -110,6 +115,8 @@ def test_install_validates_calendar_with_systemd_analyze(tmp_path: Path, monkeyp
     # helpers moved into that module; discriminate by command name in the
     # shared fake to keep the original "what was called" assertion intact.
     _fake_systemd_root(tmp_path, monkeypatch)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(tmp_path / "backups"), calendar="daily"),
@@ -132,6 +139,7 @@ def test_install_validates_calendar_with_systemd_analyze(tmp_path: Path, monkeyp
 
 def test_install_rejects_calendar_when_systemd_analyze_fails(tmp_path: Path, monkeypatch, capsys) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(tmp_path / "backups"), calendar="not-a-calendar"),
@@ -162,6 +170,7 @@ def test_install_without_backup_path_disables_stale_units_and_reports_reload_fai
     capsys,
 ) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
+    write_kopia_password_file(tmp_path)
     monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path, backup_path=""))
     monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     calls: list[list[str]] = []
@@ -206,6 +215,7 @@ def test_install_does_not_delete_in_place_package_source(tmp_path: Path, monkeyp
     fake_module_file = opt_pkg / "installer.py"
     fake_module_file.write_text("# stand-in for __file__\n", encoding="utf-8")
     monkeypatch.setattr("libvirt_backup_system.installer.__file__", str(fake_module_file))
+    write_kopia_password_file(tmp_path)
 
     assert install(str(tmp_path)) == 0
     assert sentinel.exists(), "in-place install must not delete the live package source"
@@ -245,6 +255,8 @@ def test_uninstall_is_idempotent_when_units_are_absent(tmp_path: Path, monkeypat
 
 def test_install_replaces_existing_package_and_reloads_systemd(tmp_path: Path, monkeypatch) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(tmp_path / "backups")),
@@ -267,6 +279,8 @@ def test_install_replaces_existing_package_and_reloads_systemd(tmp_path: Path, m
 
 def test_install_systemctl_failure_emits_error_and_returns_nonzero(tmp_path: Path, monkeypatch, capsys) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(tmp_path / "backups")),

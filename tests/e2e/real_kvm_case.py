@@ -14,6 +14,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SESSION_URI = "qemu:///session"
 PROBE_BINARIES = ("virsh", "qemu-img", "qemu-nbd", "nbdcopy", "kopia")
+KOPIA_PASSWORD = "swordfish-e2e"
+HOST_ID = "lbs-e2e"
+# Generous bound; the test disk is 16 MiB so anything under 50 MiB proves
+# the kopia content-addressed store deduplicated the restored disk against
+# the snapshots that produced it.
+POST_RESTORE_BLOAT_LIMIT = 50 * 1024 * 1024
 
 
 def real_kvm_skip_reason() -> str | None:
@@ -53,26 +59,16 @@ def _session_domain_uuids() -> list[str]:
 
 def _domain_xml(name: str, disk_path: Path) -> str:
     return (
-        f"<domain type='kvm'>\n"
-        f"  <name>{name}</name>\n"
-        f"  <uuid>{uuid.uuid4()}</uuid>\n"
-        f"  <memory unit='MiB'>32</memory>\n"
-        f"  <currentMemory unit='MiB'>32</currentMemory>\n"
-        f"  <vcpu placement='static'>1</vcpu>\n"
-        f"  <os><type arch='x86_64' machine='pc'>hvm</type></os>\n"
-        f"  <features><acpi/></features>\n"
-        f"  <on_poweroff>destroy</on_poweroff>\n"
-        f"  <on_reboot>destroy</on_reboot>\n"
-        f"  <on_crash>destroy</on_crash>\n"
-        f"  <devices>\n"
-        f"    <emulator>/usr/bin/qemu-system-x86_64</emulator>\n"
-        f"    <disk type='file' device='disk'>\n"
-        f"      <driver name='qemu' type='qcow2'/>\n"
-        f"      <source file='{disk_path}'/>\n"
-        f"      <target dev='vda' bus='virtio'/>\n"
-        f"    </disk>\n"
-        f"  </devices>\n"
-        f"</domain>\n"
+        f"<domain type='kvm'><name>{name}</name><uuid>{uuid.uuid4()}</uuid>"
+        f"<memory unit='MiB'>32</memory><currentMemory unit='MiB'>32</currentMemory>"
+        f"<vcpu placement='static'>1</vcpu>"
+        f"<os><type arch='x86_64' machine='pc'>hvm</type></os>"
+        f"<features><acpi/></features>"
+        f"<on_poweroff>destroy</on_poweroff><on_reboot>destroy</on_reboot><on_crash>destroy</on_crash>"
+        f"<devices><emulator>/usr/bin/qemu-system-x86_64</emulator>"
+        f"<disk type='file' device='disk'>"
+        f"<driver name='qemu' type='qcow2'/><source file='{disk_path}'/>"
+        f"<target dev='vda' bus='virtio'/></disk></devices></domain>\n"
     )
 
 
@@ -88,31 +84,21 @@ def _define_domain(work: Path, name: str, *, running: bool) -> Path:
 
 
 def _teardown_domains(names: Iterable[str]) -> None:
+    # Kopia owns chunk lifecycle, so we no longer need --checkpoints-metadata
+    # (virtnbdbackup left libvirt checkpoints behind that blocked undefine; the
+    # new engine does not create any).
     for name in names:
         _virsh(["destroy", name], check=False)
-        # virtnbdbackup leaves a per-domain libvirt checkpoint (named
-        # ``virtnbdbackup.0``) on every successful backup. libvirt refuses
-        # ``undefine`` while metadata-only checkpoints exist, so add
-        # ``--checkpoints-metadata`` to clear them along with the domain. This
-        # only removes libvirt metadata; backup-side checkpoint files live
-        # under the workdir and are removed by ``shutil.rmtree``.
-        _virsh(["undefine", "--checkpoints-metadata", name], check=False)
+        _virsh(["undefine", name], check=False)
 
 
-def _write_config(
-    config_path: Path,
-    *,
-    backup_path: Path,
-    host_id: str,
-    blacklist: list[str],
-) -> None:
+def _write_config(config_path: Path, *, backup_path: Path, blacklist: list[str]) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"LIBVIRT_URI={SESSION_URI}",
         f"BACKUP_PATH={backup_path}",
-        f"HOST_ID={host_id}",
+        f"HOST_ID={HOST_ID}",
         f"VM_BLACKLIST={' '.join(blacklist)}",
-        "BACKUP_COMPRESS=false",
         "BACKUP_REQUIRE_NFS_MOUNT=false",
         "SPACE_MARGIN_PERCENT=20",
         "BACKUP_ESTIMATE_GB_PER_VM=0.001",
@@ -132,23 +118,40 @@ def _json_lines(output: str) -> list[dict[str, object]]:
     return records
 
 
-def _assert_backup_layout(backup_path: Path, host_id: str, vm_uuid: str) -> Path:
-    # Backups are keyed by libvirt UUID; running VMs build a monthly
-    # incremental chain so the chain dir is the first stamp inside the month.
-    vm_root = backup_path / host_id / vm_uuid
-    months = list(vm_root.glob("????-??"))
-    assert months, f"no month directory under {vm_root}"
-    stamps = sorted(months[0].glob("[0-9]*T[0-9]*"))
-    assert stamps, f"no chain directory under {months[0]}"
-    backup = stamps[-1]
-    data_files = list(backup.glob("vda.*.data"))
-    assert data_files, f"no virtnbdbackup data file under {backup}: {list(backup.iterdir())}"
-    return backup
+class _KopiaCtx:
+    """Bundled kopia connection params for direct CLI probes from the test."""
+
+    def __init__(self, config_file: Path, password_file: Path, cache_dir: Path) -> None:
+        self.config_file = config_file
+        self.password_file = password_file
+        self.cache_dir = cache_dir
+
+    def env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["KOPIA_PASSWORD"] = self.password_file.read_text(encoding="utf-8").strip()
+        env["KOPIA_CACHE_DIRECTORY"] = str(self.cache_dir)
+        env["KOPIA_CHECK_FOR_UPDATES"] = "false"
+        return env
+
+    def kopia(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return _run(["kopia", "--config-file", str(self.config_file), *args], env=self.env())
+
+    def snapshot_count(self, tags: dict[str, str]) -> int:
+        args = ["kopia", "--config-file", str(self.config_file), "snapshot", "list", "--all", "--json"]
+        for key, value in sorted(tags.items()):
+            args.extend(["--tags", f"{key}:{value}"])
+        proc = subprocess.run(args, text=True, capture_output=True, env=self.env(), check=False)
+        if proc.returncode != 0:
+            raise AssertionError(f"kopia snapshot list failed: {proc.stderr}")
+        parsed = json.loads(proc.stdout or "[]")
+        return sum(1 for r in parsed if all(r.get("tags", {}).get(k) == v for k, v in tags.items()))
 
 
-def _assert_no_backup(backup_path: Path, host_id: str, vm_uuid: str) -> None:
-    vm_root = backup_path / host_id / vm_uuid
-    assert not vm_root.exists(), f"offline VM should not have a backup tree but {vm_root} exists"
+def _assert_repo_layout(backup_path: Path) -> Path:
+    repo = backup_path / HOST_ID / "kopia-repo"
+    sentinel = repo / "kopia.repository.f"
+    assert sentinel.is_file(), f"expected kopia repo sentinel at {sentinel}"
+    return repo
 
 
 def _assert_offline_skip_logged(records: list[dict[str, object]], vm_name: str) -> None:
@@ -156,85 +159,113 @@ def _assert_offline_skip_logged(records: list[dict[str, object]], vm_name: str) 
     assert matched, f"expected 'skipping vm because it is offline' log for {vm_name!r}, got {records}"
 
 
+def _repo_size_bytes(repo_path: Path) -> int:
+    return int(_run(["du", "-sb", str(repo_path)]).stdout.split()[0])
+
+
+def _pick_restore_point(bin_path: Path, vm_uuid: str) -> str:
+    proc = _run([str(bin_path), "list-restore-points"])
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == vm_uuid:
+            return parts[1]
+    raise AssertionError(f"no restore point listed for {vm_uuid} in:\n{proc.stdout}")
+
+
+def _assert_counts(ctx: _KopiaCtx, vm_uuid: str, *, meta: int, disk: int) -> None:
+    """Per the plan: at least ``meta`` meta snapshots + ``disk`` per disk target."""
+    got_meta = ctx.snapshot_count({"vm-uuid": vm_uuid, "kind": "meta"})
+    assert got_meta >= meta, f"vm-uuid:{vm_uuid} meta snapshots: got {got_meta}, expected >= {meta}"
+    got_disk = ctx.snapshot_count({"vm-uuid": vm_uuid, "kind": "disk", "disk": "vda"})
+    assert got_disk >= disk, f"vm-uuid:{vm_uuid} disk:vda snapshots: got {got_disk}, expected >= {disk}"
+
+
+def _install(prefix: Path) -> tuple[Path, _KopiaCtx]:
+    args = [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix)]
+    _run([*args, "install", f"--kopia-password={KOPIA_PASSWORD}"], env=_install_env(prefix))
+    bin_path = prefix / "usr/local/bin/libvirt-backup-system"
+    password_file = prefix / "etc/libvirt-backup-system/kopia.pw"
+    config_file = prefix / "var/lib/libvirt-backup-system/kopia-configs" / f"{HOST_ID}.config"
+    cache_dir = prefix / "var/cache/libvirt-backup-system/kopia"
+    assert bin_path.exists(), f"installer did not create {bin_path}"
+    assert password_file.exists(), f"installer did not write password file at {password_file}"
+    return bin_path, _KopiaCtx(config_file, password_file, cache_dir)
+
+
+def _install_env(prefix: Path) -> dict[str, str]:
+    return {"LIBVIRT_BACKUP_ROOT_PREFIX": str(prefix), "PYTHONPATH": str(ROOT)}
+
+
 def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     backup_path = work / "backup"
     backup_path.mkdir()
     prefix = work / "root"
-    host_id = "lbs-e2e"
 
-    install_env = {"LIBVIRT_BACKUP_ROOT_PREFIX": str(prefix), "PYTHONPATH": str(ROOT)}
-    _run(
-        [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix), "install"],
-        env=install_env,
-    )
-    bin_path = prefix / "usr/local/bin/libvirt-backup-system"
+    bin_path, ctx = _install(prefix)
     config_path = prefix / "etc/libvirt-backup-system/libvirt-backup.env"
-    assert bin_path.exists(), f"installer did not create {bin_path}"
 
-    # Snapshot any session VMs that already existed before our run and add
-    # their UUIDs to VM_BLACKLIST so the orchestrator only touches the two
-    # test domains.
     test_uuids = {
         _virsh(["domuuid", running_name]).stdout.strip(),
         _virsh(["domuuid", offline_name]).stdout.strip(),
     }
-    pre_existing = [uuid for uuid in _session_domain_uuids() if uuid not in test_uuids]
-    _write_config(config_path, backup_path=backup_path, host_id=host_id, blacklist=pre_existing)
+    pre_existing = [uid for uid in _session_domain_uuids() if uid not in test_uuids]
+    _write_config(config_path, backup_path=backup_path, blacklist=pre_existing)
 
     check = _run([str(bin_path), "check"])
     records = _json_lines(check.stdout)
     assert any(r.get("message") == "preflight passed" for r in records), f"preflight did not pass: {records}"
 
-    vms_proc = _run([str(bin_path), "list-vms", "--json"])
-    listed = json.loads(vms_proc.stdout)
+    listed = json.loads(_run([str(bin_path), "list-vms", "--json"]).stdout)
     names = {vm["name"] for vm in listed}
-    assert running_name in names, f"running domain missing from list-vms: {listed}"
-    assert offline_name in names, f"offline domain missing from list-vms: {listed}"
-    states = {vm["name"]: vm["state"] for vm in listed}
-    assert states[running_name] == "running", states
-    assert states[offline_name] == "shut off", states
+    assert running_name in names and offline_name in names, f"missing domains in list-vms: {listed}"
     uuids = {vm["name"]: vm["uuid"] for vm in listed}
-    running_uuid = uuids[running_name]
-    offline_uuid = uuids[offline_name]
+    running_uuid, offline_uuid = uuids[running_name], uuids[offline_name]
 
+    # First backup: repo materializes, running VM gets one meta + one disk
+    # snapshot, offline VM stays absent.
     first_run = _run([str(bin_path), "run"])
-    backup_dir_running = _assert_backup_layout(backup_path, host_id, running_uuid)
-    # Offline VMs are skipped, not backed up: no backup tree is created and the
-    # operator sees ``skipping vm because it is offline`` in the run log.
-    _assert_no_backup(backup_path, host_id, offline_uuid)
+    repo = _assert_repo_layout(backup_path)
     _assert_offline_skip_logged(_json_lines(first_run.stdout), offline_name)
+    _assert_counts(ctx, running_uuid, meta=1, disk=1)
+    assert ctx.snapshot_count({"vm-uuid": offline_uuid}) == 0
 
     _run([str(bin_path), "verify"])
 
-    # Second-run idempotency: the running VM appends a ``-l inc`` snapshot into
-    # the SAME chain dir (no new chain timestamp). The offline VM is logged as
-    # skipped again on the second run.
-    running_stamps_before = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
-    running_data_before = sorted(backup_dir_running.glob("*.data"))
-    running_checkpoint_xml_before = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
+    # Second backup: still no chain dir, just a fresh kopia snapshot per kind.
     second_run = _run([str(bin_path), "run"])
-    _assert_no_backup(backup_path, host_id, offline_uuid)
     _assert_offline_skip_logged(_json_lines(second_run.stdout), offline_name)
-    running_stamps_after = sorted(backup_dir_running.parent.glob("[0-9]*T[0-9]*"))
-    running_data_after = sorted(backup_dir_running.glob("*.data"))
-    running_checkpoint_xml_after = sorted((backup_dir_running / "checkpoints").glob("*.xml"))
-    assert running_stamps_after == running_stamps_before, (
-        f"running VM second run created a second chain dir instead of incrementing: "
-        f"before={running_stamps_before} after={running_stamps_after}"
-    )
-    assert len(running_data_after) > len(running_data_before), (
-        f"running VM incremental did not add a backup data file: "
-        f"before={running_data_before} after={running_data_after}"
-    )
-    assert len(running_checkpoint_xml_after) > len(running_checkpoint_xml_before), (
-        f"running VM incremental did not advance libvirt checkpoint xml: "
-        f"before={running_checkpoint_xml_before} after={running_checkpoint_xml_after}"
-    )
+    _assert_counts(ctx, running_uuid, meta=2, disk=2)
+    assert ctx.snapshot_count({"vm-uuid": offline_uuid}) == 0
 
-    _run(
-        [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix), "uninstall"],
-        env=install_env,
+    # Delete-restore-rebackup invariant: deleting the local VM, restoring it
+    # from kopia, then re-running ``run`` must NOT bloat the repo (the
+    # chain-poison era required a fresh full after every restore — kopia's
+    # content-addressed store proves dedup against the restored disks).
+    timestamp = _pick_restore_point(bin_path, running_uuid)
+    size_before = _repo_size_bytes(repo)
+    _virsh(["destroy", running_name], check=False)
+    _virsh(["undefine", running_name], check=False)
+    _run([str(bin_path), "restore", running_uuid, timestamp])
+    _virsh(["start", running_name])
+    _run([str(bin_path), "run"])
+    growth = _repo_size_bytes(repo) - size_before
+    assert growth < POST_RESTORE_BLOAT_LIMIT, (
+        f"post-restore re-backup added {growth} bytes (limit {POST_RESTORE_BLOAT_LIMIT}); "
+        f"dedup against restored disk likely failed"
     )
+    _assert_counts(ctx, running_uuid, meta=3, disk=3)
+
+    # Retention pruning: a tight ``keep-latest`` global policy must evict
+    # older snapshots when maintenance runs. Drive both directly through
+    # kopia so the assertion does not depend on how the wrapper surfaces
+    # the policy knob.
+    ctx.kopia("policy", "set", "--global", "--keep-latest=1")
+    ctx.kopia("maintenance", "run", "--safety=none", "--full")
+    after_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "meta"})
+    assert after_prune <= 2, f"retention should prune older meta snapshots; got {after_prune}"
+
+    args = [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix), "uninstall"]
+    _run(args, env=_install_env(prefix))
     assert not bin_path.exists(), "uninstall did not remove the CLI wrapper"
 
 

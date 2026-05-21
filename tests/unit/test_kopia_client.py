@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -134,9 +133,16 @@ def test_policy_set_global_noop_when_no_flags(tmp_path: Path, monkeypatch: pytes
 
 def test_policy_show_global_parses_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     password = _write_password(tmp_path / "pw")
-    _make_run_capture(monkeypatch, stdout=json.dumps({"compression": {"compressorName": "zstd-fastest"}}))
+    body = (FIXTURE_DIR / "kopia_policy_show_global.json").read_text(encoding="utf-8")
+    _make_run_capture(monkeypatch, stdout=body)
     out = kopia_client.policy_show_global(config_file=tmp_path / "c", password_file=password)
-    assert "compression" in out
+    compression = out["compression"]
+    assert isinstance(compression, dict)
+    assert compression["compressorName"] == "zstd-fastest"
+    retention = out["retention"]
+    assert isinstance(retention, dict)
+    assert retention["keepLatest"] == 10
+    assert retention["keepDaily"] == 14
 
 
 def test_policy_show_global_rejects_non_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

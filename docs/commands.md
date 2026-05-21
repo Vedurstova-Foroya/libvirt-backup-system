@@ -2,21 +2,56 @@
 
 ## `install`
 
-Installs the package copy, wrapper script, config file, and systemd units when `BACKUP_PATH` is configured. It does not enable the timer; run `check` and then `start` after editing the environment file.
+Installs the package copy, wrapper script, config file, fish completion, and
+systemd units when `BACKUP_PATH` is configured. Writes the shared kopia
+password to `/etc/libvirt-backup-system/kopia.pw` (mode 600 root-owned) and
+creates the local kopia repo at `BACKUP_PATH/<host-id>/kopia-repo/` with the
+global retention/compression policy applied.
 
 ```sh
-sudo libvirt-backup-system install
+sudo libvirt-backup-system install --kopia-password=<value>
+sudo libvirt-backup-system install --kopia-password-file=/path/to/file
+echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=-
+sudo KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW
 ```
 
-When run via the installed wrapper the package files at `/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute would delete the source being copied). The wrapper, env file, and systemd units are still refreshed, but `start` is the explicit command for applying `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR` changes and activating the timer. To pick up new package code, run `install` from a source checkout instead:
+The same install command runs on every host. There is no bootstrap host.
+Idempotent if the supplied password matches the existing file; hard-fails if
+it does not (use `change-password` to rotate). The timer is not enabled
+automatically — run `check` and then `start` after editing the env file.
+
+When run via the installed wrapper the package files at
+`/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute
+would delete the source being copied). The wrapper, env file, and systemd
+units are still refreshed. To pick up new package code, run `install` from a
+source checkout instead:
 
 ```sh
-sudo python3 -m libvirt_backup_system install
+sudo python3 -m libvirt_backup_system install --kopia-password-file=/etc/libvirt-backup-system/kopia.pw
 ```
+
+## `change-password`
+
+Rotates the kopia repo password on this host. Read the current password,
+verify it decrypts the local repo, run `kopia repository change-password` to
+rewrap the master key, atomically replace the password file.
+
+```sh
+sudo libvirt-backup-system change-password --new-kopia-password=<value>
+sudo libvirt-backup-system change-password --new-kopia-password-file=/path
+echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
+```
+
+Run the same command on every host. Order does not matter; each host rotates
+its own local repo independently. `doctor` flags any host still holding the
+old value. See [Kopia operations](kopia.md#password-rotation) for the full
+recovery procedure.
 
 ## `uninstall`
 
-Removes installed program files and systemd units. Config, state, logs, and backups are preserved unless purge flags are passed.
+Removes installed program files and systemd units. Config, state, logs, the
+kopia password file, and the on-disk repo are preserved unless purge flags
+are passed.
 
 ```sh
 sudo libvirt-backup-system uninstall
@@ -25,7 +60,9 @@ sudo libvirt-backup-system uninstall --purge-config --purge-state --purge-logs
 
 ## `check` / `preflight`
 
-Validates config, required binaries, root execution policy, VM discovery, backup path writability, and estimated free space.
+Validates config, required binaries (`virsh`, `qemu-nbd`, `nbdcopy`,
+`qemu-img`, `df`, `kopia`), root execution policy, VM discovery, backup path
+writability, the kopia password file mode/owner, and estimated free space.
 
 ```sh
 sudo libvirt-backup-system check
@@ -33,14 +70,20 @@ sudo libvirt-backup-system check
 
 ## `doctor`
 
-Diagnoses install registration, runtime state, and the same preflight surface that `check` covers. Specifically, `doctor` is a superset of `check` — it runs the full preflight layer (config, binaries, root execution policy, VM discovery, scratch dir, NBD probe, backup-path writability and space estimate) and then appends:
+Diagnoses install registration, runtime state, and the same preflight
+surface that `check` covers. Specifically, `doctor` is a superset of
+`check` — it runs the full preflight layer and then appends:
 
-- The wrapper script, package directory, and config file are in place.
-- All three systemd unit files exist on disk with content matching what a fresh `install` would render (catches drift after editing the env file without re-running install).
-- The timer is enabled and active.
-- The most recent `libvirt-backup-system.service` run completed cleanly (a stale `Result` other than `success` means the last fire failed).
-
-Any failure from either layer is reported under the same `doctor failed` event so operators see one combined report. Use `check` when you only want the pre-run preflight; use `doctor` when you also need install/registration/last-run health.
+- Wrapper script, package directory, and config file are in place.
+- All three systemd unit files exist on disk with content matching what a
+  fresh `install` would render (catches drift after editing the env file
+  without re-running install).
+- Backup timer is enabled and active.
+- Last `libvirt-backup-system.service` run completed cleanly.
+- Local kopia repo connects with the shared password and
+  `kopia repository status` is clean.
+- Every peer repo under `BACKUP_PATH/*/kopia-repo/` is reachable read-only
+  with the shared password (cross-host-restore smoke test).
 
 ```sh
 sudo libvirt-backup-system doctor
@@ -48,7 +91,12 @@ sudo libvirt-backup-system doctor
 
 ## `start`
 
-Installs or refreshes the systemd unit files from the current environment file, reloads systemd, and enables/starts `libvirt-backup-system.timer`. This activates the schedule only; it does not run a backup immediately. Use this after `install`, editing `/etc/libvirt-backup-system/libvirt-backup.env`, and `check`; use `run` when you want to execute a manual backup.
+Installs or refreshes the systemd unit files from the current environment
+file, reloads systemd, refreshes the kopia global retention/compression
+policy, and enables/starts `libvirt-backup-system.timer`. Activates the
+schedule only; does not run a backup immediately. Use after `install`,
+after editing `/etc/libvirt-backup-system/libvirt-backup.env`, and after
+`check` has passed.
 
 ```sh
 sudo libvirt-backup-system start
@@ -56,11 +104,19 @@ sudo libvirt-backup-system start
 
 ## `run`
 
-Runs preflight, acquires the run lock, and backs up running VMs. Offline VMs are logged as `skipping vm because it is offline` and skipped — only running VMs are backed up. Each backed-up VM builds a per-month incremental chain: the first run each calendar month writes a `-l full` into a new chain directory, subsequent runs in the same month append `-l inc` snapshots into the same chain.
+Runs preflight, acquires the run lock, and backs up every running VM.
+Offline VMs are logged as `skipping vm because it is offline` and skipped.
+Each VM produces one kopia disk snapshot per disk plus one meta snapshot
+carrying the run manifest (domain XML, disk table, run id). Snapshots are
+tagged with `vm-uuid`, `run-id`, `disk`, `host`, and `kind`.
 
-Manual backups require the systemd schedule to have been activated first with a successful `start`. On a systemd host, `run` exits nonzero with a "backup service is not running" error instead of starting an ad-hoc backup when the service/timer has not been installed and activated.
+Manual backups require the systemd schedule to have been activated first
+with a successful `start`. On a systemd host, `run` exits nonzero with a
+"backup service is not running" error instead of starting an ad-hoc backup
+when the service/timer has not been installed and activated.
 
-When `BACKUP_CLEANUP_ON_RUN=true` (the default) the run finishes by pruning month directories older than `BACKUP_RETENTION_MONTHS`. Pruning failure does not roll back successful backups — the run returns the higher of the backup and prune exit codes.
+Pruning is handled by the kopia maintenance timer, not by the backup loop —
+a slow GC pass cannot delay backups.
 
 ```sh
 sudo libvirt-backup-system run
@@ -68,7 +124,11 @@ sudo libvirt-backup-system run
 
 ## `status`
 
-Prints `systemctl status` for the installed timer and service. Output is the raw human-readable systemctl output (not JSON), so the next-fire time, last-run result, and any recent journal lines are visible at a glance. Exit code is the worst (highest) systemctl return code across the two units, so unloaded units propagate as failure.
+Prints `systemctl status` for the installed timer and service. Output is
+the raw human-readable systemctl output (not JSON), so the next-fire time,
+last-run result, and any recent journal lines are visible at a glance. Exit
+code is the worst (highest) systemctl return code across the two units, so
+unloaded units propagate as failure.
 
 ```sh
 sudo libvirt-backup-system status
@@ -86,19 +146,23 @@ sudo libvirt-backup-system list-vms --include-blacklisted
 
 ## `verify`
 
-Runs `virtnbdrestore -a verify` against discovered backup directories.
+Runs `kopia snapshot verify` against the local repo by default. Cross-host
+verification is opt-in via `--include-hosts`.
 
 ```sh
 sudo libvirt-backup-system verify
-sudo libvirt-backup-system verify --vm my-vm
+sudo libvirt-backup-system verify --include-hosts=host-a,host-b
 ```
+
+`VM_BLACKLIST` is intentionally ignored: verifying blacklisted-VM backups is
+still useful.
 
 ## `list-restore-points`
 
-Prints every restorable backup point across all hosts and VMs. The first two
-columns are the VM UUID and the per-run timestamp; copy that pair straight
-into `restore`. Pipe through `less` or `grep` to filter by host, VM name, or
-month.
+Walks every per-host repo under `BACKUP_PATH/*/kopia-repo/`, connects
+read-only with the shared password, lists `kind:meta` snapshots, and prints
+one row per (host, VM UUID, timestamp). The first two columns are the VM
+UUID and the per-run timestamp; copy that pair straight into `restore`.
 
 ```sh
 sudo libvirt-backup-system list-restore-points
@@ -106,57 +170,79 @@ sudo libvirt-backup-system list-restore-points | grep my-vm
 sudo libvirt-backup-system list-restore-points | less -S
 ```
 
-Each row is one virtnbdbackup run: chains with `runs.jsonl` produce one row per recorded run, legacy chains (predating that file) produce a single chain-end row identified by the chain directory name.
+Output columns:
+
+```
+VM_UUID  TIMESTAMP  HOST_ID  RUN_ID  SNAPSHOT_ID
+```
+
+`HOST_ID` is the source host (where the backup was taken). `SNAPSHOT_ID` is
+the kopia ID of the meta snapshot; pass it to `kopia snapshot list` or
+`kopia snapshot restore` directly for ad-hoc operations (see
+[Kopia operations](kopia.md)).
 
 ## `restore`
 
-Restores a single backup run identified by the `(vm_uuid, timestamp)` pair from `list-restore-points`. The action is automatic:
+Restores a single backup run identified by the `(vm_uuid, timestamp)` pair
+from `list-restore-points`. The action is automatic:
 
-- If the backup was taken on this host **and** a libvirt domain with that UUID exists locally, the VM is shut down, undefined, and redefined from the backup (in-place overwrite).
-- Otherwise the VM is staged and redefined from the backup XML on this host (turnkey one-click recovery on a different host or after the local VM has been removed).
+- If the backup was taken on this host **and** a libvirt domain with that
+  UUID exists locally, the VM is shut down, undefined, and redefined from
+  the backup (in-place overwrite).
+- Otherwise the VM is staged and redefined from the backup XML on this host
+  (turnkey one-click recovery on a different host or after the local VM has
+  been removed).
 
 ```sh
 sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 sudo libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 20260507T101112
 ```
 
-There are no other flags: the timestamp is the exact per-run target (no rounding, no closest-match). When the backup XML records file-backed disks in a single directory, restored disks are written back to that original disk directory and the VM is defined with the original VM name. Legacy or unsupported layouts fall back to a staging directory under `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`.
+There are no other flags: the timestamp is the exact per-run target (no
+rounding, no closest-match). When the backup manifest records file-backed
+disks that all live in a single directory, restored disks are written back
+there and the VM is defined with the original VM name and UUID. Otherwise
+the staging directory at `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`
+holds the restored qcow2s.
 
-Both modes call `virtnbdrestore -a restore -i <chain> -o <output-dir> [-u <checkpoint>] [--name <vm-name>] -D`. The `-u` argument is omitted for legacy chains (no `runs.jsonl`); for modern chains the checkpoint is looked up by the exact timestamp the operator copied from `list-restore-points`. The `--name` argument preserves the backed-up VM name instead of virtnbdrestore's default `restore_` prefix. The `-D` flag asks `virtnbdrestore` to register the domain in libvirt using the XML stored in the backup so the recovered VM is one `virsh start` away from booting.
-
-By default, restore captures virtnbdrestore's detailed output and prints only summary success/error events. Pass `-v` or `--verbose` to stream the full virtnbdrestore output while the restore runs.
-
-Poisoned chains (those flagged by the backup orchestrator as having a half-written incremental) are refused outright; the operator must either fix the chain or pick a different timestamp.
+Internally each disk snapshot is piped through `qemu-img convert -f raw -O
+qcow2 -S 4096` to produce a sparse qcow2 on the destination. The meta
+snapshot is materialized to a tmp dir so the manifest's domain XML can be
+read into `virsh define`. By default, restore prints only summary
+success/error events; pass `-v`/`--verbose` to stream per-disk progress.
 
 ### Cross-host recovery
 
-`list-restore-points` walks every host directory under `BACKUP_PATH`, not just the current `HOST_ID`, so a recovery host that mounted the backup tree can see and restore every host's backups. `restore` follows the same path: it picks up the chain from whichever host directory contains a matching `(uuid, timestamp)`. When that host does not match the local one (or no local VM with that UUID exists), the turnkey define path runs.
+`list-restore-points` walks every host directory under `BACKUP_PATH`, not
+just the current `HOST_ID`, so a recovery host that mounted the backup tree
+sees every host's snapshots. `restore` follows the same path: it picks up
+the snapshot from whichever host's repo contains a matching `(uuid,
+timestamp)`. When that host does not match the local one (or no local VM
+with that UUID exists), the turnkey define path runs.
 
-### How chains map to snapshots
+There is no `--source-host` flag. The shared password decrypts every host's
+repo, so cross-host restore is the same command as same-host restore.
 
-Backups live under:
+### How snapshots are tagged
 
-```
-BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
-```
+Each backup run produces:
 
-`<chain-id>` is the UTC timestamp of the first run that opened the chain (e.g. `20260501T023000`). Inside the chain dir, `virtnbdbackup` writes:
+- One **disk snapshot** per disk, tagged
+  `kind=disk vm-uuid=<uuid> run-id=<uuid> disk=<target> host=<host-id>`,
+  containing one logical file `<target>.raw`.
+- One **meta snapshot** tagged `kind=meta vm-uuid=<uuid> run-id=<uuid>
+  host=<host-id>`, containing `manifest.json` (VM name, UUID, run id,
+  timestamp, libvirt URI, domain XML, disk table).
 
-- One `*-full-*.data` from the first run that opened the chain (`-l full`).
-- Subsequent runs the same month append `*-inc-*.data` snapshots and `<checkpoint>.checkpoint` files to the **same** chain dir (`-l inc`); the dir name does not change.
-- `metadata.json` describing the disks and checkpoints (written by virtnbdbackup).
-- `runs.jsonl` — one JSON line per successful run (`{"ts": "<YYYYMMDDTHHMMSS>", "checkpoint": "<name>"}`). `list-restore-points` reads it to emit one copy-paste row per run; `restore` looks up the operator-supplied timestamp here to derive the `virtnbdrestore --until` checkpoint.
-
-A new chain (a new full) is started when any of these happen:
-
-- A new calendar month begins (the run lands under a fresh `<yyyy-mm>/`).
-- The VM's libvirt XML fingerprint changes (e.g. disk added).
-- The previous chain dir was deleted out-of-band.
-
-`restore` selects the chain from whichever host directory under `BACKUP_PATH` contains a run record (or, for legacy chains, a chain dir) whose timestamp equals the argument. Inside the chain it picks the recorded checkpoint and passes `virtnbdrestore -a restore -i <chain-dir> -o <output-dir> --until <checkpoint> --name <vm-name> -D`, so the replay stops exactly at the requested run and libvirt is left with a redefined domain pointing at the restored disks. Legacy chains without `runs.jsonl` omit `--until` and replay end-to-end.
-
-The restore command holds the same run-lock as `run` to avoid reading a chain dir that a concurrent backup is still writing into. See [Manual restore process](manual-restore.md) for the lower-level recovery procedure (useful when the source backup must first be staged onto local storage).
+`restore` resolves a meta snapshot by `(vm-uuid, timestamp)`, reads the
+manifest, then looks up each disk snapshot by `run-id + disk=<target>`.
+See [Kopia operations](kopia.md#tag-schema) for the full tag schema.
 
 ## Retention
 
-Old month directories are pruned automatically at the end of every successful `run` when `BACKUP_CLEANUP_ON_RUN=true` (the default). The number of most-recent calendar months to keep is `BACKUP_RETENTION_MONTHS` (default `12`, roughly one year); `0` disables pruning entirely. Pruning is per-VM and only touches `<vm-uuid>/<yyyy-mm>/` directories — foreign files dropped under a VM dir are left alone. The most recent month dir is always preserved even if retention math would otherwise drop it.
+Retention is enforced by the kopia global policy
+(`KEEP_LATEST/HOURLY/DAILY/WEEKLY/MONTHLY/ANNUAL`), refreshed from the env
+file on every `start`. The maintenance timer
+(`KOPIA_MAINTENANCE_INTERVAL`, default `24h`) prunes expired snapshots and
+compacts the repo. See [Kopia operations](kopia.md#maintenance) for manual
+maintenance commands.

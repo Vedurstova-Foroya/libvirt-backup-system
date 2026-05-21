@@ -1,13 +1,18 @@
 # libvirt-backup-system
 
-Python CLI for backing up libvirt VMs with `virtnbdbackup` into a configured monthly incremental backup tree.
+Python CLI for backing up libvirt VMs into a per-host [Kopia](https://kopia.io)
+repository on a shared NFS mount. Content-addressed, deduplicated, encrypted at
+rest. One shared password protects every host's repo, so cross-host restore is
+a single command.
 
 ## One-command install
 
-From a checkout on the KVM host, set the backup mount path and install:
+From a checkout on the KVM host, pick a shared password (use the same value on
+every host) and install:
 
 ```sh
-sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install
+sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install \
+     --kopia-password "$(openssl rand -base64 32)"
 ```
 
 Then verify the install, activate the timer, and run a health check:
@@ -18,7 +23,13 @@ sudo libvirt-backup-system start
 sudo libvirt-backup-system doctor
 ```
 
-`start` installs or refreshes the systemd units from the environment file and activates the timer. The default schedule is `*-*-* 02:30:00`.
+`install` writes the password to `/etc/libvirt-backup-system/kopia.pw` mode 600
+and creates this host's repo at `BACKUP_PATH/<host-id>/kopia-repo/`. `start`
+installs or refreshes the systemd units from the environment file and activates
+the timer. The default schedule is `*-*-* 02:30:00`.
+
+The shared password is the only thing protecting your backups. Lose it on
+every host and the data is unrecoverable. Store a copy in your secrets vault.
 
 ## Basic use
 
@@ -27,26 +38,49 @@ sudo libvirt-backup-system list-vms
 sudo libvirt-backup-system verify
 sudo libvirt-backup-system list-restore-points
 sudo libvirt-backup-system restore <vm-uuid> <timestamp>
+sudo libvirt-backup-system change-password --new-kopia-password=<value>
 ```
 
-`list-restore-points` lists every restorable backup point across all hosts; copy the
-first two columns (VM UUID + run timestamp) straight into `restore`, which
-either overwrites the local VM (when the backup belongs to this host and the
-domain exists locally) or stages and defines the VM turnkey from the backup
-(everywhere else).
+`list-restore-points` lists every restorable snapshot across all hosts. The
+first two columns are the VM UUID and per-run timestamp; copy them straight
+into `restore`. `restore` either overwrites the local VM (when the snapshot
+came from this host and the domain exists locally) or stages and defines the
+VM turnkey from the backup (everywhere else). No `--source-host` flag — cross-
+host restore is the same command as same-host restore.
 
 ## Backup layout
 
-Only running VMs are backed up. Offline VMs are logged as `skipping vm because it is offline` and skipped — bring the VM up to back it up. Backups live under `BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/` as a per-month incremental chain: the first run each calendar month writes a full into a new chain directory, later runs in the same month add `-l inc` snapshots to the same chain.
+Only running VMs are backed up. Offline VMs are logged as `skipping vm because
+it is offline` and skipped — bring the VM up to back it up.
+
+Each host writes only to its own repo:
+
+```
+BACKUP_PATH/
+  <host-a-id>/kopia-repo/
+  <host-b-id>/kopia-repo/
+  <host-c-id>/kopia-repo/
+```
+
+Per host, per VM, per backup run the orchestrator creates one Kopia snapshot
+per disk plus one meta snapshot carrying the run manifest (domain XML, disk
+table, run id). Snapshots are tagged with `vm-uuid`, `run-id`, `disk`, `host`,
+and `kind` so restore can rejoin them and cross-host operations can filter.
 
 ## Retention
 
-Old month directories are pruned automatically after every successful `run`. The default `BACKUP_RETENTION_MONTHS=12` keeps roughly one year; set it to `0` to disable pruning entirely. Set `BACKUP_CLEANUP_ON_RUN=false` to keep retention manual without changing the keep window. The most recent month dir is always preserved, even if retention math would otherwise drop it.
+Retention is enforced by Kopia's global policy, refreshed from the env file on
+every `start`. Defaults: `KEEP_LATEST=8`, `KEEP_HOURLY=24`, `KEEP_DAILY=30`,
+`KEEP_WEEKLY=12`, `KEEP_MONTHLY=24`, `KEEP_ANNUAL=5`. The maintenance timer
+(`KOPIA_MAINTENANCE_INTERVAL`, default `24h`) prunes and compacts the repo
+independently of the backup loop. The verify timer (`KOPIA_VERIFY_INTERVAL`,
+default `7d`) checks the local repo on its own cadence.
 
 ## Docs
 
 - [Install and prerequisites](docs/install.md)
 - [Configuration reference](docs/env-vars.md)
 - [Command reference](docs/commands.md)
+- [Kopia repo layout, password recovery, manual operations](docs/kopia.md)
 - [Manual restore process](docs/manual-restore.md)
 - [Testing on Linux](docs/testing-on-linux.md)

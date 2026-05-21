@@ -14,6 +14,42 @@ BETA_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 GAMMA_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
+def write_kopia_password_file(tmp_path: Path, value: str = "test-pw") -> Path:
+    """Pre-create the kopia password file under ``tmp_path`` for install tests.
+
+    ``installer.install`` now refuses to proceed without a kopia password.
+    Tests that drive ``install(str(tmp_path))`` directly satisfy the
+    "existing file" branch by dropping a mode-600 password file at the
+    prefixed default path before invoking ``install``.
+    """
+    pw_path = tmp_path / "etc/libvirt-backup-system/kopia.pw"
+    pw_path.parent.mkdir(parents=True, exist_ok=True)
+    pw_path.write_text(f"{value}\n", encoding="utf-8")
+    pw_path.chmod(0o600)
+    return pw_path
+
+
+def stub_ensure_kopia_repo(monkeypatch: pytest.MonkeyPatch, *, return_code: int = 0) -> list[object]:
+    """Replace ``kopia_repo.ensure_local_repo`` with a no-op for install tests.
+
+    Install tests built against the pre-kopia engine drive ``install`` end-
+    to-end with a real ``BACKUP_PATH``; without this stub the call falls
+    through to a real ``kopia`` binary invocation that the unit suite does
+    not require. Patching ``kopia_repo.ensure_local_repo`` (instead of the
+    thin ``installer._ensure_kopia_repo`` wrapper) leaves the wrapper's
+    "skip when BACKUP_PATH is empty" branch covered by the same tests.
+    Returns a list the test can inspect to see whether the stub was invoked.
+    """
+    calls: list[object] = []
+
+    def fake_ensure(cfg: object, *, apply_global_policy: bool = True) -> int:
+        calls.append(cfg)
+        return return_code
+
+    monkeypatch.setattr("libvirt_backup_system.installer.kopia_repo.ensure_local_repo", fake_ensure)
+    return calls
+
+
 @pytest.fixture(autouse=True)
 def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     # Pin the default install prefix to a per-session tmp dir so any

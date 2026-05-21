@@ -102,6 +102,67 @@ def test_commit_pivots_all_disks_and_unlinks_overlays(monkeypatch: pytest.Monkey
     assert not overlay.exists()
 
 
+def test_commit_removes_empty_runtime_dir_after_pivot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Gap C: a clean run leaves no staging dir behind.
+
+    ``freeze`` creates ``domain-libvirt-backup-<vm>/`` to hold each overlay
+    so libvirt's dynamic AppArmor profile picks them up. After a successful
+    blockcommit + unlink, the directory is empty and should be removed; if
+    anything else (a wedged overlay, a libvirt-owned file) is still inside,
+    ``rmdir`` fails harmlessly and the dir is left alone.
+    """
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr(vm_snapshot, "run", fake_run)
+    runtime = tmp_path / "domain-libvirt-backup-alpha"
+    runtime.mkdir()
+    overlay = runtime / "vda.snap.overlay"
+    overlay.write_text("ov", encoding="utf-8")
+    snap = _make_snapper(tmp_path)
+    disks = (vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2")),)
+    frozen = vm_snapshot.FrozenSnapshot(
+        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, quiesced=True
+    )
+    snap.commit(frozen)
+    assert not overlay.exists()
+    assert not runtime.exists()
+
+
+def test_commit_leaves_runtime_dir_alone_when_not_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Gap C edge case: a non-empty staging dir is never wiped.
+
+    If a blockcommit on disk A failed and left ``vda.overlay`` in place but
+    disk B's pivot succeeded, the rmdir attempt for ``vdb``'s unlink must
+    not touch the surviving overlay. ``contextlib.suppress(OSError)`` swallows
+    the ``ENOTEMPTY`` and leaves the directory for an operator to clean up.
+    """
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr(vm_snapshot, "run", fake_run)
+    runtime = tmp_path / "domain-libvirt-backup-alpha"
+    runtime.mkdir()
+    overlay = runtime / "vda.snap.overlay"
+    overlay.write_text("ov", encoding="utf-8")
+    stray = runtime / "leftover.file"
+    stray.write_text("stay", encoding="utf-8")
+    snap = _make_snapper(tmp_path)
+    disks = (vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2")),)
+    frozen = vm_snapshot.FrozenSnapshot(
+        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, quiesced=True
+    )
+    snap.commit(frozen)
+    assert runtime.exists()
+    assert stray.exists()
+
+
 def test_commit_reraises_first_failure_but_continues_other_disks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

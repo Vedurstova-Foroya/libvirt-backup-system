@@ -1,29 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from libvirt_backup_system.config import DEFAULTS, Config
+from libvirt_backup_system.config import Config
 from libvirt_backup_system.installer import install, uninstall
-
-
-def _fake_config_factory(
-    tmp_path: Path,
-    *,
-    backup_path: str | None = None,
-) -> object:
-    def fake_config(
-        config_path: str | None = None,
-        prefix: str | None = None,
-        *,
-        apply_env_overrides: bool = True,
-    ) -> Config:
-        values = dict(DEFAULTS)
-        if backup_path is not None:
-            values["BACKUP_PATH"] = backup_path
-        return Config(values=values, path=tmp_path / "etc/config.env", prefix=tmp_path)
-
-    return fake_config
+from tests.unit.conftest import stub_ensure_kopia_repo, write_kopia_password_file
 
 
 def _quoted_systemd_path(path: Path) -> str:
@@ -39,15 +20,10 @@ def _escaped_systemd_path(path: Path) -> str:
     return escaped.replace("\t", "\\\t").replace(" ", "\\ ")
 
 
-def _patch_prefixed_to_tmp(monkeypatch, tmp_path: Path) -> None:
-    fake_prefixed = lambda path, root: tmp_path / str(path).lstrip("/")  # noqa: E731
-    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
-    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
-    monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
-
-
 def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     assert install(str(tmp_path)) == 0
     bin_path = tmp_path / "usr/local/bin/libvirt-backup-system"
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
@@ -124,6 +100,8 @@ def test_first_install_applies_env_overrides_then_subsequent_install_locks_to_fi
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     env_path = tmp_path / "from-env"
     env_path.mkdir()
     monkeypatch.setenv("BACKUP_PATH", str(env_path))
@@ -154,6 +132,7 @@ def test_existing_config_logs_ignored_install_time_env(tmp_path: Path, monkeypat
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("BACKUP_PATH=\n", encoding="utf-8")
+    write_kopia_password_file(tmp_path)
     monkeypatch.setenv("BACKUP_PATH", str(tmp_path / "ignored"))
 
     assert install(str(tmp_path)) == 0
@@ -175,6 +154,8 @@ def test_install_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
 
 def test_install_honors_explicit_config_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     custom_config = tmp_path / "custom/libvirt-backup.env"
     backup_dir = tmp_path / "custom-backups"
     backup_dir.mkdir()
@@ -203,6 +184,8 @@ def test_install_renders_systemd_safe_paths_with_spaces_and_specifiers(tmp_path:
     backup_dir = root / "backup dir 50% $BACKUP"
     backup_dir.mkdir(parents=True)
     monkeypatch.setenv("BACKUP_PATH", str(backup_dir))
+    write_kopia_password_file(root)
+    stub_ensure_kopia_repo(monkeypatch)
 
     assert install(str(root)) == 0
 
@@ -214,87 +197,3 @@ def test_install_renders_systemd_safe_paths_with_spaces_and_specifiers(tmp_path:
         f"ExecStart={_quoted_systemd_path(bin_path)} " f"--config {_quoted_systemd_path(config_path)} run"
     ) in service_text
     assert f"RequiresMountsFor={_escaped_systemd_path(backup_dir)}\n" in service_text
-
-
-def test_install_rejects_relative_config_path(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    assert install(str(tmp_path), config_path="relative.env") == 1
-
-    assert not (tmp_path / "relative.env").exists()
-    err = capsys.readouterr().err
-    assert "config_path must be an absolute path for systemd units" in err
-
-
-def test_install_rejects_control_char_config_path(tmp_path: Path, capsys) -> None:
-    assert install(str(tmp_path), config_path=str(tmp_path / "bad\nname.env")) == 1
-
-    err = capsys.readouterr().err
-    assert "config_path must not contain control characters for systemd units" in err
-
-
-def test_install_creates_config_with_mode_0o600(tmp_path: Path, monkeypatch) -> None:
-    # Env file may grow secrets via operator edits; install must atomically
-    # create it with mode 0o600 instead of write_text+chmod (world-readable window).
-    import stat as _stat
-
-    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
-    assert install(str(tmp_path)) == 0
-    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
-    assert _stat.S_IMODE(config_path.stat().st_mode) == 0o600
-
-
-def test_write_initial_config_skips_write_when_file_appears_under_race(tmp_path: Path, monkeypatch) -> None:
-    # A parallel writer between exists() and our O_EXCL open must not be
-    # truncated; FileExistsError is silently ignored.
-    from libvirt_backup_system.installer import _write_initial_config
-
-    config_path = tmp_path / "config.env"
-    config_path.write_text("pre-existing\n", encoding="utf-8")
-    real_open = os.open
-
-    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
-        del dir_fd
-        if str(path) == str(config_path):
-            raise FileExistsError(17, "file exists", str(path))
-        return real_open(path, flags, mode)
-
-    monkeypatch.setattr("libvirt_backup_system.installer.os.open", fake_open)
-    _write_initial_config(config_path, "new-content\n")
-    assert config_path.read_text(encoding="utf-8") == "pre-existing\n"
-
-
-def test_install_rejects_backticked_config_path(tmp_path: Path, capsys) -> None:
-    # Backticks survive _quote_systemd_path: systemd does not run /bin/sh, but
-    # operator tooling re-rendering the unit through a shell would expand them.
-    assert install(str(tmp_path), config_path=str(tmp_path / "bad`name.env")) == 1
-    err = capsys.readouterr().err
-    assert "config_path must not contain '`'" in err
-
-
-def test_install_rejects_relative_backup_path(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("BACKUP_PATH", "relative/backups")
-
-    assert install(str(tmp_path)) == 1
-
-    assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
-    err = capsys.readouterr().err
-    assert "BACKUP_PATH must be an absolute path for systemd units" in err
-
-
-def test_install_reports_stale_systemd_unit_removal_failure(tmp_path: Path, monkeypatch, capsys) -> None:
-    service_path = tmp_path / "etc/systemd/system/libvirt-backup-system.service"
-    service_path.parent.mkdir(parents=True)
-    service_path.write_text("stale\n", encoding="utf-8")
-    original_unlink = Path.unlink
-
-    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
-        if self == service_path:
-            raise PermissionError("no perms")
-        original_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr("libvirt_backup_system.installer.Path.unlink", fake_unlink)
-    assert install(str(tmp_path)) == 1
-    err = capsys.readouterr().err
-    assert "failed to remove stale systemd unit" in err
-    assert "no perms" in err

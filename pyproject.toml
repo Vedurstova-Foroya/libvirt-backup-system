@@ -60,6 +60,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Module-level help text and password-rotation event logs trigger
+# S105/S106 (hardcoded passwords) on string literals that are obviously
+# not real secrets; PTH105 wants Path.replace but we open a fd for
+# atomic_replace and need os.replace at the syscall layer.
+"libvirt_backup_system/cli_help.py" = ["S105"]
+"libvirt_backup_system/kopia_password.py" = ["S106", "PTH105"]
 "tests/**/*.py" = [
     "ARG001",
     "ARG002",

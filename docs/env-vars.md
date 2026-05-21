@@ -1,77 +1,186 @@
-# libvirt-backup-system environment file
-#
-# Installed path:
-#   /etc/libvirt-backup-system/libvirt-backup.env
-#
-# Values in the real process environment override values in this file.
-# Booleans accept (case-insensitive): 1, true, yes, on as true; 0, false, no, off as false.
-# Any other value is rejected by preflight rather than silently coerced.
+# Configuration reference
 
-# Libvirt connection used by virsh for VM discovery and state checks.
-# LIBVIRT_URI=qemu:///system
+The installed env file lives at
+`/etc/libvirt-backup-system/libvirt-backup.env`. Values in the real process
+environment override values in this file. Booleans accept (case-insensitive)
+`1`, `true`, `yes`, `on` as true; `0`, `false`, `no`, `off` as false. Any
+other value is rejected by preflight rather than silently coerced.
 
-# Backup root. Backups are written as:
-#   BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/
-# Only running VMs are backed up: the first run each calendar month is a full,
-# later runs in the same month are incrementals into the same chain-id
-# directory. Offline VMs are logged as ``skipping vm because it is offline``
-# and skipped.
+## Core
+
+```
+LIBVIRT_URI=qemu:///system
+```
+
+Libvirt connection used by `virsh` for VM discovery and state checks.
+
+```
 BACKUP_PATH=
+```
 
-# Backup host folder name. Empty means "use this machine's short hostname".
-# Keep this stable if the hostname might change.
-# HOST_ID=
+Root of the shared backup tree. Backups are written to:
 
-# VM UUIDs to skip. Separate with spaces or commas.
-# Use ``virsh domuuid <vm-name>`` to look up a VM's UUID.
-# VM_BLACKLIST=
+```
+BACKUP_PATH/<host-id>/kopia-repo/
+```
 
-# Add --compress to virtnbdbackup commands.
-# BACKUP_COMPRESS=true
+Peer hosts' repos live at sibling `BACKUP_PATH/<other-host-id>/kopia-repo/`
+paths. Only running VMs are backed up; offline VMs are logged as `skipping
+vm because it is offline` and skipped.
 
-# systemd OnCalendar value used when the timer unit is installed.
-# Run start after changing this so the timer is refreshed and reloaded.
-# SYSTEMD_ON_CALENDAR=*-*-* 02:30:00
+```
+HOST_ID=
+```
 
-# Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.
-# Set false when backing up to an intentionally local directory.
-# BACKUP_REQUIRE_NFS_MOUNT=true
+Backup host folder name. Empty means "use this machine's `/etc/machine-id`".
+Keep this stable: renaming `HOST_ID` writes new snapshots under a fresh repo
+and leaves the old data untouched in the prior `HOST_ID` directory.
 
-# Number of most-recent calendar months of backups to keep per VM. 0 disables
-# pruning entirely; the default of 12 retains roughly one year. Retention is
-# applied at the end of every successful run when BACKUP_CLEANUP_ON_RUN is true.
-#
-# Caveat for frequent libvirt XML edits: pruning is per *month* directory, not
-# per chain. A mid-month fingerprint change (disk added, NIC swapped, ...)
-# starts a fresh chain directory alongside the old one inside the same
-# YYYY-MM/ folder. Both chains survive until the whole month falls out of the
-# retention window, so frequent XML edits can accumulate intra-month chain
-# dirs that stick around for the full retention horizon. This is a deliberate
-# tradeoff to keep retention reasoning at month granularity; size your backup
-# capacity accordingly if you expect many fingerprint changes per month.
-# BACKUP_RETENTION_MONTHS=12
+```
+VM_BLACKLIST=
+```
 
-# Run the monthly retention pass at the end of every successful ``run``.
-# Disable to manage retention out-of-band; pruning failures never roll back
-# successful backups (the run returns the worst of backup vs. prune codes).
-# BACKUP_CLEANUP_ON_RUN=true
+VM UUIDs to skip. Separate with spaces or commas. Use `virsh domuuid
+<vm-name>` to look up a VM's UUID. The blacklist scopes to *taking* new
+backups; restore and verify ignore it.
 
-# Extra free-space margin added to preflight's backup size estimate.
-# SPACE_MARGIN_PERCENT=20
+```
+SYSTEMD_ON_CALENDAR=*-*-* 02:30:00
+```
 
-# Per-VM backup size estimate used by preflight space checks, in GB.
-# Used only as a fallback when disk introspection (virsh / qemu-img) fails.
-# BACKUP_ESTIMATE_GB_PER_VM=1
+systemd `OnCalendar` value used when the backup timer is installed. Run
+`start` after changing this so the timer is refreshed and reloaded.
 
-# Multiplier applied to the sum of VM disk virtual sizes when estimating
-# required backup space. Running VMs build a monthly incremental chain (one
-# full + per-run increments); the multiplier accounts for compression
-# overhead, metadata, and per-VM safety margin on top of the raw disk virtual
-# size, sized for the worst-case full + full chain repopulation.
-# BACKUP_INCREMENTAL_MULTIPLIER=1.2
+```
+BACKUP_REQUIRE_NFS_MOUNT=true
+```
 
-# Require preflight and run commands to execute as root.
-# REQUIRE_ROOT=true
+Require `BACKUP_PATH` to be a mounted filesystem. Set false when backing up
+to an intentionally local directory.
 
-# Timeout for external commands, in seconds.
-# COMMAND_TIMEOUT_SECONDS=86400
+```
+REQUIRE_ROOT=true
+```
+
+Require preflight and run commands to execute as root.
+
+```
+COMMAND_TIMEOUT_SECONDS=86400
+```
+
+Timeout for external commands.
+
+## Kopia repo
+
+```
+KOPIA_REPO_PATH=
+```
+
+Override the repo path. Defaults to
+`BACKUP_PATH/<HOST_ID>/kopia-repo` when empty. Must stay within
+`BACKUP_PATH`. One repo per host, identified by its directory name.
+
+```
+KOPIA_PASSWORD_FILE=/etc/libvirt-backup-system/kopia.pw
+```
+
+Path to the shared-password file (mode 600, root-owned). Written by
+`install` and rotated by `change-password`. Lose this file on every host
+and the repos become unreadable.
+
+```
+KOPIA_CACHE_DIR=/var/cache/libvirt-backup-system/kopia
+```
+
+Local on-disk cache for Kopia chunk metadata. Speeds up subsequent
+operations against the same repo. Can be deleted at any time; Kopia
+rebuilds it on demand.
+
+## Kopia tuning
+
+```
+KOPIA_PARALLELISM=4
+```
+
+Passed to `kopia snapshot create --parallel`. Higher values trade CPU and
+read bandwidth for shorter per-VM backup windows; lower values reduce
+contention with the running VMs.
+
+```
+KOPIA_SPLITTER=FIXED-4M
+```
+
+Chunker. Fixed-size is the correct splitter for opaque block streams
+(raw disk images coming out of `nbdcopy`). Documented as advanced — change
+only with a clean cutover; mixing splitters in one repo defeats dedup.
+
+```
+KOPIA_COMPRESSION=zstd-fastest
+```
+
+Repo-wide compression. Applied via the global Kopia policy on `start`.
+
+## Retention
+
+Mapped onto `kopia policy set --global --keep-*`. Defaults are tuned for a
+single year of hourly granularity:
+
+```
+KEEP_LATEST=8
+KEEP_HOURLY=24
+KEEP_DAILY=30
+KEEP_WEEKLY=12
+KEEP_MONTHLY=24
+KEEP_ANNUAL=5
+```
+
+The Kopia maintenance timer (see below) prunes expired snapshots in the
+background; the backup loop does not perform pruning itself.
+
+## Maintenance and verify cadence
+
+```
+KOPIA_MAINTENANCE_INTERVAL=24h
+```
+
+Cadence for `kopia maintenance run` against the local repo. Daily quick
+maintenance, weekly full maintenance. No global owner: each host maintains
+its own repo.
+
+```
+KOPIA_VERIFY_INTERVAL=7d
+```
+
+Cadence for `kopia snapshot verify` against the local repo. Cross-host
+verify is opt-in via `libvirt-backup-system verify --include-hosts=...` and
+is not scheduled by default.
+
+## Preflight estimate
+
+```
+SPACE_MARGIN_PERCENT=20
+BACKUP_ESTIMATE_GB_PER_VM=1
+BACKUP_INCREMENTAL_MULTIPLIER=1.2
+```
+
+Free-space margin, per-VM fallback estimate (in GB) used when disk
+introspection fails, and multiplier applied to the sum of VM disk virtual
+sizes. The estimate is a worst-case bound on first-run space; later runs
+generally need far less because Kopia dedup absorbs unchanged chunks.
+
+## Legacy keys (no longer drive behavior)
+
+These keys are still emitted by the env template for backward compatibility
+with existing operator-managed env files, but the Kopia engine ignores them:
+
+```
+BACKUP_COMPRESS=true
+BACKUP_RETENTION_MONTHS=12
+BACKUP_CLEANUP_ON_RUN=true
+```
+
+`BACKUP_COMPRESS` is superseded by `KOPIA_COMPRESSION`.
+`BACKUP_RETENTION_MONTHS` and `BACKUP_CLEANUP_ON_RUN` are superseded by the
+`KEEP_*` policy keys and the maintenance timer. The keys are kept in the
+template so existing env files do not produce "unknown key" surprises; they
+will be removed in a future change.

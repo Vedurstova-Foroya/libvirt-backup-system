@@ -18,7 +18,7 @@ import secrets
 import subprocess
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -52,15 +52,17 @@ class FrozenSnapshot:
 class VmSnapshotter(Protocol):  # pragma: no cover - type-checker fiction at runtime
     """Hypervisor-agnostic snapshot/stream/commit interface.
 
-    ``stream_disk`` is intentionally not constrained beyond ``object`` —
-    the libvirt implementation returns a ``contextmanager``-decorated
-    generator, and pinning the exact wrapper class would force every
-    future provider into the same wrapper shape.
+    ``stream_disk`` returns a context manager whose yielded value is opaque
+    (``object``) — the orchestrator only forwards it straight into the
+    storage backend, so a future ``vm_snapshot_hyperv`` is free to yield a
+    Hyper-V VHDX reader, a Windows handle, or whatever — as long as the
+    storage layer (kopia) can consume it. Pinning the exact wrapper class
+    would force every future provider into the same Popen-shaped contract.
     """
 
     def list_disks(self, vm_name: str) -> list[DiskTarget]: ...
     def freeze(self, vm_name: str, disks: list[DiskTarget]) -> FrozenSnapshot: ...
-    def stream_disk(self, base: Path) -> object: ...
+    def stream_disk(self, base: Path) -> AbstractContextManager[object]: ...
     def commit(self, snapshot: FrozenSnapshot) -> None: ...
 
 
@@ -225,8 +227,13 @@ class LibvirtSnapshotter:
 
         Errors are logged and re-raised; the orchestrator may want to leave
         a wedged overlay in place rather than push half-committed state.
+        After every overlay has been unlinked, attempt to remove the per-VM
+        runtime staging dir that ``freeze`` created. ``rmdir`` only succeeds
+        on an empty directory, so any leftover state (a failed commit's
+        wedged overlay, libvirt-owned files, etc.) is left untouched.
         """
         failures: list[CommandError] = []
+        runtime_dirs: set[Path] = set()
         for disk in snapshot.bases:
             try:
                 run(
@@ -254,7 +261,11 @@ class LibvirtSnapshotter:
                 continue
             overlay = snapshot.overlays.get(disk.target)
             if overlay is not None:
+                runtime_dirs.add(overlay.parent)
                 with suppress(FileNotFoundError, OSError):
                     overlay.unlink()
+        for runtime in runtime_dirs:
+            with suppress(OSError):
+                runtime.rmdir()
         if failures:
             raise failures[0]

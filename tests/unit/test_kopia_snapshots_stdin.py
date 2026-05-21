@@ -170,3 +170,10 @@ def test_snapshot_restore_to_stdout_spawns_process(monkeypatch: pytest.MonkeyPat
     args = captured[0]
     assert args[-1] == "-"
     assert "abc/vda.raw" in args
+    # ``--shallow=0`` is required by the plan's documented restore command
+    # so kopia materializes the file end-to-end instead of writing a
+    # placeholder on disk.
+    assert "--shallow=0" in args
+    shallow_idx = args.index("--shallow=0")
+    spec_idx = args.index("abc/vda.raw")
+    assert shallow_idx < spec_idx

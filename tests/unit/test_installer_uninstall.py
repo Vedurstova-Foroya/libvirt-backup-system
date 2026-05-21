@@ -96,7 +96,7 @@ def test_uninstall_returns_nonzero_when_opt_rmtree_fails(tmp_path: Path, monkeyp
     def failing_rmtree(path: object) -> None:
         raise OSError("opt removal failed")
 
-    monkeypatch.setattr("libvirt_backup_system.installer.shutil.rmtree", failing_rmtree)
+    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.shutil.rmtree", failing_rmtree)
     assert uninstall(str(tmp_path)) == 1
     assert "failed to remove directory" in capsys.readouterr().err
     assert opt_dir.exists()
@@ -109,7 +109,7 @@ def test_uninstall_returns_nonzero_when_purge_rmtree_fails(tmp_path: Path, monke
     def failing_rmtree(path: object) -> None:
         raise OSError("purge denied")
 
-    monkeypatch.setattr("libvirt_backup_system.installer.shutil.rmtree", failing_rmtree)
+    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.shutil.rmtree", failing_rmtree)
     assert uninstall(str(tmp_path), purge_state=True) == 1
     assert "purge failed" in capsys.readouterr().err
 
@@ -148,7 +148,7 @@ def test_uninstall_returns_nonzero_when_systemctl_fails(tmp_path: Path, monkeypa
         "libvirt_backup_system.config.default_config_path",
         lambda prefix=None: tmp_path / "etc/libvirt-backup-system/libvirt-backup.env",
     )
-    monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
     monkeypatch.setattr(
         "libvirt_backup_system.systemd_units.run",
@@ -166,7 +166,7 @@ def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypa
     monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
     _patch_prefixed_to_tmp(monkeypatch, tmp_path)
     monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
-    monkeypatch.setattr("libvirt_backup_system.installer.shutil.which", lambda binary: "/bin/systemctl")
+    monkeypatch.setattr("libvirt_backup_system.systemd_units.shutil.which", lambda binary: "/bin/systemctl")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
     calls: list[list[str]] = []
     monkeypatch.setattr(
