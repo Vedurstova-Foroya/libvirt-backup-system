@@ -63,7 +63,7 @@ class _ZombieThread:
         self._joins = 0
         self._die_after = die_after_joins
 
-    def join(self, timeout: float | None = None) -> None:  # noqa: ARG002
+    def join(self, timeout: float | None = None) -> None:
         self._joins += 1
 
     def is_alive(self) -> bool:

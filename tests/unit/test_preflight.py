@@ -1,231 +1,190 @@
+"""Top-level preflight tests: config-shape validators + scratch dir + write probe.
+
+Split across ``test_preflight_*`` files so each one stays under the 300-line
+project ceiling without losing the related-tests-live-together property.
+"""
+
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from libvirt_backup_system.config import Config
-from libvirt_backup_system.preflight import check, validate_config
-from libvirt_backup_system.preflight_estimate import df_available_kb
-from libvirt_backup_system.shell import CommandResult
-from libvirt_backup_system.vms import VM
-from tests.unit.conftest import ALPHA_UUID
+from libvirt_backup_system import preflight
+from tests.unit._preflight_helpers import make_config
 
 
-def _preflight_config(cfg: Config) -> Config:
-    cfg.values.update(
-        {
-            "REQUIRE_ROOT": "true",
-            "BACKUP_ESTIMATE_GB_PER_VM": "1",
-            "SPACE_MARGIN_PERCENT": "20",
-        }
-    )
-    return cfg
+def test_validate_libvirt_uri_accepts_known_schemes() -> None:
+    assert preflight.validate_libvirt_uri("qemu:///system")
+    assert preflight.validate_libvirt_uri("test://")
+    assert not preflight.validate_libvirt_uri("https://nope")
 
 
-def patch_valid_preflight(
-    monkeypatch,
-    *,
-    available_kb: int = 2_000_000,
-    selected_vms: list[VM] | None = None,
-    patch_probe: bool = True,
-) -> None:
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    monkeypatch.setattr(
-        "libvirt_backup_system.preflight.list_vms",
-        lambda config: [VM("alpha", "running", ALPHA_UUID)] if selected_vms is None else selected_vms,
-    )
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: available_kb)
-    monkeypatch.setattr("libvirt_backup_system.preflight._virtnbdbackup_version_failures", list)
-    monkeypatch.setattr("libvirt_backup_system.preflight._validate_scratch_dir", list)
-    if patch_probe:
-        monkeypatch.setattr(
-            "libvirt_backup_system.preflight.probe_qemu_socket_bind_with_lock",
-            lambda config, vms, *, lock_held: [],
-        )
+def test_validate_config_zero_for_clean_config(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    assert preflight.validate_config(cfg) == 0
 
 
-def test_df_helpers(tmp_path: Path, monkeypatch) -> None:
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        return CommandResult(args, 0, "Filesystem 1024-blocks Used Available Capacity Mounted on\nfs 9 1 7 1% /\n", "")
-
-    monkeypatch.setattr("libvirt_backup_system.preflight_estimate.run", fake_run)
-    assert df_available_kb(tmp_path) == 7
+def test_validate_config_one_with_empty_required(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["HOST_ID"] = ""
+    assert preflight.validate_config(cfg) == 1
 
 
-def test_df_helpers_bad_output(tmp_path: Path, monkeypatch) -> None:
-    def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
-        return CommandResult(args, 0, "header-only\n", "")
-
-    monkeypatch.setattr("libvirt_backup_system.preflight_estimate.run", fake_run)
-    with pytest.raises(RuntimeError, match="data row"):
-        df_available_kb(tmp_path)
+def test_required_present_rejects_path_separators(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path, host_id="bad/host")
+    failures = preflight._validate_required_present(cfg)
+    assert any("path separators" in failure for failure in failures)
 
 
-def test_check_passes(monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    patch_valid_preflight(monkeypatch)
-    assert check(cfg) == 0
-    assert "preflight passed" in capsys.readouterr().out
-    assert validate_config(cfg) == 0
+def test_required_present_rejects_dot_names(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path, host_id="..")
+    failures = preflight._validate_required_present(cfg)
+    assert any("path separators" in failure for failure in failures)
 
 
-def test_check_reports_common_failures(monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.values["BACKUP_PATH"] = ""
-    cfg.values["BACKUP_COMPRESS"] = "maybe"
-    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "bad"
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: None)
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 99)
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", lambda config: [])
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", lambda path: 1)
-
-    assert check(cfg) == 1
-    err = capsys.readouterr().err
-    assert "BACKUP_PATH must not be empty" in err
-    assert "BACKUP_COMPRESS must be a boolean value" in err
-    assert "BACKUP_ESTIMATE_GB_PER_VM must be a number" in err
-    assert "missing binary" in err
-    assert "must run as root" in err
-    assert "no VMs selected" in err
+def test_required_present_rejects_control_characters(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path, host_id="bad\x01name")
+    failures = preflight._validate_required_present(cfg)
+    assert any("control characters" in failure for failure in failures)
 
 
-def test_validate_config_reports_numeric_and_path_edge_cases(
-    tmp_path: Path, monkeypatch, capsys, backup_config
-) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.values["SPACE_MARGIN_PERCENT"] = "bad"
+def test_required_present_rejects_leading_or_trailing_whitespace(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["HOST_ID"] = "  host  "
+    failures = preflight._validate_required_present(cfg)
+    assert any("leading or trailing whitespace" in failure for failure in failures)
+
+
+def test_required_present_flags_empty_required_keys(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_COMPRESS"] = ""
+    failures = preflight._validate_required_present(cfg)
+    assert any("BACKUP_COMPRESS must not be empty" in failure for failure in failures)
+
+
+def test_validate_vm_blacklist_flags_invalid_uuids(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["VM_BLACKLIST"] = "not-a-uuid, aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    failures = preflight._validate_vm_blacklist(cfg)
+    assert any("not-a-uuid" in failure for failure in failures)
+    assert all("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" not in failure for failure in failures)
+
+
+def test_validate_booleans_flags_garbage(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["REQUIRE_ROOT"] = "maybe"
+    failures = preflight._validate_booleans(cfg)
+    assert any("REQUIRE_ROOT must be a boolean" in failure for failure in failures)
+
+
+def test_validate_integers_flags_garbage_value(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["COMMAND_TIMEOUT_SECONDS"] = "abc"
+    failures = preflight._validate_integers(cfg)
+    assert any("COMMAND_TIMEOUT_SECONDS must be an integer" in failure for failure in failures)
+
+
+def test_validate_integers_flags_non_positive_timeout(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["COMMAND_TIMEOUT_SECONDS"] = "0"
+    failures = preflight._validate_integers(cfg)
+    assert any("greater than 0" in failure for failure in failures)
+
+
+def test_validate_integers_flags_negative_other(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["SPACE_MARGIN_PERCENT"] = "-1"
+    failures = preflight._validate_integers(cfg)
+    assert any("greater than or equal to 0" in failure for failure in failures)
+
+
+def test_validate_floats_flags_garbage_value(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "nope"
+    failures = preflight._validate_floats(cfg)
+    assert any("must be a number" in failure for failure in failures)
+
+
+def test_validate_floats_flags_non_finite_value(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "inf"
+    failures = preflight._validate_floats(cfg)
+    assert any("must be a finite number" in failure for failure in failures)
+
+
+def test_validate_floats_flags_zero_multiplier(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = "0"
+    failures = preflight._validate_floats(cfg)
+    assert any("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0" in failure for failure in failures)
+
+
+def test_validate_floats_flags_negative_other(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "-1"
-    cfg.values["BACKUP_PATH"] = str(tmp_path / "missing")
-    assert validate_config(cfg) == 1
-    err = capsys.readouterr().err
-    assert "SPACE_MARGIN_PERCENT must be an integer" in err
-    assert "BACKUP_ESTIMATE_GB_PER_VM must be greater than or equal to 0" in err
-    assert "BACKUP_PATH must exist" in err
-    backup_path = tmp_path / "backup"
-    backup_path.mkdir()
-    cfg.values.update({"SPACE_MARGIN_PERCENT": "20", "BACKUP_ESTIMATE_GB_PER_VM": "1", "BACKUP_PATH": str(backup_path)})
-    monkeypatch.setattr("libvirt_backup_system.preflight.subpath_is_safe", lambda root, path: False)
-    assert validate_config(cfg) == 1
-    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+    failures = preflight._validate_floats(cfg)
+    assert any("BACKUP_ESTIMATE_GB_PER_VM must be greater than or equal to 0" in failure for failure in failures)
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
-def test_validate_config_rejects_non_finite_float_values(value: str, backup_config, capsys) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = value
-
-    assert validate_config(cfg) == 1
-    assert "BACKUP_ESTIMATE_GB_PER_VM must be a finite number" in capsys.readouterr().err
+def test_validate_env_values_rejects_unknown_libvirt_uri(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["LIBVIRT_URI"] = "https://nope"
+    failures = preflight._validate_env_values(cfg, require_writable=False)
+    assert any("LIBVIRT_URI must use one of these schemes" in failure for failure in failures)
 
 
-def test_check_reports_low_backup_space(monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    patch_valid_preflight(monkeypatch, available_kb=1)
-    assert check(cfg) == 1
-    assert "insufficient backup space" in capsys.readouterr().err
+def test_write_probe_raises_if_write_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``os.write`` returning a short count -> _write_probe raises OSError."""
+    real_write = os.write
+
+    def short_write(fd: int, data: bytes) -> int:
+        real_write(fd, data)
+        return 0
+
+    monkeypatch.setattr(preflight.os, "write", short_write)
+    with pytest.raises(OSError, match="write probe was incomplete"):
+        preflight._write_probe(tmp_path / "probe")
 
 
-def test_check_handles_discovery_and_backup_space_errors(monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    monkeypatch.setattr("libvirt_backup_system.preflight.shutil.which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr("libvirt_backup_system.preflight.os.geteuid", lambda: 0)
-    raise_no_libvirt = lambda config: (_ for _ in ()).throw(RuntimeError("no libvirt"))  # noqa: E731
-    raise_bad_df = lambda path: (_ for _ in ()).throw(RuntimeError("bad df"))  # noqa: E731
-    monkeypatch.setattr("libvirt_backup_system.preflight.list_vms", raise_no_libvirt)
-    monkeypatch.setattr("libvirt_backup_system.preflight._df_available_kb", raise_bad_df)
-    assert check(cfg) == 1
-    err = capsys.readouterr().err
-    assert "libvirt VM discovery failed" in err
-    assert "backup space check failed" in err
+def test_write_probe_cleans_up_when_open_fails(tmp_path: Path) -> None:
+    """FileNotFoundError flows through ``finally`` without touching the path."""
+    with pytest.raises(FileNotFoundError):
+        preflight._write_probe(tmp_path / "no-such-dir" / "probe")
 
 
-def test_check_reports_backup_path_failures(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_file = tmp_path / "backup-file"
-    backup_file.write_text("not a directory", encoding="utf-8")
-    cfg.values["BACKUP_PATH"] = str(backup_file)
-    patch_valid_preflight(monkeypatch)
-    assert check(cfg) == 1
-    assert "BACKUP_PATH must be a directory" in capsys.readouterr().err
-
-    backup_dir = tmp_path / "backup"
-    backup_dir.mkdir()
-    cfg.values["BACKUP_PATH"] = str(backup_dir)
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-    monkeypatch.setattr("libvirt_backup_system.preflight.Path.is_mount", lambda self: False)
-    assert check(cfg) == 1
-    assert "BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true" in capsys.readouterr().err
+def test_validate_scratch_dir_missing_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "SCRATCH_DIR", Path("/no-such-scratch-please"))
+    failures = preflight._validate_scratch_dir()
+    assert any("must exist as a directory" in failure for failure in failures)
 
 
-def test_mount_probe_oserror_fails_closed(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_dir = tmp_path / "backup"
-    backup_dir.mkdir()
-    cfg.values["BACKUP_PATH"] = str(backup_dir)
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-
-    def fail_mount(self: Path) -> bool:
-        raise OSError("stale file handle")
-
-    monkeypatch.setattr("libvirt_backup_system.preflight.Path.is_mount", fail_mount)
-    assert validate_config(cfg) == 1
-    assert "BACKUP_PATH mount probe failed" in capsys.readouterr().err
+def test_validate_scratch_dir_not_a_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    # /dev/null is not a directory so os.open raises NotADirectoryError.
+    monkeypatch.setattr(preflight, "SCRATCH_DIR", Path("/dev/null"))
+    failures = preflight._validate_scratch_dir()
+    assert failures and ("must exist" in failures[0] or "must be writable" in failures[0])
 
 
-def test_check_rejects_unsafe_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    cfg.values["HOST_ID"] = "../outside"
-    patch_valid_preflight(monkeypatch)
+def test_validate_scratch_dir_write_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(preflight, "SCRATCH_DIR", scratch)
 
-    assert check(cfg) == 1
-    assert not (tmp_path / "outside").exists()
-    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+    def boom(_path: Path) -> None:
+        raise OSError("disk full")
 
-
-def test_check_rejects_absolute_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    outside = tmp_path / "outside"
-    cfg.values["HOST_ID"] = str(outside)
-    patch_valid_preflight(monkeypatch)
-
-    assert check(cfg) == 1
-    assert not outside.exists()
-    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+    monkeypatch.setattr(preflight, "_write_probe", boom)
+    failures = preflight._validate_scratch_dir()
+    assert failures and "must be writable for write probes" in failures[0]
 
 
-def test_negative_space_margin_percent_rejected(monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-    cfg.values["SPACE_MARGIN_PERCENT"] = "-5"
-    patch_valid_preflight(monkeypatch)
-    assert check(cfg) == 1
-    assert "SPACE_MARGIN_PERCENT must be greater than or equal to 0" in capsys.readouterr().err
+def test_backup_path_is_mount_returns_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def boom(_self: Path) -> bool:
+        raise OSError("ESTALE")
 
-
-def test_validate_config_rejects_relative_backup_path(backup_config, capsys) -> None:
-    cfg = _preflight_config(backup_config)
-    cfg.values["BACKUP_PATH"] = "relative/backups"
-    assert validate_config(cfg) == 1
-    assert "BACKUP_PATH must be an absolute path" in capsys.readouterr().err
-
-
-def test_check_rejects_symlinked_host_id_before_mkdir(tmp_path: Path, monkeypatch, capsys, backup_config) -> None:
-    cfg = _preflight_config(backup_config)
-    backup_path = cfg.path_value("BACKUP_PATH")
-    backup_path.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (backup_path / "link").symlink_to(outside, target_is_directory=True)
-    cfg.values["HOST_ID"] = "link/host"
-    patch_valid_preflight(monkeypatch)
-
-    assert check(cfg) == 1
-    assert not (outside / "host").exists()
-    assert "BACKUP_PATH / HOST_ID must stay within BACKUP_PATH" in capsys.readouterr().err
+    monkeypatch.setattr(Path, "is_mount", boom)
+    mounted, error = preflight._backup_path_is_mount(tmp_path)
+    assert mounted is False
+    assert error == "ESTALE"

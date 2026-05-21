@@ -1,0 +1,38 @@
+[
+  {
+    "id": "0123456789abcdef",
+    "source": {
+      "host": "lbs-host-a",
+      "userName": "root",
+      "path": "libvirt-backup:00000000-0000-0000-0000-000000000001/meta"
+    },
+    "description": "",
+    "startTime": "2026-05-21T02:30:01Z",
+    "endTime": "2026-05-21T02:30:05Z",
+    "rootEntry": {"name": ".", "type": "d", "obj": "k1111"},
+    "tags": {
+      "vm-uuid": "00000000-0000-0000-0000-000000000001",
+      "kind": "meta",
+      "run-id": "11111111-1111-1111-1111-111111111111",
+      "host": "lbs-host-a"
+    }
+  },
+  {
+    "id": "fedcba9876543210",
+    "source": {
+      "host": "lbs-host-a",
+      "userName": "root",
+      "path": "libvirt-backup:00000000-0000-0000-0000-000000000001/vda"
+    },
+    "description": "",
+    "startTime": "2026-05-21T02:30:06Z",
+    "endTime": "2026-05-21T02:31:30Z",
+    "rootEntry": {"name": ".", "type": "d", "obj": "k2222"},
+    "tags": {
+      "vm-uuid": "00000000-0000-0000-0000-000000000001",
+      "disk": "vda",
+      "run-id": "11111111-1111-1111-1111-111111111111",
+      "host": "lbs-host-a"
+    }
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "configFile": "/var/lib/libvirt-backup-system/kopia-configs/host-a.config",
+  "uniqueID": "1111111111111111",
+  "encryption": "AES256-GCM-HMAC-SHA256",
+  "splitter": "FIXED-4M",
+  "storage": {
+    "type": "filesystem",
+    "config": {"path": "/mnt/backup/host-a/kopia-repo"}
+  }
+}

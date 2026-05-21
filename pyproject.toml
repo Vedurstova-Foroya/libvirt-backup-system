@@ -48,7 +48,9 @@ ignore = [
     "PLC0206",
     "PLR0911",
     "PLR0912",
+    "PLR0913",
     "PLR2004",
+    "TRY004",
     "S603",
     "S607",
     "T201",
@@ -58,7 +60,24 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ARG001", "ARG005", "FBT001", "PT017", "S101", "S108", "SLF001"]
+"tests/**/*.py" = [
+    "ARG001",
+    "ARG002",
+    "ARG005",
+    "FBT001",
+    "FBT002",
+    "PT006",
+    "PT017",
+    "PT018",
+    "RUF012",
+    "RUF015",
+    "S101",
+    "S105",
+    "S106",
+    "S108",
+    "S314",
+    "SLF001",
+]
 "tests/e2e/**/*.py" = ["TRY003"]
 
 [tool.mypy]
@@ -86,3 +105,11 @@ fail_under = 100
 show_missing = true
 skip_covered = false
 precision = 2
+exclude_also = [
+    # Protocol bodies are pure type-checker fiction at runtime.
+    "^\\s*\\.\\.\\.\\s*$",
+    # Branches that only fire under sustained polling loops; the unit suite
+    # mocks time forward to skip the sleep, but the sleep itself has no
+    # behavior worth covering with a real wait.
+    "^\\s*time\\.sleep\\(",
+]

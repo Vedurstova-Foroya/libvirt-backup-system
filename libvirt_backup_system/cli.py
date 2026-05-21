@@ -7,7 +7,7 @@ import sys
 import traceback
 
 from . import cli_help
-from .backup import current_month, run_backups, verify
+from .backup import run_backups
 from .config import Config
 from .doctor import doctor
 from .installer import install, uninstall
@@ -16,10 +16,10 @@ from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .preflight import check, validate_config
 from .restore import restore
-from .retention import prune_old_months
 from .shell import configure_default_timeout
 from .systemd_start import start
 from .systemd_units import dispatch_via_systemd, status
+from .verify import verify
 from .vms import list_vms
 
 
@@ -106,7 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser = _add_subparser(
         sub, "verify", help_text=cli_help.VERIFY_HELP, description=cli_help.VERIFY_DESCRIPTION
     )
-    verify_parser.add_argument("--vm", metavar="NAME_OR_UUID", help="Restrict verification to one VM by name or UUID.")
+    verify_parser.add_argument(
+        "--include-hosts",
+        metavar="HOST_ID[,HOST_ID...]",
+        help="Comma-separated peer host_ids whose repos to verify in addition to the local repo.",
+    )
 
     _add_subparser(
         sub,
@@ -142,34 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_command(config: Config) -> int:
-    # Acquire the run lock BEFORE preflight: the NBD probe drives QEMU's HMP
-    # nbd_server_start/stop, so running it outside the lock could disrupt a
-    # concurrent backup. ``check(..., lock_held=True)`` skips the duplicate
-    # lock acquisition inside the probe.
+    # Acquire the run lock before preflight: the new kopia-backed pipeline
+    # spawns qemu-nbd against a running VM, so the lock keeps a concurrent
+    # ad-hoc run from competing for the per-VM external snapshot.
     try:
         with acquire_run_lock(config):
             preflight_code = check(config, lock_held=True)
             if preflight_code != 0:
                 return preflight_code
-            backup_code = run_backups(config)
-            # Pruning failure must not roll back successful backups, so we
-            # combine codes via ``max`` rather than short-circuiting. Disabling
-            # cleanup leaves retention entirely to operators / external tools.
-            if not config.enabled("BACKUP_CLEANUP_ON_RUN"):
-                return backup_code
-            if backup_code != 0:
-                # A failed run can leave the current month without a fresh
-                # backup for the affected VMs. Pruning now would delete the
-                # oldest still-good month while the newest month is incomplete,
-                # so wait for a clean run before touching retention.
-                event("info", "retention skipped because backups did not all succeed")
-                return backup_code
-            # Gate retention on the current calendar month landing a backup:
-            # with retention=12 the oldest month only drops once month 13's
-            # first full has actually written its chain dir, so a missed or
-            # delayed run never collapses the window below the operator's
-            # configured horizon.
-            return max(backup_code, prune_old_months(config, current_month=current_month()))
+            return run_backups(config)
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
@@ -267,7 +252,12 @@ def main(argv: list[str] | None = None) -> int:
             # progress" instead.
             try:
                 with acquire_run_lock(config):
-                    return verify(config, vm_name=args.vm)
+                    include_hosts = (
+                        [item.strip() for item in args.include_hosts.split(",") if item.strip()]
+                        if args.include_hosts
+                        else None
+                    )
+                    return verify(config, include_hosts=include_hosts)
             except LockBusyError as exc:
                 event("error", "another run in progress", lock_path=str(exc.path))
                 return 1

@@ -1,214 +1,254 @@
+"""Kopia-engine backup orchestration.
+
+Phase 3 cutover. The chain/run-records/fingerprint machinery is gone; a
+backup run is now a sequence of kopia snapshots tagged with a per-VM
+``run-id``. For each running VM, sequentially:
+
+  1. ``vm_snapshot.freeze`` — external snapshots created on all disks.
+  2. For each disk: ``stream_disk`` pipes the read-only base into
+     ``kopia snapshot create --stdin-file=<target>.raw`` with disk tags.
+  3. Write a per-run ``manifest.json`` and snapshot it as ``kind:meta``.
+  4. ``vm_snapshot.commit`` — overlays folded back, original chain restored.
+
+The orchestrator does NOT run kopia maintenance — that's a separate
+systemd timer (see Phase 6) so a slow GC pass cannot block backups.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
 import shutil
+import tempfile
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
-from .chains import ChainResolution, disable_chain_reuse, resolve_chain, write_chain_state
+from . import kopia_repo, kopia_snapshots
 from .config import Config
-from .disks import domain_xml_fingerprint
+from .disks import vm_disk_paths_with_targets
 from .logging_json import event
-from .nbd_probe import virtnbdbackup_socket_args
+from .manifest import Manifest, ManifestDisk, snapshot_filename_for_target, utc_timestamp
 from .paths import backup_root, runtime_backup_path_ok
-from .run_records import CheckpointReadError, list_checkpoints, record_run
-from .shell import CommandError, run_streamed
-from .storage import subpath_is_safe
-from .verify import verify
+from .preflight_estimate import disk_virtual_size_bytes
+from .shell import CommandError
+from .vm_snapshot import LibvirtSnapshotter, VmSnapshotter
 from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
 __all__ = [
     "backup_root",
-    "backup_subpath_is_safe",
     "backup_vm",
     "current_month",
     "run_backups",
     "runtime_backup_path_ok",
     "timestamp",
-    "verify",
 ]
 
 
 def current_month(now: dt.datetime | None = None) -> str:
+    """Calendar bucket (``YYYY-MM``). Retained for log-line continuity."""
     now = now or dt.datetime.now(dt.timezone.utc)
     return f"{now.year:04d}-{now.month:02d}"
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
-    now = now or dt.datetime.now(dt.timezone.utc)
-    return now.strftime("%Y%m%dT%H%M%S")
+    return utc_timestamp(now)
 
 
-def backup_subpath_is_safe(config: Config, path: Path) -> bool:
-    if not config.get("BACKUP_PATH").strip():
-        return False
-    return subpath_is_safe(config.path_value("BACKUP_PATH"), path)
-
-
-def _ensure_safe(config: Config, path: Path, message: str) -> bool:
-    if backup_subpath_is_safe(config, path):
-        return True
-    event("error", message, path=str(path), backup_path=config.get("BACKUP_PATH"))
-    return False
-
-
-def _remove_partial_destination(dest: Path, vm_name: str) -> None:
-    try:
-        shutil.rmtree(dest)
-    except OSError as exc:
-        event("error", "partial backup removal failed", vm=vm_name, destination=str(dest), error=str(exc))
-        return
-    if dest.exists():
-        event("error", "partial backup removal incomplete", vm=vm_name, destination=str(dest))
-    else:
-        event("info", "removed partial backup", vm=vm_name, destination=str(dest))
-
-
-def _attempt_partial_cleanup(config: Config, dest: Path, vm_name: str) -> None:
-    if backup_subpath_is_safe(config, dest) and runtime_backup_path_ok(config):
-        _remove_partial_destination(dest, vm_name)
-    else:
-        event("error", "partial backup removal skipped because destination is unsafe", vm=vm_name, path=str(dest))
-
-
-def _virtnbdbackup_cmd(config: Config, vm: VM, level: str, dest: Path) -> list[str]:
-    cmd = ["virtnbdbackup", "-U", config.get("LIBVIRT_URI"), "-d", vm.name, "-l", level, "-o", str(dest)]
-    cmd.extend(virtnbdbackup_socket_args(config.get("LIBVIRT_URI"), vm.name))
-    if config.enabled("BACKUP_COMPRESS"):
-        cmd.append("--compress")
-    return cmd
-
-
-def _prepare_dest(config: Config, vm: VM, month_dir: Path, dest: Path, *, owns_chain_dir: bool) -> bool:
-    if owns_chain_dir and dest.exists():
-        # End-to-end-owned chain dir: refuse overwrite so a retry or backward
-        # clock jump cannot delete prior data. Incrementals reuse the dir and
-        # do not own it, so the guard only fires for new fulls.
-        event("error", "backup destination already exists", vm=vm.name, destination=str(dest))
-        return False
-    if not runtime_backup_path_ok(config):
-        return False
-    try:
-        month_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        event(
-            "error",
-            "backup skipped because month directory creation failed",
-            vm=vm.name,
-            path=str(month_dir),
-            error=str(exc),
+def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str) -> Manifest:
+    libvirt_uri = config.get("LIBVIRT_URI")
+    disks = vm_disk_paths_with_targets(libvirt_uri, vm.name)
+    manifest_disks: list[ManifestDisk] = []
+    for entry in disks:
+        try:
+            virtual = disk_virtual_size_bytes(str(entry.source))
+        except (CommandError, OSError, ValueError) as exc:
+            event(
+                "warning",
+                "could not read virtual disk size; defaulting to 0",
+                vm=vm.name,
+                disk=str(entry.source),
+                error=str(exc),
+            )
+            virtual = 0
+        manifest_disks.append(
+            ManifestDisk(
+                target=entry.target,
+                source_path=str(entry.source),
+                virtual_size_bytes=virtual,
+                snapshot_filename=snapshot_filename_for_target(entry.target),
+            )
         )
-        return False
-    return _ensure_safe(config, month_dir, "backup skipped because destination became unsafe")
+    domain_xml = _read_domain_xml(libvirt_uri, vm.name)
+    return Manifest(
+        vm_name=vm.name,
+        vm_uuid=vm.uuid,
+        host_id=config.get("HOST_ID"),
+        run_id=run_id,
+        timestamp=stamp,
+        libvirt_uri=libvirt_uri,
+        domain_xml=domain_xml,
+        disks=tuple(manifest_disks),
+    )
 
 
-def _run_virtnbdbackup(
-    config: Config,
-    vm: VM,
-    cmd: list[str],
-    dest: Path,
-    *,
-    owns_chain_dir: bool,
-) -> bool:
-    def _disable(state: str) -> None:
-        if not dest.exists():
-            return
-        if owns_chain_dir:
-            _attempt_partial_cleanup(config, dest, vm.name)
-        else:
-            disable_chain_reuse(dest.parent, dest, vm.name, f"virtnbdbackup {state} during incremental backup")
+def _read_domain_xml(libvirt_uri: str, vm_name: str) -> str:
+    """Persistent ``virsh dumpxml`` for the manifest body.
 
+    Kept lazy so unit tests can monkeypatch the helper without dragging the
+    real virsh into every backup test.
+    """
+    from .shell import run as shell_run  # local to keep top of file lean
+
+    result = shell_run(["virsh", "-c", libvirt_uri, "dumpxml", "--inactive", "--", vm_name])
+    return result.stdout
+
+
+def _disk_tags(config: Config, vm: VM, run_id: str, target: str) -> dict[str, str]:
+    return {
+        "vm-uuid": vm.uuid,
+        "disk": target,
+        "host": config.get("HOST_ID"),
+        "run-id": run_id,
+        "kind": "disk",
+    }
+
+
+def _meta_tags(config: Config, vm: VM, run_id: str) -> dict[str, str]:
+    return {
+        "vm-uuid": vm.uuid,
+        "kind": "meta",
+        "host": config.get("HOST_ID"),
+        "run-id": run_id,
+    }
+
+
+def _parallelism(config: Config) -> int | None:
+    raw = config.get("KOPIA_PARALLELISM").strip()
+    if not raw:
+        return None
     try:
-        run_streamed(cmd)
-    except CommandError as exc:
-        _disable("failed")
-        event("error", "backup failed", vm=vm.name, returncode=exc.result.returncode, stderr=exc.result.stderr.strip())
-        return False
-    except BaseException:
-        # run_streamed re-raises KeyboardInterrupt / SystemExit after killing the PG.
-        _disable("interrupted")
-        raise
-    if not dest.is_dir():
-        event("error", "backup reported success but destination is missing", vm=vm.name, destination=str(dest))
-        return False
-    return _ensure_safe(config, dest, "backup destination became unsafe after virtnbdbackup")
+        return int(raw)
+    except ValueError:
+        return None
 
 
-def backup_vm(config: Config, vm: VM, month: str, stamp: str) -> bool:
+def _override_source(config: Config, vm_uuid: str, suffix: str) -> str:
+    return f"{config.get('HOST_ID')}:libvirt-backup:{vm_uuid}/{suffix}"
+
+
+@contextmanager
+def _staging_dir() -> Iterator[Path]:
+    tmp = Path(tempfile.mkdtemp(prefix="lbs-meta-"))
+    try:
+        yield tmp
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> bool:
     if not is_safe_vm_name(vm.name):
         raise ValueError(f"refusing unsafe VM name: {vm.name!r}")
     if not is_safe_vm_uuid(vm.uuid):
         raise ValueError(f"refusing unsafe VM uuid for {vm.name!r}: {vm.uuid!r}")
     if not runtime_backup_path_ok(config):
         return False
-    month_dir = backup_root(config) / vm.uuid / month
-    if not _ensure_safe(config, month_dir, "backup skipped because destination is unsafe"):
+    snapper_obj: VmSnapshotter = snapper or LibvirtSnapshotter(libvirt_uri=config.get("LIBVIRT_URI"))
+    run_id = str(uuid.uuid4())
+    stamp = utc_timestamp()
+    event("info", "backup started", vm=vm.name, run_id=run_id, timestamp=stamp)
+    manifest = _build_manifest(config, vm, run_id, stamp)
+    if not _stream_all_disks(config, vm, manifest, run_id, snapper_obj):
         return False
-    pre_fingerprint = domain_xml_fingerprint(config.get("LIBVIRT_URI"), vm.name)
-    if pre_fingerprint is None:
-        event("error", "domain XML fingerprint computation failed", vm=vm.name)
+    if not _write_meta_snapshot(config, vm, manifest, run_id):
         return False
-    resolution: ChainResolution = resolve_chain(config, vm.name, month_dir, stamp, pre_fingerprint)
-    if not _prepare_dest(config, vm, month_dir, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
-        return False
-    cmd = _virtnbdbackup_cmd(config, vm, resolution.level, resolution.chain_dir)
-    event(
-        "info",
-        "backup started",
-        vm=vm.name,
-        state=vm.state,
-        backup_level=resolution.level,
-        destination=str(resolution.chain_dir),
-        chain_id=resolution.chain_dir.name,
-    )
-    try:
-        checkpoints_before = list_checkpoints(resolution.chain_dir, vm.name)
-    except CheckpointReadError as exc:
-        event(
-            "error",
-            "checkpoint metadata read failed",
-            vm=vm.name,
-            chain_dir=str(resolution.chain_dir),
-            error=str(exc),
-        )
-        return False
-    if not _run_virtnbdbackup(config, vm, cmd, resolution.chain_dir, owns_chain_dir=resolution.is_new_chain):
-        return False
-    if not record_run(resolution.chain_dir, stamp, checkpoints_before, vm.name, expect_new=True):
-        try:
-            dangling = sorted(list_checkpoints(resolution.chain_dir, vm.name) - checkpoints_before)
-        except CheckpointReadError:
-            dangling = []
-        msg = "run record write failed; dangling checkpoints" if dangling else "run record write failed"
-        event("error", msg, vm=vm.name, chain_dir=str(resolution.chain_dir))
-        level = "new" if resolution.is_new_chain else "incremental"
-        disable_chain_reuse(month_dir, resolution.chain_dir, vm.name, f"record_run failed after {level} backup")
-        if resolution.is_new_chain:
-            _attempt_partial_cleanup(config, resolution.chain_dir, vm.name)
-        return False
-    if resolution.is_new_chain and not write_chain_state(
-        month_dir, resolution.chain_dir.name, pre_fingerprint, vm.name
-    ):
-        return False
-    # Re-check the NFS mount: a drop mid-run silently lands writes on the
-    # underlying local directory.
     if not runtime_backup_path_ok(config):
         event("error", "backup completed but backup path no longer mounted", vm=vm.name)
         return False
-    event("info", "backup completed", vm=vm.name, destination=str(resolution.chain_dir))
+    event("info", "backup completed", vm=vm.name, run_id=run_id, disks=len(manifest.disks))
     return True
 
 
-def run_backups(config: Config, *, month: str | None = None) -> int:
-    # ``stamp`` is recomputed per VM: a single run-start stamp across a
-    # minutes-to-hours sequential run would let ``restore`` pick a backup taken
-    # well after the requested moment. Same-second collisions are safe —
-    # ``_prepare_dest`` refuses overwrite on new-chain creation.
-    month = month or current_month()
+def _stream_all_disks(config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter) -> bool:
+    disks = [(disk.target, disk.source_path) for disk in manifest.disks]
+    snapper_disks = snapper.list_disks(vm.name)
+    frozen = snapper.freeze(vm.name, snapper_disks)
+    try:
+        for disk in manifest.disks:
+            base = next((d.source for d in snapper_disks if d.target == disk.target), None)
+            if base is None:
+                event("error", "missing snapshot base for disk", vm=vm.name, target=disk.target)
+                return False
+            if not _stream_single_disk(config, vm, run_id, disk.target, base):
+                return False
+    finally:
+        try:
+            snapper.commit(frozen)
+        except CommandError as exc:
+            event("error", "snapshot commit failed", vm=vm.name, stderr=exc.result.stderr.strip())
+            return False
+    _ = disks  # disks parameter kept for symmetry; data lives in the manifest
+    return True
+
+
+def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: Path) -> bool:
+    snapper = LibvirtSnapshotter(libvirt_uri=config.get("LIBVIRT_URI"))
+    try:
+        with snapper.stream_disk(base) as upstream:
+            kopia_snapshots.snapshot_create_stdin(
+                config_file=kopia_repo.local_config_file(config),
+                password_file=kopia_repo.password_file_path(config),
+                cache_dir=kopia_repo.cache_dir(config),
+                stdin_file=snapshot_filename_for_target(target),
+                tags=_disk_tags(config, vm, run_id, target),
+                source_stream=upstream,
+                override_source=_override_source(config, vm.uuid, target),
+                parallelism=_parallelism(config),
+            )
+    except CommandError as exc:
+        event(
+            "error",
+            "disk snapshot failed",
+            vm=vm.name,
+            target=target,
+            stderr=exc.result.stderr.strip(),
+        )
+        return False
+    return True
+
+
+def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str) -> bool:
+    with _staging_dir() as staging:
+        if not manifest.write(staging, vm_name=vm.name):
+            return False
+        try:
+            kopia_snapshots.snapshot_create_path(
+                config_file=kopia_repo.local_config_file(config),
+                password_file=kopia_repo.password_file_path(config),
+                cache_dir=kopia_repo.cache_dir(config),
+                path=staging,
+                tags=_meta_tags(config, vm, run_id),
+                override_source=_override_source(config, vm.uuid, "meta"),
+                parallelism=_parallelism(config),
+            )
+        except CommandError as exc:
+            event(
+                "error",
+                "meta snapshot failed",
+                vm=vm.name,
+                run_id=run_id,
+                stderr=exc.result.stderr.strip(),
+            )
+            return False
+    return True
+
+
+def run_backups(config: Config) -> int:
     ok = True
     for vm in list_vms(config):
         if not vm.running:
             event("info", "skipping vm because it is offline", vm=vm.name, state=vm.state)
             continue
-        if not backup_vm(config, vm, month, timestamp()):
+        if not backup_vm(config, vm):
             ok = False
     return 0 if ok else 1

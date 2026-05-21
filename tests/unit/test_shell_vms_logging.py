@@ -172,7 +172,7 @@ class _FakeProc:
         self._terminated = False
         self._poll_alive = poll_alive
 
-    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+    def wait(self, timeout: float | None = None) -> int:
         if self._wait_raises is not None and not self._wait_called:
             self._wait_called = True
             raise self._wait_raises

@@ -1,161 +1,227 @@
+"""Unit tests for :mod:`libvirt_backup_system.list_restore_points`.
+
+External surface (``kopia_repo.iter_connected_peers``,
+``kopia_repo.local_config_file``, ``kopia_repo.password_file_path``,
+``kopia_repo.cache_dir``, ``kopia_snapshots.snapshot_list``) is stubbed
+so each test exercises ``enumerate_backups`` / ``format_rows`` in
+isolation.
+"""
+
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+from libvirt_backup_system import kopia_repo, kopia_snapshots, list_restore_points
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.list_restore_points import enumerate_backups, format_rows, list_restore_points
-from tests.unit.conftest import ALPHA_UUID, BETA_UUID
+from libvirt_backup_system.shell import CommandError, CommandResult
+
+ALPHA_UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+BETA_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+RUN_ID_A = "11111111-1111-1111-1111-111111111111"
 
 
-def _seed_chain(  # noqa: PLR0913
-    cfg: Config, host_id: str, vm_uuid: str, vm_name: str, month: str, chain_id: str, *, level: str = "full"
-) -> Path:
-    chain_dir = cfg.path_value("BACKUP_PATH") / host_id / vm_uuid / month / chain_id
-    chain_dir.mkdir(parents=True)
-    (chain_dir / f"vda.{level}.data").write_bytes(b"x")
-    # virtnbdbackup writes ``<vm>.cpt`` next to every chain's data files;
-    # ``_read_vm_name`` derives the name from that filename.
-    (chain_dir / f"{vm_name}.cpt").write_text("[]", encoding="utf-8")
-    return chain_dir
-
-
-def _seed_running_chain(  # noqa: PLR0913
-    cfg: Config, host_id: str, vm_uuid: str, vm_name: str, month: str, chain_id: str
-) -> Path:
-    return _seed_chain(cfg, host_id, vm_uuid, vm_name, month, chain_id, level="full")
-
-
-def _append_run(chain_dir: Path, ts: str, checkpoint: str) -> None:
-    with (chain_dir / "runs.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"ts": ts, "checkpoint": checkpoint}) + "\n")
-
-
-def _no_mount(cfg: Config) -> Config:
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
+def _make_config(tmp_path: Path, *, host_id: str = "host-a") -> Config:
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    cfg.values.update(
+        {
+            "BACKUP_PATH": str(tmp_path / "backups"),
+            "HOST_ID": host_id,
+            "BACKUP_REQUIRE_NFS_MOUNT": "false",
+        }
+    )
+    (tmp_path / "backups").mkdir(parents=True, exist_ok=True)
     return cfg
 
 
-def test_enumerate_emits_one_row_per_run_record(backup_config: Config) -> None:
-    # A modern chain with N runs.jsonl records produces N rows: every recorded
-    # checkpoint is restorable, so list-restore-points must surface each of them.
-    cfg = _no_mount(backup_config)
-    chain_id = "20260501T080000"
-    chain_dir = _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", chain_id)
-    _append_run(chain_dir, "20260501T080000", "virtnbdbackup.0")
-    _append_run(chain_dir, "20260502T120000", "virtnbdbackup.1")
-    _append_run(chain_dir, "20260503T100000", "virtnbdbackup.2")
+def _snapshot(
+    *,
+    snap_id: str = "snap-1",
+    start_time: str = "2026-05-21T02:30:01Z",
+    vm_uuid: str = ALPHA_UUID,
+    run_id: str = RUN_ID_A,
+) -> kopia_snapshots.KopiaSnapshot:
+    tags = {}
+    if vm_uuid:
+        tags["vm-uuid"] = vm_uuid
+    if run_id:
+        tags["run-id"] = run_id
+    tags["kind"] = "meta"
+    return kopia_snapshots.KopiaSnapshot(
+        snapshot_id=snap_id,
+        source_host="host",
+        source_user="root",
+        source_path="libvirt-backup:" + vm_uuid + "/meta",
+        start_time=start_time,
+        end_time=start_time,
+        tags=tags,
+        root_entry_id="r1",
+    )
 
-    rows = enumerate_backups(cfg)
-    # Newest restore point first: the typical "restore to the latest run" intent
-    # lands at the top of both the listing and the fish completion menu.
-    assert [r.timestamp for r in rows] == ["20260503T100000", "20260502T120000", "20260501T080000"]
-    assert {r.checkpoint for r in rows} == {"virtnbdbackup.0", "virtnbdbackup.1", "virtnbdbackup.2"}
-    assert all(r.vm_name == "alpha" for r in rows)
-    assert all(r.host_id == "host" for r in rows)
+
+def _stub_repo_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+    cfg: Config,
+    *,
+    local_config_present: bool = True,
+    peers: list[kopia_repo.PeerRepo] | None = None,
+) -> Path:
+    local_cfg = cfg.prefix / "kopia-local.config"
+    if local_config_present:
+        local_cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: local_cfg)
+    monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: cfg.prefix / "pw")
+    monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
+    monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: peers or [])
+    return local_cfg
 
 
-def test_enumerate_legacy_chain_emits_chain_end_row(backup_config: Config) -> None:
-    # A chain without runs.jsonl shows up as a single chain-end row identified
-    # by the chain_id timestamp.
-    cfg = _no_mount(backup_config)
-    chain_id = "20260501T080000"
-    _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", chain_id)
+def _stub_snapshot_list(
+    monkeypatch: pytest.MonkeyPatch,
+    by_config_file: Mapping[Path, list[kopia_snapshots.KopiaSnapshot]] | None = None,
+    *,
+    raise_command_error_for: Path | None = None,
+    raise_value_error_for: Path | None = None,
+) -> None:
+    def fake_list(
+        *,
+        config_file: Path,
+        password_file: Path,
+        cache_dir: Path | None = None,
+        tags: Mapping[str, str] | None = None,
+    ) -> list[kopia_snapshots.KopiaSnapshot]:
+        if raise_command_error_for is not None and config_file == raise_command_error_for:
+            raise CommandError(CommandResult(["kopia"], 1, "", "denied"))
+        if raise_value_error_for is not None and config_file == raise_value_error_for:
+            raise ValueError("bad data")
+        return list((by_config_file or {}).get(config_file, []))
 
-    rows = enumerate_backups(cfg)
+    monkeypatch.setattr(kopia_snapshots, "snapshot_list", fake_list)
+
+
+def test_timestamp_from_start_normalizes_rfc3339() -> None:
+    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01Z") == "20260521T023001"
+
+
+def test_timestamp_from_start_handles_subseconds() -> None:
+    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01.123Z") == "20260521T023001"
+
+
+def test_timestamp_from_start_handles_empty_string() -> None:
+    assert list_restore_points._timestamp_from_start("") == ""
+
+
+def test_timestamp_from_start_preserves_value_without_trailing_z() -> None:
+    # Falls back to the raw shape minus dashes/colons so a kopia format change
+    # is visible to the operator instead of being silently swallowed.
+    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01+00:00") == "20260521T023001+0000"
+
+
+def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    _stub_repo_helpers(monkeypatch, cfg, local_config_present=False)
+    _stub_snapshot_list(monkeypatch)
+    rows = list_restore_points._local_rows(cfg)
+    assert rows == []
+
+
+def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot()]})
+    rows = list_restore_points._local_rows(cfg)
     assert len(rows) == 1
-    assert rows[0].timestamp == chain_id
-    assert rows[0].checkpoint is None
-    assert rows[0].kind == "full"
+    row = rows[0]
+    assert row.vm_uuid == ALPHA_UUID
+    assert row.host_id == "host-a"
+    assert row.run_id == RUN_ID_A
+    assert row.timestamp == "20260521T023001"
+    assert row.config_file == local_cfg
 
 
-def test_enumerate_walks_across_host_directories(backup_config: Config) -> None:
-    # Cross-host visibility: a recovery host can list backups taken on another
-    # host. The outer sort is by (host_id, vm_uuid) so each VM's backups stay
-    # grouped together; within a group timestamps come newest-first.
-    cfg = _no_mount(backup_config)
-    _seed_running_chain(cfg, "host-a", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    _seed_running_chain(cfg, "host-b", BETA_UUID, "beta", "2026-05", "20260502T080000")
-
-    rows = enumerate_backups(cfg)
-    assert [r.host_id for r in rows] == ["host-a", "host-b"]
+def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    snaps = [_snapshot(vm_uuid=""), _snapshot(run_id="")]
+    _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
+    assert list_restore_points._local_rows(cfg) == []
 
 
-def test_enumerate_newest_first_within_vm_grouping(backup_config: Config) -> None:
-    # Two VMs with two runs each. The outer sort groups by (host, vm) but
-    # within each VM the most recent run lands first, so a stable sort over a
-    # mixed-VM tree keeps each VM's block intact in newest-first order.
-    cfg = _no_mount(backup_config)
-    alpha_chain = _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    _append_run(alpha_chain, "20260501T080000", "virtnbdbackup.0")
-    _append_run(alpha_chain, "20260503T080000", "virtnbdbackup.1")
-    beta_chain = _seed_running_chain(cfg, "host", BETA_UUID, "beta", "2026-05", "20260502T080000")
-    _append_run(beta_chain, "20260502T080000", "virtnbdbackup.0")
-    _append_run(beta_chain, "20260504T080000", "virtnbdbackup.1")
+def test_rows_from_repo_returns_empty_on_command_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, raise_command_error_for=local_cfg)
+    assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
 
-    rows = enumerate_backups(cfg)
-    assert [(r.vm_uuid, r.timestamp) for r in rows] == [
-        (ALPHA_UUID, "20260503T080000"),
-        (ALPHA_UUID, "20260501T080000"),
-        (BETA_UUID, "20260504T080000"),
-        (BETA_UUID, "20260502T080000"),
+
+def test_rows_from_repo_returns_empty_on_value_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, raise_value_error_for=local_cfg)
+    assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
+
+
+def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    local_cfg = cfg.prefix / "kopia-local.config"
+    local_cfg.write_text("{}", encoding="utf-8")
+    peer_cfg = cfg.prefix / "kopia-peer.config"
+    peer_cfg.write_text("{}", encoding="utf-8")
+    peers = [
+        kopia_repo.PeerRepo("host-a", tmp_path / "ra", local_cfg),
+        kopia_repo.PeerRepo("host-b", tmp_path / "rb", peer_cfg),
     ]
-
-
-def test_enumerate_filters_to_vm_uuid(backup_config: Config) -> None:
-    cfg = _no_mount(backup_config)
-    _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    _seed_running_chain(cfg, "host", BETA_UUID, "beta", "2026-05", "20260502T080000")
-
-    rows = enumerate_backups(cfg, vm_uuid=ALPHA_UUID)
-    assert [r.vm_uuid for r in rows] == [ALPHA_UUID]
-
-
-def test_enumerate_skips_non_chain_entries(backup_config: Config) -> None:
-    # Foreign files dropped into the backup tree (operator notes, partial
-    # cleanup leftovers) must not derail enumeration: only directories named
-    # like YYYYMMDDTHHMMSS under a YYYY-MM dir under a UUID dir under a host
-    # dir count as chains.
-    cfg = _no_mount(backup_config)
-    _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    (cfg.path_value("BACKUP_PATH") / "host" / ALPHA_UUID / "README").write_text("note", encoding="utf-8")
-    (cfg.path_value("BACKUP_PATH") / "host" / ALPHA_UUID / "2026-05" / "stray-file").write_text("x", encoding="utf-8")
-    (cfg.path_value("BACKUP_PATH") / "host" / ALPHA_UUID / "2026-05" / "not-a-stamp").mkdir()
-    (cfg.path_value("BACKUP_PATH") / "host" / ALPHA_UUID / "2026-05" / ".hidden").mkdir()
-
-    rows = enumerate_backups(cfg)
+    _stub_repo_helpers(monkeypatch, cfg, peers=peers)
+    _stub_snapshot_list(monkeypatch, {peer_cfg: [_snapshot(snap_id="b-1")]})
+    rows = list_restore_points._peer_rows(cfg)
     assert len(rows) == 1
+    assert rows[0].host_id == "host-b"
 
 
-def test_format_rows_first_two_columns_are_copyable(backup_config: Config) -> None:
-    # The first two whitespace-separated tokens of each data row must be
-    # ``<uuid> <timestamp>``: that is what the operator copies into restore.
-    cfg = _no_mount(backup_config)
-    chain_dir = _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    _append_run(chain_dir, "20260501T080000", "virtnbdbackup.0")
+def test_enumerate_backups_combines_local_and_peer_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    local_cfg = cfg.prefix / "kopia-local.config"
+    local_cfg.write_text("{}", encoding="utf-8")
+    peer_cfg = cfg.prefix / "kopia-peer.config"
+    peer_cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: local_cfg)
+    monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: cfg.prefix / "pw")
+    monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
+    monkeypatch.setattr(
+        kopia_repo,
+        "iter_connected_peers",
+        lambda _cfg: [kopia_repo.PeerRepo("host-b", tmp_path / "rb", peer_cfg)],
+    )
+    _stub_snapshot_list(
+        monkeypatch,
+        {
+            local_cfg: [_snapshot(snap_id="a-late", start_time="2026-05-21T02:30:01Z")],
+            peer_cfg: [_snapshot(snap_id="b-early", start_time="2026-05-20T02:30:01Z", vm_uuid=BETA_UUID)],
+        },
+    )
+    rows = list_restore_points.enumerate_backups(cfg)
+    assert [r.snapshot_id for r in rows] == ["a-late", "b-early"]
 
-    rendered = format_rows(enumerate_backups(cfg))
-    lines = rendered.splitlines()
-    assert lines[0].split()[:2] == ["VM_UUID", "TIMESTAMP"]
-    assert lines[1].split()[:2] == [ALPHA_UUID, "20260501T080000"]
+
+def test_enumerate_backups_sorts_descending_by_timestamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    snaps = [
+        _snapshot(snap_id="older", start_time="2026-05-20T02:30:01Z"),
+        _snapshot(snap_id="newer", start_time="2026-05-21T02:30:01Z"),
+    ]
+    _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
+    rows = list_restore_points.enumerate_backups(cfg)
+    # Same host, same vm-uuid -> only timestamp order matters; descending.
+    assert [row.snapshot_id for row in rows] == ["newer", "older"]
 
 
-def test_list_restore_points_prints_table(backup_config: Config, capsys: pytest.CaptureFixture[str]) -> None:
-    cfg = _no_mount(backup_config)
-    chain_dir = _seed_running_chain(cfg, "host", ALPHA_UUID, "alpha", "2026-05", "20260501T080000")
-    _append_run(chain_dir, "20260501T080000", "virtnbdbackup.0")
-
-    assert list_restore_points(cfg) == 0
-    captured = capsys.readouterr()
-    assert ALPHA_UUID in captured.out
-    assert "20260501T080000" in captured.out
-
-
-def test_list_restore_points_no_backups(backup_config: Config, capsys: pytest.CaptureFixture[str]) -> None:
-    cfg = _no_mount(backup_config)
-    cfg.path_value("BACKUP_PATH").mkdir()
-
-    assert list_restore_points(cfg) == 0
-    assert "no backups found" in capsys.readouterr().out
+def test_enumerate_backups_filters_by_vm_uuid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    snaps = [_snapshot(snap_id="alpha"), _snapshot(snap_id="beta", vm_uuid=BETA_UUID)]
+    _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
+    rows = list_restore_points.enumerate_backups(cfg, vm_uuid=BETA_UUID)
+    assert [row.snapshot_id for row in rows] == ["beta"]

@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SESSION_URI = "qemu:///session"
-PROBE_BINARIES = ("virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img")
+PROBE_BINARIES = ("virsh", "qemu-img", "qemu-nbd", "nbdcopy", "kopia")
 
 
 def real_kvm_skip_reason() -> str | None:

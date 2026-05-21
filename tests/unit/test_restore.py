@@ -1,289 +1,298 @@
+"""Helpers + input-validation tests for ``libvirt_backup_system.restore``.
+
+End-to-end overwrite / turnkey orchestration tests live in
+``test_restore_paths.py``. Both files share the project's 300-LOC ceiling.
+"""
+
 from __future__ import annotations
 
-import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from libvirt_backup_system.config import Config
-from libvirt_backup_system.restore import restore
+from libvirt_backup_system import kopia_snapshots, restore
+from libvirt_backup_system.list_restore_points import BackupRow
+from libvirt_backup_system.manifest import MANIFEST_FILENAME, ManifestDisk
 from libvirt_backup_system.shell import CommandError, CommandResult
-from tests.unit.conftest import ALPHA_UUID
 
-ALPHA_NAME = "alpha"
-
-
-def _seed_chain(cfg: Config, months_and_chains: dict[str, list[str]], *, host_id: str | None = None) -> Path:
-    host = host_id or cfg.get("HOST_ID")
-    vm_dir = cfg.path_value("BACKUP_PATH") / host / ALPHA_UUID
-    vm_dir.mkdir(parents=True, exist_ok=True)
-    for month, chains in months_and_chains.items():
-        (vm_dir / month).mkdir(exist_ok=True)
-        for chain in chains:
-            chain_dir = vm_dir / month / chain
-            chain_dir.mkdir()
-            (chain_dir / "vda.full.data").write_bytes(b"x")
-            checkpoint = f"virtnbdbackup.{chain}"
-            record = json.dumps({"ts": chain, "checkpoint": checkpoint}, sort_keys=True, separators=(",", ":"))
-            (chain_dir / "runs.jsonl").write_text(record + "\n", encoding="utf-8")
-            (chain_dir / "metadata.json").write_text(json.dumps({"domain": ALPHA_NAME}), encoding="utf-8")
-    return vm_dir
+from .conftest import ALPHA_UUID
+from .restore_helpers import (
+    TIMESTAMP,
+    ConvertOk,
+    ConvertWith,
+    KopiaProc,
+    Snap,
+    make_config,
+    make_manifest,
+    make_row,
+    ok_result,
+    run_shutdown,
+    run_stream,
+)
 
 
-def _chain_dir(cfg: Config, stamp: str, *, host_id: str | None = None) -> Path:
-    return cfg.path_value("BACKUP_PATH") / (host_id or cfg.get("HOST_ID")) / ALPHA_UUID / "2026-05" / stamp
+def test_restore_rejects_invalid_uuid(tmp_path: Path) -> None:
+    assert restore.restore(make_config(tmp_path), "not-a-uuid", TIMESTAMP) == 1
 
 
-def _write_vmconfig(chain_dir: Path, name: str, disk_path: Path) -> None:
-    chain_dir.joinpath("vmconfig.virtnbdbackup.0.xml").write_text(
-        "\n".join(
-            [
-                "<domain>",
-                f"  <name>{name}</name>",
-                "  <devices>",
-                "    <disk type='file' device='disk'>",
-                f"      <source file='{disk_path}'/>",
-                "    </disk>",
-                "  </devices>",
-                "</domain>",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_restore_rejects_malformed_timestamp(tmp_path: Path) -> None:
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, "..") == 1
 
 
-def _restore_config(cfg: Config, tmp_path: Path) -> Config:
-    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
-    cfg.values["HOST_ID"] = "host"
-    cfg.values["LIBVIRT_BACKUP_ROOT_PREFIX"] = str(tmp_path)
-    return cfg
-
-
-def _stamp(month: str, day: int, hour: int = 12) -> str:
-    return f"{month.replace('-', '')}{day:02d}T{hour:02d}0000"
-
-
-def _stub_no_local_vm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the turnkey path: ``virsh domname`` reports no local match."""
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run",
-        lambda args, **kwargs: (_ for _ in ()).throw(
-            CommandError(CommandResult(args, 1, "", "no domain with matching name 'x'"))
-        ),
-    )
-
-
-def _capture_streamed(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: captured.append(args) or CommandResult(args, 0, "", ""),
-    )
-    return captured
-
-
-def _stub_define(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, str, str | None]]:
-    captured: list[tuple[Path, str, str | None]] = []
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.define_restored_domain",
-        lambda _cfg, path, uuid, name: captured.append((path, uuid, name)) or True,
-    )
-    return captured
-
-
-def test_restore_turnkey_when_no_local_vm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
-) -> None:
-    # Backup belongs to this host but libvirt has no domain with that UUID:
-    # restore falls through to the turnkey define path rather than refusing.
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]})
-    _stub_no_local_vm(monkeypatch)
-    defined = _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    cmd = captured[0]
-    assert cmd[:3] == ["virtnbdrestore", "-a", "restore"]
-    assert "-D" not in cmd
-    assert cmd[cmd.index("-C") + 1] == "libvirt-backup-system-restored.xml"
-    assert "-c" in cmd
-    assert cmd[cmd.index("-u") + 1] == f"virtnbdbackup.{stamp}"
-    assert defined[0][1] == ALPHA_UUID
-
-
-def test_restore_turnkey_uses_backup_name_and_original_disk_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]})
-    disk_path = tmp_path / "libvirt-images" / "vm-0.qcow2"
-    _write_vmconfig(_chain_dir(cfg, stamp), "vm-0", disk_path)
-    _stub_no_local_vm(monkeypatch)
-    _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    cmd = captured[0]
-    assert cmd[cmd.index("--name") + 1] == "vm-0"
-    assert cmd[cmd.index("-o") + 1] == str(disk_path.parent)
-
-
-def test_restore_overwrite_when_local_vm_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
-) -> None:
-    # Same host AND libvirt has the VM: restore shuts the VM off, undefines it,
-    # then redefines from the backup. The sequence is asserted on the order of
-    # virsh subcommands captured.
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]})
-    virsh_calls: list[list[str]] = []
-
-    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
-        virsh_calls.append(args)
-        if "domname" in args:
-            return CommandResult(args, 0, ALPHA_NAME, "")
-        if "domstate" in args:
-            return CommandResult(args, 0, "shut off", "")
-        return CommandResult(args, 0, "", "")
-
-    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
-    _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    actions = [tuple(call[1:5]) for call in virsh_calls]
-    assert ("-c", cfg.get("LIBVIRT_URI"), "destroy", "--") in actions
-    assert any("undefine" in call for call in virsh_calls)
-    assert captured[0][:3] == ["virtnbdrestore", "-a", "restore"]
-
-
-def test_restore_overwrite_uses_local_name_and_removes_old_disk(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]})
-    disk_path = tmp_path / "libvirt-images" / "vm-0.qcow2"
-    disk_path.parent.mkdir()
-    disk_path.write_bytes(b"old")
-    _write_vmconfig(_chain_dir(cfg, stamp), "backup-name", disk_path)
-
-    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
-        if "domname" in args:
-            return CommandResult(args, 0, "vm-0", "")
-        if "domstate" in args:
-            return CommandResult(args, 0, "shut off", "")
-        return CommandResult(args, 0, "", "")
-
-    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
-    _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    cmd = captured[0]
-    assert cmd[cmd.index("--name") + 1] == "vm-0"
-    assert cmd[cmd.index("-o") + 1] == str(disk_path.parent)
-    assert not disk_path.exists()
-
-
-def test_restore_overwrite_refuses_if_destroy_leaves_vm_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]})
-
-    def fake_run(args: list[str], **_kwargs: object) -> CommandResult:
-        if "domname" in args:
-            return CommandResult(args, 0, ALPHA_NAME, "")
-        if "destroy" in args:
-            return CommandResult(args, 0, "", "")
-        if "domstate" in args:
-            return CommandResult(args, 0, "running", "")
-        return CommandResult(args, 0, "", "")
-
-    monkeypatch.setattr("libvirt_backup_system.restore.run", fake_run)
-    monkeypatch.setattr(
-        "libvirt_backup_system.restore.run_streamed",
-        lambda args: (_ for _ in ()).throw(AssertionError("must not run when VM still up")),
-    )
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 1
-    assert "refusing to overwrite" in capsys.readouterr().err
-
-
-def test_restore_uses_cross_host_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config) -> None:
-    # Backup lives under a different host_id than this machine's; restore must
-    # still find it (cross-host recovery) and pick the turnkey define path.
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    _seed_chain(cfg, {"2026-05": [stamp]}, host_id="other-host")
-    _stub_no_local_vm(monkeypatch)
-    _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    chain_dir = cfg.path_value("BACKUP_PATH") / "other-host" / ALPHA_UUID / "2026-05" / stamp
-    assert captured[0][captured[0].index("-i") + 1] == str(chain_dir)
-
-
-def test_restore_rejects_unknown_timestamp(
-    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
-
-    assert restore(cfg, ALPHA_UUID, _stamp("2026-05", 8)) == 1
-    assert "no backup matching uuid and timestamp" in capsys.readouterr().err
-
-
-def test_restore_rejects_malformed_timestamp(
-    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
-
-    assert restore(cfg, ALPHA_UUID, "2026-05-07") == 1
-    assert "timestamp is malformed" in capsys.readouterr().err
-
-
-def test_restore_rejects_invalid_uuid(
-    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
-    assert restore(cfg, "not-a-uuid", _stamp("2026-05", 7, 10)) == 1
-    assert "not a valid UUID" in capsys.readouterr().err
-
-
-def test_restore_legacy_chain_without_runs_jsonl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backup_config: Config
-) -> None:
-    # A legacy chain (no runs.jsonl) is identified by its chain_id; restore
-    # uses chain-end semantics (no --until in the virtnbdrestore command).
-    cfg = _restore_config(backup_config, tmp_path)
-    stamp = _stamp("2026-05", 7, 10)
-    vm_dir = cfg.path_value("BACKUP_PATH") / cfg.get("HOST_ID") / ALPHA_UUID
-    chain_dir = vm_dir / "2026-05" / stamp
-    chain_dir.mkdir(parents=True)
-    (chain_dir / "vda.full.data").write_bytes(b"x")
-    _stub_no_local_vm(monkeypatch)
-    _stub_define(monkeypatch)
-    captured = _capture_streamed(monkeypatch)
-
-    assert restore(cfg, ALPHA_UUID, stamp) == 0
-    assert "-u" not in captured[0]
-
-
-def test_restore_refuses_when_mount_missing(
-    tmp_path: Path, backup_config: Config, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = _restore_config(backup_config, tmp_path)
+def test_restore_fails_when_backup_path_not_mount(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "true"
-    _seed_chain(cfg, {"2026-05": [_stamp("2026-05", 7, 10)]})
-    assert restore(cfg, ALPHA_UUID, _stamp("2026-05", 7, 10)) == 1
-    assert "BACKUP_PATH is no longer a mount point" in capsys.readouterr().err
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+
+
+def test_restore_no_matching_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [])
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+
+
+def test_match_row_skips_non_matching_timestamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    other = BackupRow(
+        vm_uuid=ALPHA_UUID,
+        timestamp="20250101T010101",
+        host_id="host-a",
+        vm_name="",
+        run_id="r",
+        snapshot_id="s",
+        config_file=tmp_path / "kopia.config",
+    )
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [other])
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+
+
+def test_restore_logs_unsafe_vm_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [make_row(tmp_path)])
+    monkeypatch.setattr(restore, "_restore_manifest", lambda *_a, **_k: make_manifest(vm_name="-evil"))
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    assert "manifest carries unsafe vm name" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stub_name", ["_ensure_staging_root", "_prepare_staging", "_restore_manifest"])
+def test_restore_propagates_helper_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_name: str) -> None:
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [make_row(tmp_path)])
+    monkeypatch.setattr(restore, stub_name, lambda *_a, **_k: None)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+
+
+def test_ensure_staging_root_logs_on_mkdir_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = make_config(tmp_path)
+
+    def boom(_self: Path, *_a: Any, **_kw: Any) -> None:
+        raise OSError("no space")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    assert restore._ensure_staging_root(cfg) is None
+    assert "restore staging root creation failed" in capsys.readouterr().err
+
+
+def test_prepare_staging_rejects_unsafe_subpath(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "staging"
+    root.mkdir()
+    monkeypatch.setattr(restore, "subpath_is_safe", lambda _r, _p: False)
+    assert restore._prepare_staging(root, ALPHA_UUID, TIMESTAMP) is None
+    assert "restore staging path is unsafe" in capsys.readouterr().err
+
+
+def test_prepare_staging_logs_on_mkdir_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "staging"
+    root.mkdir()
+    real_mkdir = Path.mkdir
+
+    def boom(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name.startswith(ALPHA_UUID):
+            raise OSError("no space")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    assert restore._prepare_staging(root, ALPHA_UUID, TIMESTAMP) is None
+    assert "restore staging dir creation failed" in capsys.readouterr().err
+
+
+def test_prepare_staging_removes_existing_dir(tmp_path: Path) -> None:
+    root = tmp_path / "staging"
+    root.mkdir()
+    leftover = root / f"{ALPHA_UUID}-{TIMESTAMP}"
+    leftover.mkdir()
+    (leftover / "stale.txt").write_text("old", encoding="utf-8")
+    assert restore._prepare_staging(root, ALPHA_UUID, TIMESTAMP) == leftover
+    assert not (leftover / "stale.txt").exists()
+
+
+def test_restore_manifest_logs_when_kopia_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(**_: Any) -> None:
+        raise CommandError(CommandResult(["kopia"], 4, "", "no such snap"))
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_path", boom)
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    assert restore._restore_manifest(make_config(tmp_path), make_row(tmp_path), staging) is None
+    assert "meta snapshot restore failed" in capsys.readouterr().err
+
+
+def test_restore_manifest_logs_when_parse_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+
+    def write_garbage(**kwargs: Any) -> None:
+        (kwargs["dest"] / MANIFEST_FILENAME).write_text("not valid json", encoding="utf-8")
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_path", write_garbage)
+    assert restore._restore_manifest(make_config(tmp_path), make_row(tmp_path), staging) is None
+    assert "manifest read failed" in capsys.readouterr().err
+
+
+def test_disk_snapshot_id_returns_first_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_list(**kwargs: Any) -> list[Any]:
+        captured["tags"] = kwargs["tags"]
+        return [Snap("snap-xyz")]
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_list", fake_list)
+    assert restore._disk_snapshot_id(make_config(tmp_path), make_row(tmp_path), "vda") == "snap-xyz"
+    assert captured["tags"] == {"kind": "disk", "run-id": "run-1", "disk": "vda"}
+
+
+@pytest.mark.parametrize(
+    "raises",
+    [CommandError(CommandResult(["kopia"], 3, "", "fail")), ValueError("bad json")],
+    ids=["command-error", "value-error"],
+)
+def test_disk_snapshot_id_swallows_lookup_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raises: Exception
+) -> None:
+    def boom(**_: Any) -> None:
+        raise raises
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_list", boom)
+    assert restore._disk_snapshot_id(make_config(tmp_path), make_row(tmp_path), "vda") is None
+
+
+def test_disk_snapshot_id_returns_none_when_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(kopia_snapshots, "snapshot_list", lambda **_: [])
+    assert restore._disk_snapshot_id(make_config(tmp_path), make_row(tmp_path), "vda") is None
+    assert "disk snapshot missing for run" in capsys.readouterr().err
+
+
+def test_stream_disk_to_qcow2_qemu_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kopia_proc = KopiaProc()
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=ConvertWith(5, b"boom")) is False
+    assert "qemu-img convert failed" in capsys.readouterr().err
+    assert kopia_proc.waited is True
+
+
+def test_stream_disk_to_qcow2_kopia_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=KopiaProc(returncode=7), popen=ConvertOk) is False
+    assert "kopia restore stream failed" in capsys.readouterr().err
+
+
+def test_stream_disk_to_qcow2_success_closes_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    kopia_proc = KopiaProc()
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=ConvertOk) is True
+    assert kopia_proc.stdout.closed is True
+
+
+def test_stream_disk_to_qcow2_handles_missing_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``kopia_proc.stdout is None`` exercises the close-skip branch."""
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=KopiaProc(with_stdout=False), popen=ConvertOk) is True
+
+
+@pytest.mark.parametrize(
+    "raises,blank",
+    [
+        (CommandError(CommandResult(["v"], 1, "", "no domain")), False),
+        (OSError("virsh missing"), False),
+        (None, True),
+    ],
+    ids=["command-error", "os-error", "blank-output"],
+)
+def test_local_domain_name_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raises: BaseException | None, blank: bool
+) -> None:
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        if raises is not None:
+            raise raises
+        return ok_result(args, "  \n") if blank else ok_result(args)
+
+    monkeypatch.setattr(restore, "run", fake_run)
+    assert restore._local_domain_name_for_uuid(make_config(tmp_path), ALPHA_UUID) is None
+
+
+def test_existing_disk_dir_branches() -> None:
+    assert restore._existing_disk_dir(make_manifest()) == Path("/var/lib/libvirt/images")
+    two = (
+        ManifestDisk(target="vda", source_path="/a/v.qcow2", virtual_size_bytes=1, snapshot_filename="vda.raw"),
+        ManifestDisk(target="vdb", source_path="/b/v.qcow2", virtual_size_bytes=1, snapshot_filename="vdb.raw"),
+    )
+    assert restore._existing_disk_dir(make_manifest(disks=two)) is None
+
+
+def test_shutdown_destroy_command_error_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``destroy`` returning a CommandError just logs and falls through."""
+    assert (
+        run_shutdown(
+            restore,
+            monkeypatch,
+            tmp_path,
+            side={
+                "destroy": CommandError(CommandResult(["virsh"], 1, "", "already off")),
+                "domstate": lambda args: ok_result(args, "shut off\n"),
+            },
+        )
+        is True
+    )
+
+
+_SHUT_OFF = lambda args: ok_result(args, "shut off\n")  # noqa: E731
+
+
+@pytest.mark.parametrize(
+    "side,message",
+    [
+        ({"destroy": OSError("no virsh")}, "virsh destroy unavailable"),
+        ({"domstate": CommandError(CommandResult(["v"], 2, "", "lost"))}, "domstate check failed"),
+        ({"domstate": lambda args: ok_result(args, "running\n")}, "VM is not shut off"),
+        (
+            {"domstate": _SHUT_OFF, "undefine": CommandError(CommandResult(["v"], 3, "", "boom"))},
+            "undefine failed",
+        ),
+        ({"domstate": _SHUT_OFF, "undefine": OSError("no virsh")}, "virsh undefine unavailable"),
+    ],
+    ids=["destroy-os", "domstate-cmd", "still-running", "undefine-cmd", "undefine-os"],
+)
+def test_shutdown_failure_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    side: dict[str, Any],
+    message: str,
+) -> None:
+    assert run_shutdown(restore, monkeypatch, tmp_path, side=side) is False
+    assert message in capsys.readouterr().err

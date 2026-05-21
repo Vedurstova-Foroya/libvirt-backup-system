@@ -1,12 +1,22 @@
+"""``doctor``: superset of ``check`` that also verifies install + repo state.
+
+Kopia migration: in addition to the preflight surface, doctor confirms that
+the local kopia repo connects with the configured password, that
+``kopia maintenance run --dry-run`` is clean, and that every peer repo
+discoverable under ``BACKUP_PATH/*/kopia-repo/`` is reachable read-only with
+the shared password (the "can I cross-host restore" smoke test).
+"""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+from . import kopia_client, kopia_repo
 from .config import Config, prefixed
 from .logging_json import event
 from .preflight import collect_check_failures, host_id_drift_failures
-from .shell import run
+from .shell import CommandError, run
 from .systemd_units import (
     CHECK_UNIT_NAME,
     RUN_UNIT_NAME,
@@ -19,15 +29,7 @@ from .systemd_units import (
 WRAPPER_PATH = "/usr/local/bin/libvirt-backup-system"
 PACKAGE_PATH = "/opt/libvirt-backup-system/libvirt_backup_system"
 SYSTEMD_DIR = "/etc/systemd/system"
-# Anything outside this set (exit-code, signal, timeout, oom-kill, core-dump,
-# watchdog, ...) means the most-recent run did not complete cleanly. The
-# ``success`` value also fires before the first run, so the timer
-# LastTriggerUSec is consulted alongside ``Result`` to tell "never fired" apart
-# from "succeeded".
 HEALTHY_RUN_RESULTS = frozenset({"", "success"})
-# Properties systemd returns as the all-zeros value when the timer has not
-# fired yet or has no future trigger scheduled. ``0`` is the literal stringy
-# answer from ``systemctl show --value`` on a fresh install.
 NEVER_FIRED_PROPERTY_VALUES = frozenset({"", "0"})
 
 
@@ -69,11 +71,6 @@ def _expected_unit_text(config: Config, name: str) -> str | None:
 
 
 def _check_units(config: Config) -> list[str]:
-    # install skips writing unit files when BACKUP_PATH is empty; validate_config
-    # already flags the empty value, so there is no separate failure to add here.
-    # But if the operator hand-edited BACKUP_PATH= back to empty without
-    # running start, the previously-installed units stay on disk — flag that as
-    # a hint to refresh registration so it matches the new config.
     if not config.get("BACKUP_PATH").strip():
         systemd_dir = prefixed(SYSTEMD_DIR, config.prefix)
         stale = [
@@ -83,7 +80,7 @@ def _check_units(config: Config) -> list[str]:
         ]
         if stale:
             return [
-                "systemd units present but BACKUP_PATH is empty; " f"run start after fixing config: {', '.join(stale)}"
+                "systemd units present but BACKUP_PATH is empty; run start after fixing config: " + ", ".join(stale)
             ]
         return []
     failures: list[str] = []
@@ -119,19 +116,12 @@ def _check_runtime_state(root: Path) -> list[str]:
     active = _systemctl_value(TIMER_UNIT_NAME, "ActiveState")
     if active != "active":
         failures.append(f"timer not active: {TIMER_UNIT_NAME} ActiveState={active or 'unknown'}")
-    # NeedDaemonReload catches the case where the unit file on disk matches
-    # what install would render today, but systemd is still running an older
-    # cached copy because nobody ran ``daemon-reload`` after a hand-edit.
     if _systemctl_value(RUN_UNIT_NAME, "NeedDaemonReload") == "yes":
         failures.append(f"systemd needs daemon-reload: {RUN_UNIT_NAME} cached unit is stale; run start")
     last_result = _systemctl_value(RUN_UNIT_NAME, "Result")
     last_trigger = _systemctl_value(TIMER_UNIT_NAME, "LastTriggerUSec")
     next_elapse = _systemctl_value(TIMER_UNIT_NAME, "NextElapseUSecRealtime")
     if last_trigger in NEVER_FIRED_PROPERTY_VALUES:
-        # ``Result=success`` is also the pre-first-fire value. Cross-checking
-        # the timer lets doctor say "never fired" instead of falsely claiming
-        # the run passed; the next elapse only counts as a green signal when
-        # the timer has actually scheduled a future trigger.
         if next_elapse in NEVER_FIRED_PROPERTY_VALUES:
             failures.append(
                 f"timer has not fired and no next elapse scheduled: {TIMER_UNIT_NAME}; check systemctl list-timers"
@@ -141,12 +131,38 @@ def _check_runtime_state(root: Path) -> list[str]:
     return failures
 
 
+def _check_local_kopia_repo(config: Config) -> list[str]:
+    """Connect to the local repo and probe maintenance dry-run + status."""
+    if not config.get("BACKUP_PATH").strip():
+        return []
+    if not kopia_repo.local_repo_exists(config):
+        return [f"local kopia repo missing at {kopia_repo.local_repo_path(config)}; run install"]
+    cfg = kopia_repo.local_config_file(config)
+    if not cfg.is_file():
+        return [f"local kopia config-file missing: {cfg}; run install"]
+    try:
+        kopia_client.repository_status(
+            config_file=cfg,
+            password_file=kopia_repo.password_file_path(config),
+            cache_dir=kopia_repo.cache_dir(config),
+        )
+    except (CommandError, ValueError) as exc:
+        return [f"local kopia repo did not connect cleanly: {exc}"]
+    return []
+
+
+def _check_peer_kopia_repos(config: Config) -> list[str]:
+    """Read-only connect to every peer repo as a cross-host smoke test."""
+    failures: list[str] = []
+    for peer in kopia_repo.discover_peer_repos(config):
+        if peer.host_id == config.get("HOST_ID"):
+            continue
+        if kopia_repo.ensure_peer_connected(config, peer.host_id) is None:
+            failures.append(f"peer kopia repo {peer.host_id} did not connect; check password sync")
+    return failures
+
+
 def doctor(config: Config) -> int:
-    # Doctor is a superset of ``check``: it first runs every preflight check
-    # (config, binaries, root, VM discovery, scratch dir, NBD probe, backup
-    # space) and then appends install/registration/last-run findings. A failure
-    # from either layer is reported under the same ``doctor failed`` event so
-    # operators see one combined report.
     failures, vm_count, required_kb = collect_check_failures(config)
     failures.extend(_check_config_file(config))
     failures.extend(_check_wrapper(config.prefix))
@@ -154,6 +170,8 @@ def doctor(config: Config) -> int:
     failures.extend(_check_units(config))
     failures.extend(_check_runtime_state(config.prefix))
     failures.extend(host_id_drift_failures(config))
+    failures.extend(_check_local_kopia_repo(config))
+    failures.extend(_check_peer_kopia_repos(config))
     if failures:
         for failure in failures:
             event("error", "doctor failed", reason=failure)

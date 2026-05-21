@@ -2,32 +2,31 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import shutil
+import stat
 from pathlib import Path
 
 from .config import CONFIG_KEYS, Config, float_value, int_value, prefixed, split_words
 from .logging_json import event
-from .nbd_probe import probe_qemu_socket_bind_with_lock
 from .paths import backup_root
 from .preflight_estimate import df_available_kb as _df_available_kb
 from .preflight_estimate import estimate_required_kb as _estimate_required_kb
-from .shell import run
 from .storage import subpath_is_safe
 from .vms import is_safe_vm_uuid, list_vms
 
-REQUIRED_BINARIES = ["virsh", "virtnbdbackup", "virtnbdrestore", "qemu-img", "df"]
+REQUIRED_BINARIES = ["virsh", "qemu-nbd", "nbdcopy", "qemu-img", "df", "kopia"]
 BOOLEAN_KEYS = frozenset(
-    ("BACKUP_COMPRESS", "BACKUP_REQUIRE_NFS_MOUNT", "REQUIRE_ROOT", "BACKUP_CLEANUP_ON_RUN"),
+    ("BACKUP_REQUIRE_NFS_MOUNT", "REQUIRE_ROOT"),
 )
-INTEGER_KEYS = frozenset(("COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT", "BACKUP_RETENTION_MONTHS"))
+INTEGER_KEYS = frozenset(
+    ("COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT", "KOPIA_PARALLELISM"),
+)
 FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
-SUPPORTED_VIRTNBDBACKUP_MAJORS = frozenset({1, 2})
 # fmt: off
 ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+ssh:// qemu+tcp:// qemu+tls:// qemu+unix:// test:// test:///".split())
 # fmt: on
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
-SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - virtnbdbackup's default scratch dir.
+SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
 HOST_ID_STATE_FILE = "host-id"
 
 
@@ -108,37 +107,38 @@ def _validate_floats(config: Config) -> list[str]:
     return failures
 
 
-def _parse_major_version(text: str) -> int | None:
-    match = re.search(r"(\d+)(?:\.(\d+))?", text)
-    return int(match.group(1)) if match else None
-
-
-def _virtnbdbackup_version_failures() -> list[str]:
-    if not shutil.which("virtnbdbackup"):
-        return []  # already reported by the missing-binary check
-    try:
-        result = run(["virtnbdbackup", "--version"], check=False, timeout=10)
-    except OSError as exc:
-        return [f"virtnbdbackup version probe failed: {exc}"]
-    if result.returncode != 0:
-        return [f"virtnbdbackup --version failed: rc={result.returncode}"]
-    text = (result.stdout or result.stderr).strip()
-    major = _parse_major_version(text)
-    if major is None:
-        return [f"virtnbdbackup --version unparseable: {text!r}"]
-    if major not in SUPPORTED_VIRTNBDBACKUP_MAJORS:
-        supported = ", ".join(f"{m}.x" for m in sorted(SUPPORTED_VIRTNBDBACKUP_MAJORS))
-        return [f"virtnbdbackup major version {major} is unsupported (need {supported}); reported: {text!r}"]
-    return []
-
-
 def _validate_scratch_dir() -> list[str]:
     try:
         _write_probe(SCRATCH_DIR / WRITE_PROBE_NAME)
     except (FileNotFoundError, NotADirectoryError):
-        return [f"{SCRATCH_DIR} must exist as a directory for virtnbdbackup scratch state"]
+        return [f"{SCRATCH_DIR} must exist as a directory for write probes"]
     except OSError as exc:
-        return [f"{SCRATCH_DIR} must be writable for virtnbdbackup scratch state: {exc}"]
+        return [f"{SCRATCH_DIR} must be writable for write probes: {exc}"]
+    return []
+
+
+def _validate_kopia_password_file(config: Config) -> list[str]:
+    """Confirm the kopia password file exists and is root-owned mode 600."""
+    raw = config.get("KOPIA_PASSWORD_FILE").strip()
+    if not raw:
+        return ["KOPIA_PASSWORD_FILE must not be empty"]
+    path = prefixed(raw, config.prefix)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return [f"KOPIA_PASSWORD_FILE missing: {path}; run ``libvirt-backup-system install`` with --kopia-password"]
+    except OSError as exc:
+        return [f"KOPIA_PASSWORD_FILE stat failed: {path}: {exc}"]
+    if not stat.S_ISREG(info.st_mode):
+        return [f"KOPIA_PASSWORD_FILE is not a regular file: {path}"]
+    if (info.st_mode & 0o777) != 0o600:
+        return [f"KOPIA_PASSWORD_FILE must be mode 600 (is {oct(info.st_mode & 0o777)}): {path}"]
+    if hasattr(os, "geteuid") and os.geteuid() == 0 and info.st_uid != 0:
+        # The install step always runs as root and lays the file down 600 root:root.
+        # A non-root invocation (test run, developer probe) is a different context
+        # where we cannot meaningfully enforce ownership — skip the root-owned check
+        # rather than reject every non-root run on a correctly-installed host.
+        return [f"KOPIA_PASSWORD_FILE must be owned by root (is uid {info.st_uid}): {path}"]
     return []
 
 
@@ -265,8 +265,8 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     elif not lock_held:
         failures.extend(host_id_drift_failures(config))
     failures.extend(f"missing binary: {binary}" for binary in REQUIRED_BINARIES if not shutil.which(binary))
-    failures.extend(_virtnbdbackup_version_failures())
     failures.extend(_validate_scratch_dir())
+    failures.extend(_validate_kopia_password_file(config))
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
     try:
@@ -276,7 +276,6 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
         vms = []
-    failures.extend(probe_qemu_socket_bind_with_lock(config, vms, lock_held=lock_held))
     required_kb = _estimate_required_kb(config, vms)
     backup_path = config.path_value("BACKUP_PATH")
     if config.get("BACKUP_PATH").strip() and backup_path.exists() and backup_path.is_dir():

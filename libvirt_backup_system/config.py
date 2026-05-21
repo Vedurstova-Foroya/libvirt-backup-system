@@ -41,6 +41,22 @@ DEFAULTS = {
     "COMMAND_TIMEOUT_SECONDS": "86400",
     "BACKUP_RETENTION_MONTHS": "12",
     "BACKUP_CLEANUP_ON_RUN": "true",
+    # Kopia-engine keys (read by the kopia_* modules in phase 1; consumed by
+    # backup / restore / retention from phase 3 onward).
+    "KOPIA_REPO_PATH": "",
+    "KOPIA_PASSWORD_FILE": "/etc/libvirt-backup-system/kopia.pw",
+    "KOPIA_CACHE_DIR": "/var/cache/libvirt-backup-system/kopia",
+    "KOPIA_PARALLELISM": "4",
+    "KOPIA_SPLITTER": "FIXED-4M",
+    "KOPIA_COMPRESSION": "zstd-fastest",
+    "KEEP_LATEST": "8",
+    "KEEP_HOURLY": "24",
+    "KEEP_DAILY": "30",
+    "KEEP_WEEKLY": "12",
+    "KEEP_MONTHLY": "24",
+    "KEEP_ANNUAL": "5",
+    "KOPIA_MAINTENANCE_INTERVAL": "24h",
+    "KOPIA_VERIFY_INTERVAL": "7d",
 }
 
 

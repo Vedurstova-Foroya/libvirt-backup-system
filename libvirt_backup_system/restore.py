@@ -1,59 +1,154 @@
+"""Restore a backup run identified by ``(vm-uuid, timestamp)``.
+
+Kopia-engine restore: find the meta snapshot by tags, materialize the
+manifest, then for each disk in the manifest pull the kopia disk snapshot
+to a qcow2 file via ``qemu-img convert``. The ``overwrite`` path takes
+over an existing local VM with the same UUID; the ``turnkey`` path defines
+the VM fresh under ``RESTORE_STAGING_DIR``.
+"""
+
 from __future__ import annotations
 
-import datetime as dt
-import re
 import shutil
+import subprocess
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import kopia_repo, kopia_snapshots
 from .atomic_io import stamp_is_safe
 from .config import Config, prefixed
-from .list_restore_points import STAMP_FORMAT, BackupRow, enumerate_backups
+from .list_restore_points import BackupRow, enumerate_backups
 from .logging_json import event
+from .manifest import MANIFEST_FILENAME, Manifest, read_manifest
 from .paths import runtime_backup_path_ok
 from .restore_define import RESTORED_CONFIG_FILE, define_restored_domain
-from .restore_metadata import BackupDomainConfig, read_backup_domain_config
-from .run_records import chain_is_poisoned
-from .shell import CommandError, run, run_streamed
+from .shell import CommandError, run
 from .storage import subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid
 
 RESTORE_STAGING_DIR = Path("/var/lib/libvirt-backup-system/restore")
-_TARGET_EXISTS_RE = re.compile(r"Target file already exists: \[(?P<path>[^\]]+)\]")
 
 
-def _timestamp_is_well_formed(value: str) -> bool:
-    """Accept only the compact ``YYYYMMDDTHHMMSS`` form that list-restore-points emits.
-
-    The operator copies the timestamp verbatim from the listing, so the parser
-    matches that exact shape. Free-form ISO strings would tempt us to silently
-    pick the "closest" run, which is exactly the ``--at`` behavior we removed.
-    """
-    if not stamp_is_safe(value):
-        return False
-    try:
-        dt.datetime.strptime(value, STAMP_FORMAT).replace(tzinfo=dt.timezone.utc)
-    except ValueError:
-        return False
-    return True
+@dataclass(frozen=True)
+class _RestoreContext:
+    row: BackupRow
+    manifest: Manifest
+    staging: Path
+    verbose: bool
 
 
-def _find_match(config: Config, vm_uuid: str, timestamp: str) -> BackupRow | None:
+def _match_row(config: Config, vm_uuid: str, timestamp: str) -> BackupRow | None:
     for row in enumerate_backups(config, vm_uuid=vm_uuid):
         if row.timestamp == timestamp:
             return row
     return None
 
 
-def _local_domain_name_for_uuid(config: Config, vm_uuid: str) -> str | None:
-    """Return the VM name for ``vm_uuid`` if libvirt knows about it locally.
+def _ensure_staging_root(config: Config) -> Path | None:
+    root = prefixed(RESTORE_STAGING_DIR, config.prefix)
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        event("error", "restore staging root creation failed", path=str(root), error=str(exc))
+        return None
+    return root
 
-    ``virsh domname <uuid>`` exits non-zero when no domain matches, and a
-    libvirt that is entirely unreachable also fails. Either case returns
-    ``None`` so the caller picks the turnkey-define path rather than trying
-    to overwrite a nonexistent VM.
+
+def _prepare_staging(root: Path, vm_uuid: str, timestamp: str) -> Path | None:
+    staging = root / f"{vm_uuid}-{timestamp}"
+    if not subpath_is_safe(root, staging):
+        event("error", "restore staging path is unsafe", path=str(staging))
+        return None
+    with suppress(FileNotFoundError):
+        shutil.rmtree(staging)
+    try:
+        staging.mkdir(parents=True, mode=0o700)
+    except OSError as exc:
+        event("error", "restore staging dir creation failed", path=str(staging), error=str(exc))
+        return None
+    return staging
+
+
+def _restore_manifest(config: Config, row: BackupRow, staging: Path) -> Manifest | None:
+    meta_dir = staging / "_meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        kopia_snapshots.snapshot_restore_to_path(
+            config_file=row.config_file,
+            password_file=kopia_repo.password_file_path(config),
+            cache_dir=kopia_repo.cache_dir(config),
+            snapshot_id=row.snapshot_id,
+            dest=meta_dir,
+        )
+    except CommandError as exc:
+        event("error", "meta snapshot restore failed", stderr=exc.result.stderr.strip())
+        return None
+    try:
+        return read_manifest(meta_dir / MANIFEST_FILENAME)
+    except (OSError, ValueError) as exc:
+        event("error", "manifest read failed", path=str(meta_dir / MANIFEST_FILENAME), error=str(exc))
+        return None
+
+
+def _disk_snapshot_id(config: Config, row: BackupRow, target: str) -> str | None:
+    try:
+        snapshots = kopia_snapshots.snapshot_list(
+            config_file=row.config_file,
+            password_file=kopia_repo.password_file_path(config),
+            cache_dir=kopia_repo.cache_dir(config),
+            tags={"kind": "disk", "run-id": row.run_id, "disk": target},
+        )
+    except (CommandError, ValueError) as exc:
+        event("error", "disk snapshot lookup failed", target=target, error=str(exc))
+        return None
+    if not snapshots:
+        event("error", "disk snapshot missing for run", target=target, run_id=row.run_id)
+        return None
+    return snapshots[0].snapshot_id
+
+
+def _stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_in_snap: str, dest: Path) -> bool:
+    """Pipe a single kopia disk snapshot through ``qemu-img convert``.
+
+    ``-O qcow2 -S 4096`` produces a sparse qcow2 so an all-zero source disk
+    occupies only metadata on the destination.
     """
+    kopia_proc = kopia_snapshots.snapshot_restore_to_stdout(
+        config_file=row.config_file,
+        password_file=kopia_repo.password_file_path(config),
+        cache_dir=kopia_repo.cache_dir(config),
+        snapshot_id=snapshot_id,
+        file_in_snapshot=file_in_snap,
+    )
+    convert = subprocess.Popen(
+        ["qemu-img", "convert", "-f", "raw", "-O", "qcow2", "-S", "4096", "-", str(dest)],
+        stdin=kopia_proc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if kopia_proc.stdout is not None:
+        with suppress(OSError):
+            kopia_proc.stdout.close()
+    stdout, stderr = convert.communicate()
+    kopia_proc.wait()
+    if convert.returncode != 0:
+        event(
+            "error",
+            "qemu-img convert failed",
+            target=dest.name,
+            returncode=convert.returncode,
+            stderr=(stderr or b"").decode("utf-8", errors="replace"),
+        )
+        return False
+    if kopia_proc.returncode != 0:
+        event("error", "kopia restore stream failed", target=dest.name, returncode=kopia_proc.returncode)
+        return False
+    _ = stdout
+    return True
+
+
+def _local_domain_name_for_uuid(config: Config, vm_uuid: str) -> str | None:
     try:
         result = run(["virsh", "-c", config.get("LIBVIRT_URI"), "domname", "--", vm_uuid])
     except (CommandError, OSError):
@@ -62,14 +157,8 @@ def _local_domain_name_for_uuid(config: Config, vm_uuid: str) -> str | None:
     return name or None
 
 
-def _shutdown_domain(config: Config, vm_name: str) -> bool:
-    """Force the domain off so its disk files can be replaced.
-
-    ``virsh destroy`` on an already-stopped domain returns nonzero, so the
-    failure is logged at info level and we continue: a stopped domain is the
-    desired state. A genuine "could not shut it down" failure is detected by
-    the subsequent ``domstate`` check.
-    """
+def _shutdown_and_undefine(config: Config, vm_name: str) -> bool:
+    """Tear down the existing local domain before overwriting its disks."""
     try:
         run(["virsh", "-c", config.get("LIBVIRT_URI"), "destroy", "--", vm_name])
     except CommandError as exc:
@@ -85,12 +174,6 @@ def _shutdown_domain(config: Config, vm_name: str) -> bool:
     if state.lower() != "shut off":
         event("error", "VM is not shut off; refusing to overwrite", vm=vm_name, state=state)
         return False
-    return True
-
-
-def _undefine_domain(config: Config, vm_name: str) -> bool:
-    # ``--checkpoints-metadata`` is required because virtnbdbackup leaves
-    # libvirt-side checkpoint metadata; ``undefine`` without it refuses.
     try:
         run(["virsh", "-c", config.get("LIBVIRT_URI"), "undefine", "--checkpoints-metadata", "--", vm_name])
     except CommandError as exc:
@@ -102,184 +185,74 @@ def _undefine_domain(config: Config, vm_name: str) -> bool:
     return True
 
 
-def _prepare_staging(root: Path, vm_uuid: str, timestamp: str) -> Path | None:
-    """Clear and recreate the per-restore staging directory under ``root``.
-
-    A leftover staging dir from a previous interrupted restore would otherwise
-    confuse ``virtnbdrestore``: its data files share names with the freshly
-    extracted ones. Removing the directory first guarantees the restore sees
-    only the chain it just wrote. The path lives under a root-owned state dir
-    so user-writable racing is not a concern, but ``subpath_is_safe`` still
-    refuses any value that escapes the staging root.
-    """
-    staging = root / f"{vm_uuid}-{timestamp}"
-    if not subpath_is_safe(root, staging):
-        event("error", "restore staging path is unsafe", path=str(staging))
-        return None
-    with suppress(FileNotFoundError):
-        shutil.rmtree(staging)
-    try:
-        staging.mkdir(parents=True, mode=0o700)
-    except OSError as exc:
-        event("error", "restore staging dir creation failed", path=str(staging), error=str(exc))
-        return None
-    return staging
-
-
-@dataclass(frozen=True)
-class _CheckpointDecision:
-    checkpoint: str | None
-    refused: bool
-
-
-@dataclass(frozen=True)
-class _RestoreTarget:
-    staging: Path
-    checkpoint: str | None
-    backup_config: BackupDomainConfig
-    verbose: bool
-
-
-def _resolve_checkpoint(row: BackupRow) -> _CheckpointDecision:
-    """Return the checkpoint or chain-end intent for a backup row.
-
-    A poisoned chain is refused outright: the chain end may include a half-
-    written checkpoint, so replaying past the last recorded run is unsafe.
-    Legacy chains (no ``runs.jsonl``) restore at chain-end so the checkpoint
-    is ``None`` and ``--until`` is omitted in the virtnbdrestore invocation.
-    Modern chains carry their checkpoint on the row itself; ``select_checkpoint``
-    is not consulted because list-restore-points already mapped the timestamp
-    to the exact checkpoint and there is no ambiguity to re-resolve.
-    """
-    if row.checkpoint is not None:
-        return _CheckpointDecision(row.checkpoint, refused=False)
-    if chain_is_poisoned(row.chain_dir):
-        event("error", "restore refused poisoned chain", chain_dir=str(row.chain_dir))
-        return _CheckpointDecision(None, refused=True)
-    return _CheckpointDecision(None, refused=False)
-
-
-def _restore_target_name(
-    row: BackupRow, backup_config: BackupDomainConfig, preferred_name: str | None = None
-) -> str | None:
-    for name in (preferred_name, row.vm_name, backup_config.name):
-        if name is not None and is_safe_vm_name(name):
-            return name
-    return None
-
-
-def _remove_existing_disk_files(disk_paths: tuple[Path, ...]) -> bool:
-    for path in disk_paths:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            event("error", "restore could not remove existing disk file", path=str(path), error=str(exc))
+def _materialize_disks(ctx: _RestoreContext, config: Config, dest_dir: Path) -> bool:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for disk in ctx.manifest.disks:
+        snap_id = _disk_snapshot_id(config, ctx.row, disk.target)
+        if snap_id is None:
             return False
+        dest = dest_dir / f"{disk.target}.qcow2"
+        if not _stream_disk_to_qcow2(config, ctx.row, snap_id, disk.snapshot_filename, dest):
+            return False
+        if ctx.verbose:
+            event("info", "restored disk", target=disk.target, path=str(dest))
     return True
 
 
-def _virtnbdrestore_cmd(chain_dir: Path, output_dir: Path, checkpoint: str | None, name: str | None) -> list[str]:
-    cmd = ["virtnbdrestore", "-a", "restore", "-i", str(chain_dir), "-o", str(output_dir)]
-    if checkpoint is not None:
-        cmd.extend(["-u", checkpoint])
-    if name is not None:
-        cmd.extend(["--name", name])
-    cmd.extend(["-c", "-C", RESTORED_CONFIG_FILE])
-    return cmd
+def _write_restored_xml(ctx: _RestoreContext) -> Path:
+    """Persist the manifest's domain XML so ``define_restored_domain`` can read it."""
+    path = ctx.staging / RESTORED_CONFIG_FILE
+    path.write_text(ctx.manifest.domain_xml, encoding="utf-8")
+    return path
 
 
-def _run_virtnbdrestore(cmd: list[str], *, verbose: bool) -> bool:
-    try:
-        if verbose:
-            run_streamed(cmd)
-        else:
-            run(cmd)
-    except CommandError as exc:
-        stderr = exc.result.stderr.strip()
-        if verbose:
-            event("error", "restore failed", stderr=stderr, returncode=exc.result.returncode)
-        else:
-            event("error", "restore failed; rerun with --verbose for full output", returncode=exc.result.returncode)
-        if match := _TARGET_EXISTS_RE.search(stderr):
-            event(
-                "error",
-                "restore target disk already exists; move or remove it before retrying",
-                path=match.group("path"),
-            )
-        return False
-    except OSError as exc:
-        event("error", "restore failed: virtnbdrestore unavailable", error=str(exc))
-        return False
-    return True
-
-
-def _restore_overwrite(
-    config: Config,
-    row: BackupRow,
-    target: _RestoreTarget,
-    vm_name: str,
-) -> int:
-    if not _shutdown_domain(config, vm_name):
+def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> int:
+    if not _shutdown_and_undefine(config, vm_name):
         return 1
-    if not _undefine_domain(config, vm_name):
+    dest_dir = _existing_disk_dir(ctx.manifest) or ctx.staging
+    if not _materialize_disks(ctx, config, dest_dir):
         return 1
-    output_dir = target.backup_config.disk_output_dir or target.staging
-    if output_dir != target.staging and not _remove_existing_disk_files(target.backup_config.disk_paths):
+    xml_path = _write_restored_xml(ctx)
+    if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
         return 1
-    if target.verbose:
-        event("info", "restore overwrite started", vm=vm_name, source=str(row.chain_dir), output=str(output_dir))
-    name = _restore_target_name(row, target.backup_config, vm_name)
-    cmd = _virtnbdrestore_cmd(row.chain_dir, output_dir, target.checkpoint, name)
-    if not _run_virtnbdrestore(cmd, verbose=target.verbose):
-        return 1
-    if not define_restored_domain(config, output_dir / RESTORED_CONFIG_FILE, row.vm_uuid, name):
-        return 1
-    event("info", "restore overwrite completed", vm=vm_name, output=str(output_dir))
+    event("info", "restore overwrite completed", vm=vm_name, output=str(dest_dir))
     return 0
 
 
-def _restore_turnkey(config: Config, row: BackupRow, target: _RestoreTarget) -> int:
-    """Cross-host / fresh path: restore disks, then define the adjusted domain XML."""
-    output_dir = target.backup_config.disk_output_dir or target.staging
-    if target.verbose:
-        event("info", "restore turnkey started", vm_uuid=row.vm_uuid, source=str(row.chain_dir), output=str(output_dir))
-    name = _restore_target_name(row, target.backup_config)
-    cmd = _virtnbdrestore_cmd(row.chain_dir, output_dir, target.checkpoint, name)
-    if not _run_virtnbdrestore(cmd, verbose=target.verbose):
+def _restore_turnkey(config: Config, ctx: _RestoreContext) -> int:
+    dest_dir = _existing_disk_dir(ctx.manifest) or ctx.staging
+    if not _materialize_disks(ctx, config, dest_dir):
         return 1
-    if not define_restored_domain(config, output_dir / RESTORED_CONFIG_FILE, row.vm_uuid, name):
+    xml_path = _write_restored_xml(ctx)
+    if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, ctx.manifest.vm_name):
         return 1
-    event("info", "restore turnkey completed", vm_uuid=row.vm_uuid, host_id=row.host_id, output=str(output_dir))
+    event(
+        "info",
+        "restore turnkey completed",
+        vm_uuid=ctx.manifest.vm_uuid,
+        host_id=ctx.row.host_id,
+        output=str(dest_dir),
+    )
     return 0
 
 
-def _ensure_staging_root(config: Config) -> Path | None:
-    root = prefixed(RESTORE_STAGING_DIR, config.prefix)
-    try:
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    except OSError as exc:
-        event("error", "restore staging root creation failed", path=str(root), error=str(exc))
-        return None
-    return root
+def _existing_disk_dir(manifest: Manifest) -> Path | None:
+    parents = {Path(disk.source_path).parent for disk in manifest.disks}
+    return next(iter(parents)) if len(parents) == 1 else None
 
 
 def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = True) -> int:
     if not is_safe_vm_uuid(vm_uuid):
         event("error", "restore vm_uuid is not a valid UUID", vm_uuid=vm_uuid)
         return 1
-    if not _timestamp_is_well_formed(timestamp):
+    if not stamp_is_safe(timestamp):
         event("error", "restore timestamp is malformed", timestamp=timestamp)
         return 1
     if not runtime_backup_path_ok(config):
         return 1
-    row = _find_match(config, vm_uuid, timestamp)
+    row = _match_row(config, vm_uuid, timestamp)
     if row is None:
         event("error", "restore found no backup matching uuid and timestamp", vm_uuid=vm_uuid, timestamp=timestamp)
-        return 1
-    decision = _resolve_checkpoint(row)
-    if decision.refused:
         return 1
     staging_root = _ensure_staging_root(config)
     if staging_root is None:
@@ -287,9 +260,20 @@ def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = Tru
     staging = _prepare_staging(staging_root, vm_uuid, timestamp)
     if staging is None:
         return 1
+    manifest = _restore_manifest(config, row, staging)
+    if manifest is None:
+        return 1
+    if not is_safe_vm_name(manifest.vm_name):
+        event("error", "manifest carries unsafe vm name", vm_name=manifest.vm_name)
+        return 1
+    ctx = _RestoreContext(row=row, manifest=manifest, staging=staging, verbose=verbose)
     local_name = _local_domain_name_for_uuid(config, vm_uuid)
     same_host = row.host_id == config.get("HOST_ID")
-    target = _RestoreTarget(staging, decision.checkpoint, read_backup_domain_config(row.chain_dir), verbose)
     if same_host and local_name is not None:
-        return _restore_overwrite(config, row, target, local_name)
-    return _restore_turnkey(config, row, target)
+        return _restore_overwrite(config, ctx, local_name)
+    return _restore_turnkey(config, ctx)
+
+
+# Kept as a thin entry point so cli.py can call the restore module without
+# threading more state through.
+__all__ = ["RESTORE_STAGING_DIR", "restore"]

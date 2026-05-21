@@ -39,8 +39,7 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
         yield Path("/tmp/fake.lock")
 
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config, *, current_month=None: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 0)
     assert main(["run"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 2)
@@ -60,17 +59,38 @@ def test_cli_commands(tmp_path: Path, monkeypatch, capsys) -> None:
     assert main(["list-vms", "--include-blacklisted"]) == 0
     assert "alpha\trunning" in capsys.readouterr().out
 
-    monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, vm_name=None: 0)
-    assert main(["verify", "--vm", "alpha"]) == 0
+    monkeypatch.setattr("libvirt_backup_system.cli.verify", lambda config, *, include_hosts=None: 0)
+    assert main(["verify"]) == 0
 
     monkeypatch.setattr("libvirt_backup_system.cli.restore", lambda config, vm_uuid, timestamp, *, verbose=False: 4)
     assert main(["restore", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "20260507T101112"]) == 4
 
 
-def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) -> None:
-    # Successful backup + failed prune returns the prune code. A failing
-    # backup short-circuits prune entirely so retention never deletes the
-    # oldest still-good month while the newest month is incomplete.
+def test_cli_doctor_returns_doctor_exit_code(tmp_path: Path, monkeypatch) -> None:
+    cfg = _fake_config(tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.doctor", lambda config: 9)
+    assert main(["doctor"]) == 9
+
+
+def test_cli_list_restore_points_validate_failure(tmp_path: Path, monkeypatch) -> None:
+    cfg = _fake_config(tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 5)
+    assert main(["list-restore-points"]) == 5
+
+
+def test_cli_list_restore_points_runs_command(tmp_path: Path, monkeypatch) -> None:
+    cfg = _fake_config(tmp_path)
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.list_restore_points", lambda config: 0)
+    assert main(["list-restore-points"]) == 0
+
+
+def test_cli_run_returns_backup_code(tmp_path: Path, monkeypatch) -> None:
+    # Kopia engine: maintenance/retention run on a separate timer, so the
+    # ``run`` command's exit code is just the backup exit code.
     @contextlib.contextmanager
     def fake_lock(config: object):
         yield Path("/tmp/fake.lock")
@@ -79,33 +99,10 @@ def test_cli_run_combines_backup_and_pruning_codes(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
     monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
     monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.prune_old_months", lambda config, *, current_month=None: 1)
-    assert main(["run"]) == 1
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 2)
-    monkeypatch.setattr(
-        "libvirt_backup_system.cli.prune_old_months",
-        lambda config, *, current_month=None: (_ for _ in ()).throw(AssertionError("must not prune after failed run")),
-    )
-    assert main(["run"]) == 2
-
-
-def test_cli_run_skips_pruning_when_disabled(tmp_path: Path, monkeypatch) -> None:
-    @contextlib.contextmanager
-    def fake_lock(config: object):
-        yield Path("/tmp/fake.lock")
-
-    cfg = _fake_config(tmp_path)
-    cfg.values["BACKUP_CLEANUP_ON_RUN"] = "false"
-    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
-    monkeypatch.setattr("libvirt_backup_system.cli.check", lambda config, *, lock_held=False: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
-    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config, *, month=None: 0)
-    monkeypatch.setattr(
-        "libvirt_backup_system.cli.prune_old_months",
-        lambda config, *, current_month=None: (_ for _ in ()).throw(AssertionError("must not prune when disabled")),
-    )
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 0)
     assert main(["run"]) == 0
+    monkeypatch.setattr("libvirt_backup_system.cli.run_backups", lambda config: 2)
+    assert main(["run"]) == 2
 
 
 def test_cli_restore_reports_validate_config(tmp_path: Path, monkeypatch) -> None:
