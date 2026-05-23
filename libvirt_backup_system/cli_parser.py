@@ -148,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-v",
         "--verbose",
         action="store_true",
-        help="Stream full virtnbdrestore output instead of only summary success/error events.",
+        help="Stream full restore output instead of only summary success/error events.",
     )
     restore_parser.add_argument(
         "vm_uuid",
@@ -160,8 +160,31 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TIMESTAMP",
         help=(
             "Per-run timestamp (YYYYMMDDTHHMMSS) copied verbatim from the second column of "
-            "list-restore-points output. Exact match against the chain's runs.jsonl."
+            "list-restore-points output. Exact match against the meta snapshot's start-time tag."
         ),
+    )
+
+    # Hidden ad-hoc escape hatch: ``kopia-passthrough`` shells out to the
+    # ``kopia`` binary against a managed repo. Marked ``help=SUPPRESS`` so it
+    # does not pollute the top-level subcommand listing; documented in
+    # ``cli_help.KOPIA_PASSTHROUGH_DESCRIPTION`` for operators who go looking.
+    kopia_parser = sub.add_parser(
+        "kopia-passthrough",
+        help=argparse.SUPPRESS,
+        description=cli_help.KOPIA_PASSTHROUGH_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    kopia_parser.add_argument(
+        "--host-id",
+        metavar="HOST_ID",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    kopia_parser.add_argument(
+        "kopia_args",
+        nargs=argparse.REMAINDER,
+        metavar="-- KOPIA_ARGS...",
+        help="Arguments forwarded verbatim to the kopia binary.",
     )
 
     return parser

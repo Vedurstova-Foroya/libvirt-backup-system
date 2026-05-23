@@ -123,7 +123,9 @@ def test_cli_restore_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> N
 
 
 def test_cli_list_vms_json_keeps_env_override_logs_off_stdout(tmp_path: Path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("BACKUP_COMPRESS", "false")
+    # Set a key in CONFIG_KEYS so Config.load logs an "env override" event on
+    # stderr; the test then asserts that diagnostic does not bleed onto stdout.
+    monkeypatch.setenv("SYSTEMD_ON_CALENDAR", "*-*-* 03:30:00")
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
     monkeypatch.setattr(
         "libvirt_backup_system.cli.list_vms",

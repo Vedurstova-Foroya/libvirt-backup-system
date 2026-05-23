@@ -15,6 +15,10 @@ def remove_installed_files(root: Path) -> bool:
         prefixed("/etc/systemd/system/libvirt-backup-system.service", root),
         prefixed("/etc/systemd/system/libvirt-backup-system-check.service", root),
         prefixed("/etc/systemd/system/libvirt-backup-system.timer", root),
+        prefixed("/etc/systemd/system/libvirt-backup-system-maintenance.service", root),
+        prefixed("/etc/systemd/system/libvirt-backup-system-maintenance.timer", root),
+        prefixed("/etc/systemd/system/libvirt-backup-system-verify.service", root),
+        prefixed("/etc/systemd/system/libvirt-backup-system-verify.timer", root),
     ]:
         try:
             path.unlink()

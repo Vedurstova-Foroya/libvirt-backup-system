@@ -12,13 +12,36 @@ from .config import bool_value, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
 from .systemd_run_gate import manual_run_ready
-from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
+from .systemd_templates import UNIT_INTERVAL_TIMER, UNIT_KOPIA_SERVICE, UNIT_SERVICE, UNIT_TIMER
 
 RUN_UNIT_NAME = "libvirt-backup-system.service"
 CHECK_UNIT_NAME = "libvirt-backup-system-check.service"
 TIMER_UNIT_NAME = "libvirt-backup-system.timer"
-STATUS_UNITS = (TIMER_UNIT_NAME, RUN_UNIT_NAME, CHECK_UNIT_NAME)
+MAINTENANCE_UNIT_NAME = "libvirt-backup-system-maintenance.service"
+MAINTENANCE_TIMER_NAME = "libvirt-backup-system-maintenance.timer"
+VERIFY_UNIT_NAME = "libvirt-backup-system-verify.service"
+VERIFY_TIMER_NAME = "libvirt-backup-system-verify.timer"
+STATUS_UNITS = (
+    TIMER_UNIT_NAME,
+    RUN_UNIT_NAME,
+    CHECK_UNIT_NAME,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
+)
 UNIT_DESCRIPTIONS = {"run": "Libvirt VM backup orchestrator", "check": "Libvirt VM backup preflight check"}
+KOPIA_UNIT_DESCRIPTIONS = {
+    "maintenance": "Libvirt VM backup kopia maintenance",
+    "verify": "Libvirt VM backup kopia snapshot verify",
+}
+# Quick daily maintenance keeps the unit count low — operators can trigger a
+# full maintenance pass on demand via ``lbs kopia-passthrough -- maintenance
+# run --full=true``. Verify performs a 1% files probe weekly.
+KOPIA_UNIT_ARGS = {
+    "maintenance": "maintenance run --safety=full",
+    "verify": "snapshot verify --max-failures=0 --verify-files-percent=1",
+}
 DISPATCH_OPT_OUT_ENV = "LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH"
 
 
@@ -185,6 +208,36 @@ def render_unit_timer(root: Path, calendar: str) -> str | None:
             )
             return None
     return UNIT_TIMER.format(calendar=calendar)
+
+
+def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str) -> str:
+    if kind not in KOPIA_UNIT_DESCRIPTIONS:
+        raise ValueError(f"unknown kopia unit kind: {kind}")
+    config = validate_systemd_path(config_path, "config_path")
+    binary = validate_systemd_path(bin_path, "bin_path")
+    return UNIT_KOPIA_SERVICE.format(
+        description=KOPIA_UNIT_DESCRIPTIONS[kind],
+        bin_path=_quote_systemd_path(binary),
+        environment_file=_escape_systemd_path(config),
+        config_arg=_quote_systemd_path(config),
+        kopia_args=KOPIA_UNIT_ARGS[kind],
+    )
+
+
+def render_unit_interval_timer(*, description: str, interval: str) -> str | None:
+    interval = interval.strip()
+    if not interval:
+        event("error", "invalid systemd interval", error="timer interval must not be empty")
+        return None
+    if _has_control_char(interval):
+        event("error", "invalid systemd interval", error="timer interval must not contain control characters")
+        return None
+    if interval.startswith("-"):
+        # ``-foo`` would render as a systemd flag-shaped value; reject up front
+        # so daemon-reload never has to parse it.
+        event("error", "invalid systemd interval", error="timer interval must not start with '-'")
+        return None
+    return UNIT_INTERVAL_TIMER.format(description=description, interval=interval)
 
 
 def unit_name_for(subcommand: str) -> str:

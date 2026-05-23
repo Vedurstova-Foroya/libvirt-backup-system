@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.installer import install, uninstall
+from libvirt_backup_system.installer_binaries import BinaryInstallError
 from tests.unit.conftest import stub_ensure_kopia_repo, write_kopia_password_file
 
 
@@ -95,6 +98,47 @@ def test_install_and_uninstall_preserves_and_purges(tmp_path: Path, monkeypatch)
     assert not config_path.exists()
 
 
+def test_install_renders_kopia_maintenance_and_verify_unit_pairs(tmp_path: Path, monkeypatch) -> None:
+    """Maintenance + verify pairs are written when BACKUP_PATH is set.
+
+    Split from ``test_install_and_uninstall_preserves_and_purges`` to keep
+    each scenario under ruff's PLR0915 statement budget and to give a
+    focused failure message when only the kopia housekeeping units regress.
+    """
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    monkeypatch.setenv("BACKUP_PATH", str(backup_dir))
+
+    assert install(str(tmp_path)) == 0
+
+    maintenance_service = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance.service"
+    maintenance_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance.timer"
+    verify_service = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.service"
+    verify_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.timer"
+    assert "kopia-passthrough -- maintenance run --safety=full" in maintenance_service.read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=24h" in maintenance_timer.read_text(encoding="utf-8")
+    assert "snapshot verify --max-failures=0 --verify-files-percent=1" in verify_service.read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=7d" in verify_timer.read_text(encoding="utf-8")
+
+    # Clearing BACKUP_PATH and re-installing MUST scrub the kopia
+    # housekeeping units along with the legacy backup pair so the host
+    # doesn't keep firing timers against a stale config.
+    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(f"BACKUP_PATH={backup_dir}", "BACKUP_PATH="),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BACKUP_PATH", raising=False)
+    assert install(str(tmp_path)) == 0
+    assert not maintenance_service.exists()
+    assert not maintenance_timer.exists()
+    assert not verify_service.exists()
+    assert not verify_timer.exists()
+
+
 def test_first_install_applies_env_overrides_then_subsequent_install_locks_to_file(
     tmp_path: Path,
     monkeypatch,
@@ -177,6 +221,28 @@ def test_install_honors_explicit_config_path(tmp_path: Path, monkeypatch) -> Non
     assert (
         f"ExecStart={_quoted_systemd_path(bin_path)} " f"--config {_quoted_systemd_path(custom_config)} run"
     ) in service_text
+
+
+def test_install_hard_fails_when_pinned_binary_install_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``_stub_install_binaries`` (autouse) normally replaces install_kopia
+    # with a no-op; here we override it to raise so we can confirm the
+    # whole install short-circuits BEFORE the password / systemd-unit
+    # steps run.
+    def boom(prefix: object = None) -> None:
+        raise BinaryInstallError("simulated download failure")
+
+    monkeypatch.setattr("libvirt_backup_system.installer.install_kopia", boom)
+    write_kopia_password_file(tmp_path)
+
+    assert install(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "pinned binary install failed" in err
+    assert "simulated download failure" in err
+    # Systemd units MUST NOT exist; the install bailed before unit writes.
+    assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
 
 
 def test_install_renders_systemd_safe_paths_with_spaces_and_specifiers(tmp_path: Path, monkeypatch) -> None:

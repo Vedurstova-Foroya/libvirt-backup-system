@@ -58,10 +58,14 @@ def test_required_present_rejects_leading_or_trailing_whitespace(tmp_path: Path)
 
 
 def test_required_present_flags_empty_required_keys(tmp_path: Path) -> None:
+    # Any required key going empty should surface a clean "must not be empty"
+    # failure. We use SYSTEMD_ON_CALENDAR as a stand-in for the
+    # required-but-not-HOST_ID/BACKUP_PATH bucket (those have their own
+    # dedicated checks).
     cfg = make_config(tmp_path)
-    cfg.values["BACKUP_COMPRESS"] = ""
+    cfg.values["SYSTEMD_ON_CALENDAR"] = ""
     failures = preflight._validate_required_present(cfg)
-    assert any("BACKUP_COMPRESS must not be empty" in failure for failure in failures)
+    assert any("SYSTEMD_ON_CALENDAR must not be empty" in failure for failure in failures)
 
 
 def test_validate_vm_blacklist_flags_invalid_uuids(tmp_path: Path) -> None:
@@ -188,3 +192,45 @@ def test_backup_path_is_mount_returns_error(monkeypatch: pytest.MonkeyPatch, tmp
     mounted, error = preflight._backup_path_is_mount(tmp_path)
     assert mounted is False
     assert error == "ESTALE"
+
+
+def test_validate_kopia_repo_path_empty_is_allowed(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = ""
+    assert preflight._validate_kopia_repo_path(cfg) == []
+
+
+def test_validate_kopia_repo_path_accepts_subpath_of_backup_path(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "backups" / "alt-repo")
+    assert preflight._validate_kopia_repo_path(cfg) == []
+
+
+def test_validate_kopia_repo_path_rejects_path_outside_backup_path(tmp_path: Path) -> None:
+    # Headline regression: KOPIA_REPO_PATH=/tmp/foo when BACKUP_PATH lives
+    # under tmp_path/backups should produce a clear failure that names both
+    # the offending override and the BACKUP_PATH it must stay within.
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_PATH"] = "/srv/backups"
+    cfg.values["KOPIA_REPO_PATH"] = "/tmp/foo"
+    failures = preflight._validate_kopia_repo_path(cfg)
+    assert failures and "must stay within BACKUP_PATH" in failures[0]
+    assert "/srv/backups" in failures[0]
+    assert "/tmp/foo" in failures[0]
+
+
+def test_validate_kopia_repo_path_requires_absolute(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = "relative/repo"
+    failures = preflight._validate_kopia_repo_path(cfg)
+    assert failures == ["KOPIA_REPO_PATH must be an absolute path"]
+
+
+def test_validate_kopia_repo_path_skips_when_backup_path_empty(tmp_path: Path) -> None:
+    # BACKUP_PATH empty is already reported by _validate_required_present;
+    # _validate_kopia_repo_path must not stack a second failure on the same
+    # root cause.
+    cfg = make_config(tmp_path)
+    cfg.values["BACKUP_PATH"] = ""
+    cfg.values["KOPIA_REPO_PATH"] = "/tmp/foo"
+    assert preflight._validate_kopia_repo_path(cfg) == []

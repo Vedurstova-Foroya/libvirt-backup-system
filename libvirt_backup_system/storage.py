@@ -5,10 +5,10 @@ from pathlib import Path
 
 def subpath_is_safe(root: Path, path: Path) -> bool:
     # This is a check, not a lock: every caller mutates the path immediately
-    # after (mkdir, virtnbdbackup -o, rename). A sufficiently fast attacker
+    # after (mkdir, kopia repo writes, rename). A sufficiently fast attacker
     # with write access to an intermediate directory could swap a component
     # into a symlink between the check and the syscall. In practice every
-    # intermediate directory in BACKUP_PATH/HOST_ID/VM/MONTH/STAMP is
+    # intermediate directory under BACKUP_PATH/HOST_ID/kopia-repo/ is
     # root-owned on a mount the local user cannot write to, so the attack
     # window is theoretical; closing it would require openat()-style descended
     # traversal which Python does not expose ergonomically.

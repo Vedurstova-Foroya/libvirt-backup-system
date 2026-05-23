@@ -6,6 +6,7 @@ from pathlib import Path
 from . import kopia_password, kopia_repo
 from .config import Config, default_config_path, prefixed, root_prefix
 from .fish_completion import install_fish_completion
+from .installer_binaries import BinaryInstallError, install_kopia, install_nbdcopy
 from .installer_helpers import INSTALL_TIME_ENV_KEYS
 from .installer_helpers import install_package as _install_package
 from .installer_helpers import install_without_backup_path as _install_without_backup_path
@@ -20,6 +21,13 @@ from .logging_json import event
 from .shell import configure_default_timeout
 from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 from .systemd_units import (
+    KOPIA_UNIT_DESCRIPTIONS,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
+    render_unit_interval_timer,
+    render_unit_kopia_service,
     render_unit_service,
     render_unit_timer,
     run_systemctl,
@@ -54,6 +62,13 @@ def install(
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
     try:
         with acquire_run_lock(cfg):
+            # Install the pinned kopia + nbdcopy binaries BEFORE anything
+            # else: a fresh host should not need a separate manual
+            # ``apt install`` step. Idempotent — the modules skip the
+            # download when the right binary is already on disk.
+            binary_code = _install_pinned_binaries(root)
+            if binary_code != 0:
+                return binary_code
             password_code = _install_password(cfg, password_spec or kopia_password.PasswordSpec())
             if password_code != 0:
                 return password_code
@@ -64,6 +79,23 @@ def install(
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
+
+
+def _install_pinned_binaries(root: Path) -> int:
+    """Install pinned kopia + nbdcopy binaries; return 0 on success.
+
+    Network failure or sha256 mismatch is reported as a clean error event
+    and a nonzero return so the rest of the install short-circuits before
+    touching systemd units. Idempotent: the helpers detect an already-
+    present binary at the pinned version and skip the network round-trip.
+    """
+    try:
+        install_kopia(prefix=root)
+        install_nbdcopy(prefix=root)
+    except BinaryInstallError as exc:
+        event("error", "pinned binary install failed", error=str(exc))
+        return 1
+    return 0
 
 
 def _ensure_kopia_repo(cfg: Config) -> int:
@@ -94,21 +126,9 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     bin_path = prefixed("/usr/local/bin/libvirt-backup-system", root)
     systemd_dir = prefixed("/etc/systemd/system", root)
     backup_path = cfg.get("BACKUP_PATH").strip()
-    service_text = ""
-    check_service_text = ""
-    timer_text = ""
-    try:
-        if backup_path:
-            service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="run")
-            check_service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="check")
-    except ValueError as exc:
-        event("error", "invalid systemd unit path", error=str(exc))
+    rendered = _render_units(cfg, root, bin_path, resolved_config) if backup_path else {}
+    if backup_path and not rendered:
         return 1
-    if backup_path:
-        rendered_timer = render_unit_timer(root, cfg.get("SYSTEMD_ON_CALENDAR"))
-        if rendered_timer is None:
-            return 1
-        timer_text = rendered_timer
 
     opt_dir.mkdir(parents=True, exist_ok=True)
     _install_package(package_src, package_dst)
@@ -123,18 +143,82 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
 
     _print_install_next_steps(resolved_config, bin_path)
     if not backup_path:
+        # _install_without_backup_path scrubs the legacy backup pair; remove
+        # the maintenance + verify pair here so a config that grew BACKUP_PATH
+        # and shrank back to empty does not leave the new units behind.
+        if not _remove_stale_kopia_units(systemd_dir):
+            return 1
         return _install_without_backup_path(root, systemd_dir, resolved_config)
 
     systemd_dir.mkdir(parents=True, exist_ok=True)
-    (systemd_dir / "libvirt-backup-system.service").write_text(service_text, encoding="utf-8")
-    (systemd_dir / "libvirt-backup-system-check.service").write_text(check_service_text, encoding="utf-8")
-    (systemd_dir / "libvirt-backup-system.timer").write_text(timer_text, encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system.service").write_text(rendered["service"], encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-check.service").write_text(rendered["check"], encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system.timer").write_text(rendered["timer"], encoding="utf-8")
+    (systemd_dir / MAINTENANCE_UNIT_NAME).write_text(rendered["maintenance_service"], encoding="utf-8")
+    (systemd_dir / MAINTENANCE_TIMER_NAME).write_text(rendered["maintenance_timer"], encoding="utf-8")
+    (systemd_dir / VERIFY_UNIT_NAME).write_text(rendered["verify_service"], encoding="utf-8")
+    (systemd_dir / VERIFY_TIMER_NAME).write_text(rendered["verify_timer"], encoding="utf-8")
     event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(resolved_config))
 
     if not systemctl_available(root):
         event("info", "systemd reload skipped", root_prefix=str(root))
         return 0
     return 0 if run_systemctl(root, [["systemctl", "daemon-reload"]]) else 1
+
+
+def _remove_stale_kopia_units(systemd_dir: Path) -> bool:
+    """Best-effort scrub of maintenance/verify pair files.
+
+    Mirrors the cleanup ``_install_without_backup_path`` does for the legacy
+    backup pair: a re-install with BACKUP_PATH cleared back to empty must
+    not leave the kopia housekeeping units pointing at a path that no
+    longer applies.
+    """
+    ok = True
+    for name in (MAINTENANCE_UNIT_NAME, MAINTENANCE_TIMER_NAME, VERIFY_UNIT_NAME, VERIFY_TIMER_NAME):
+        path = systemd_dir / name
+        try:
+            path.unlink()
+            event("info", "removed stale systemd unit", path=str(path))
+        except FileNotFoundError:
+            pass
+        except (PermissionError, OSError) as exc:
+            event("error", "failed to remove stale systemd unit", path=str(path), error=str(exc))
+            ok = False
+    return ok
+
+
+def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path) -> dict[str, str]:
+    """Render every unit file the installer writes. Empty dict signals failure."""
+    backup_path = cfg.get("BACKUP_PATH").strip()
+    try:
+        service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="run")
+        check_service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="check")
+        maintenance_service = render_unit_kopia_service(bin_path, resolved_config, kind="maintenance")
+        verify_service = render_unit_kopia_service(bin_path, resolved_config, kind="verify")
+    except ValueError as exc:
+        event("error", "invalid systemd unit path", error=str(exc))
+        return {}
+    timer_text = render_unit_timer(root, cfg.get("SYSTEMD_ON_CALENDAR"))
+    maintenance_timer = render_unit_interval_timer(
+        description=KOPIA_UNIT_DESCRIPTIONS["maintenance"],
+        interval=cfg.get("KOPIA_MAINTENANCE_INTERVAL"),
+    )
+    verify_timer = render_unit_interval_timer(
+        description=KOPIA_UNIT_DESCRIPTIONS["verify"],
+        interval=cfg.get("KOPIA_VERIFY_INTERVAL"),
+    )
+    if timer_text is None or maintenance_timer is None or verify_timer is None:
+        return {}
+    return {
+        "service": service_text,
+        "check": check_service_text,
+        "timer": timer_text,
+        "maintenance_service": maintenance_service,
+        "maintenance_timer": maintenance_timer,
+        "verify_service": verify_service,
+        "verify_timer": verify_timer,
+    }
 
 
 def uninstall(
@@ -180,10 +264,36 @@ def _uninstall_locked(
         [
             ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
             ["systemctl", "stop", "libvirt-backup-system.service"],
+            ["systemctl", "disable", "--now", MAINTENANCE_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_UNIT_NAME],
+            ["systemctl", "disable", "--now", VERIFY_TIMER_NAME],
+            ["systemctl", "stop", VERIFY_UNIT_NAME],
         ],
     )
     ok = remove_installed_files(root) and ok
     flags = {"config": purge_config, "state": purge_state, "logs": purge_logs}
     ok = purge_paths(resolve_purge_paths(root, cfg, flags)) and ok
     ok = run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
+    _print_kopia_repo_retention_hint(cfg)
     return 0 if ok else 1
+
+
+def _print_kopia_repo_retention_hint(cfg: Config) -> None:
+    """Tell the operator we kept the local kopia repo and how to delete it.
+
+    Uninstall removes systemd units only; the local kopia repo and the
+    password file are operator decisions. We surface the on-disk path so an
+    operator who *does* want to wipe backups can do so in one ``rm``.
+    """
+    backup_path = cfg.get("BACKUP_PATH").strip()
+    if not backup_path:
+        # Without BACKUP_PATH there is no canonical repo to point at; nothing
+        # was ever written, so no hint is meaningful.
+        return
+    repo_path = kopia_repo.local_repo_path(cfg)
+    event(
+        "info",
+        "kopia repo retained",
+        path=str(repo_path),
+        hint=f"rm -rf {repo_path} to delete backups",
+    )

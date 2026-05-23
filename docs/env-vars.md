@@ -167,20 +167,3 @@ Free-space margin, per-VM fallback estimate (in GB) used when disk
 introspection fails, and multiplier applied to the sum of VM disk virtual
 sizes. The estimate is a worst-case bound on first-run space; later runs
 generally need far less because Kopia dedup absorbs unchanged chunks.
-
-## Legacy keys (no longer drive behavior)
-
-These keys are still emitted by the env template for backward compatibility
-with existing operator-managed env files, but the Kopia engine ignores them:
-
-```
-BACKUP_COMPRESS=true
-BACKUP_RETENTION_MONTHS=12
-BACKUP_CLEANUP_ON_RUN=true
-```
-
-`BACKUP_COMPRESS` is superseded by `KOPIA_COMPRESSION`.
-`BACKUP_RETENTION_MONTHS` and `BACKUP_CLEANUP_ON_RUN` are superseded by the
-`KEEP_*` policy keys and the maintenance timer. The keys are kept in the
-template so existing env files do not produce "unknown key" surprises; they
-will be removed in a future change.

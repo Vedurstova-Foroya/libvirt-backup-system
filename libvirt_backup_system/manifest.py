@@ -58,7 +58,7 @@ class Manifest:
 
 
 def utc_timestamp(now: dt.datetime | None = None) -> str:
-    """Return ``YYYYMMDDTHHMMSS`` UTC matching the previous chain naming."""
+    """Return ``YYYYMMDDTHHMMSS`` UTC used as the per-run identifier."""
     now = now or dt.datetime.now(dt.timezone.utc)
     return now.strftime("%Y%m%dT%H%M%S")
 

@@ -117,6 +117,31 @@ def _validate_scratch_dir() -> list[str]:
     return []
 
 
+def _validate_kopia_repo_path(config: Config) -> list[str]:
+    """Confirm KOPIA_REPO_PATH stays within BACKUP_PATH when set.
+
+    Empty is fine: kopia_repo.local_repo_path falls back to the convention
+    BACKUP_PATH/<HOST_ID>/kopia-repo/. A non-empty override must resolve to
+    a subpath of BACKUP_PATH or the per-host scoping breaks down (the repo
+    would land outside the tree that peer hosts discover).
+    """
+    raw = config.get("KOPIA_REPO_PATH").strip()
+    if not raw:
+        return []
+    backup_raw = config.get("BACKUP_PATH").strip()
+    if not backup_raw:
+        # BACKUP_PATH-empty is already reported by _validate_required_present;
+        # avoid a redundant secondary failure rooted at the same cause.
+        return []
+    backup_path = config.path_value("BACKUP_PATH")
+    repo_path = Path(raw)
+    if not repo_path.is_absolute():
+        return ["KOPIA_REPO_PATH must be an absolute path"]
+    if not subpath_is_safe(backup_path, repo_path):
+        return [f"KOPIA_REPO_PATH must stay within BACKUP_PATH ({backup_path}): {repo_path}"]
+    return []
+
+
 def _validate_kopia_password_file(config: Config) -> list[str]:
     """Confirm the kopia password file exists and is root-owned mode 600."""
     raw = config.get("KOPIA_PASSWORD_FILE").strip()
@@ -248,6 +273,7 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
     check = _validate_backup_path_writable if require_writable and not bool_failures else _validate_backup_path_readonly
     failures.extend(check(config))
+    failures.extend(_validate_kopia_repo_path(config))
     return failures
 
 

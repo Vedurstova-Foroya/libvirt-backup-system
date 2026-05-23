@@ -228,7 +228,7 @@ def run_streamed(
     stderr_buf: deque[str] = deque(maxlen=tail_lines)
     # start_new_session puts the child into its own process group so we can kill
     # the whole tree on a parent-side exception (e.g. KeyboardInterrupt) and not
-    # leave virtnbdbackup or similar tools running with stale checkpoint state.
+    # leave kopia / qemu-nbd / nbdcopy or other helpers running unsupervised.
     proc = subprocess.Popen(
         args,
         text=True,

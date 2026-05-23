@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config, default_config_path, prefixed, root_prefix
@@ -7,8 +8,15 @@ from .logging_json import event
 from .shell import configure_default_timeout
 from .systemd_units import (
     CHECK_UNIT_NAME,
+    KOPIA_UNIT_DESCRIPTIONS,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
     RUN_UNIT_NAME,
     TIMER_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
+    render_unit_interval_timer,
+    render_unit_kopia_service,
     render_unit_service,
     render_unit_timer,
     run_systemctl,
@@ -17,7 +25,33 @@ from .systemd_units import (
 )
 
 
-def _render_installed_units(root: Path, config_path: str | None) -> tuple[Path, str, str, str] | None:
+@dataclass(frozen=True)
+class _Rendered:
+    resolved_config: Path
+    service_text: str
+    check_service_text: str
+    timer_text: str
+    maintenance_service_text: str
+    maintenance_timer_text: str
+    verify_service_text: str
+    verify_timer_text: str
+
+
+def _render_kopia_pair(
+    *, bin_path: Path, resolved_config: Path, kind: str, interval: str
+) -> tuple[str, str] | None:
+    try:
+        service_text = render_unit_kopia_service(bin_path, resolved_config, kind=kind)
+    except ValueError as exc:
+        event("error", "invalid systemd unit path", error=str(exc))
+        return None
+    timer_text = render_unit_interval_timer(description=KOPIA_UNIT_DESCRIPTIONS[kind], interval=interval)
+    if timer_text is None:
+        return None
+    return service_text, timer_text
+
+
+def _render_installed_units(root: Path, config_path: str | None) -> _Rendered | None:
     try:
         resolved_config = Path(config_path).expanduser() if config_path else default_config_path(root)
         validate_systemd_path(resolved_config, "config_path")
@@ -48,7 +82,32 @@ def _render_installed_units(root: Path, config_path: str | None) -> tuple[Path, 
     timer_text = render_unit_timer(root, cfg.get("SYSTEMD_ON_CALENDAR"))
     if timer_text is None:
         return None
-    return resolved_config, service_text, check_service_text, timer_text
+    maintenance = _render_kopia_pair(
+        bin_path=bin_path,
+        resolved_config=resolved_config,
+        kind="maintenance",
+        interval=cfg.get("KOPIA_MAINTENANCE_INTERVAL"),
+    )
+    if maintenance is None:
+        return None
+    verify = _render_kopia_pair(
+        bin_path=bin_path,
+        resolved_config=resolved_config,
+        kind="verify",
+        interval=cfg.get("KOPIA_VERIFY_INTERVAL"),
+    )
+    if verify is None:
+        return None
+    return _Rendered(
+        resolved_config=resolved_config,
+        service_text=service_text,
+        check_service_text=check_service_text,
+        timer_text=timer_text,
+        maintenance_service_text=maintenance[0],
+        maintenance_timer_text=maintenance[1],
+        verify_service_text=verify[0],
+        verify_timer_text=verify[1],
+    )
 
 
 def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
@@ -59,21 +118,32 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
     rendered = _render_installed_units(root, config_path)
     if rendered is None:
         return 1
-    resolved_config, service_text, check_service_text, timer_text = rendered
     systemd_dir = prefixed("/etc/systemd/system", root)
     systemd_dir.mkdir(parents=True, exist_ok=True)
-    (systemd_dir / RUN_UNIT_NAME).write_text(service_text, encoding="utf-8")
-    (systemd_dir / CHECK_UNIT_NAME).write_text(check_service_text, encoding="utf-8")
-    (systemd_dir / TIMER_UNIT_NAME).write_text(timer_text, encoding="utf-8")
-    event("info", "installed systemd units", config_path=str(resolved_config), systemd_dir=str(systemd_dir))
-    ok = run_systemctl(
-        root,
-        [
-            ["systemctl", "daemon-reload"],
-            ["systemctl", "enable", TIMER_UNIT_NAME],
-            ["systemctl", "start", TIMER_UNIT_NAME],
-        ],
+    (systemd_dir / RUN_UNIT_NAME).write_text(rendered.service_text, encoding="utf-8")
+    (systemd_dir / CHECK_UNIT_NAME).write_text(rendered.check_service_text, encoding="utf-8")
+    (systemd_dir / TIMER_UNIT_NAME).write_text(rendered.timer_text, encoding="utf-8")
+    (systemd_dir / MAINTENANCE_UNIT_NAME).write_text(rendered.maintenance_service_text, encoding="utf-8")
+    (systemd_dir / MAINTENANCE_TIMER_NAME).write_text(rendered.maintenance_timer_text, encoding="utf-8")
+    (systemd_dir / VERIFY_UNIT_NAME).write_text(rendered.verify_service_text, encoding="utf-8")
+    (systemd_dir / VERIFY_TIMER_NAME).write_text(rendered.verify_timer_text, encoding="utf-8")
+    event(
+        "info",
+        "installed systemd units",
+        config_path=str(rendered.resolved_config),
+        systemd_dir=str(systemd_dir),
     )
+    commands: list[list[str]] = [["systemctl", "daemon-reload"]]
+    for timer in (TIMER_UNIT_NAME, MAINTENANCE_TIMER_NAME, VERIFY_TIMER_NAME):
+        commands.append(["systemctl", "enable", timer])
+        commands.append(["systemctl", "start", timer])
+    ok = run_systemctl(root, commands)
     if ok:
-        event("info", "started systemd timer schedule", unit=TIMER_UNIT_NAME)
+        event(
+            "info",
+            "started systemd timer schedule",
+            unit=TIMER_UNIT_NAME,
+            maintenance_timer=MAINTENANCE_TIMER_NAME,
+            verify_timer=VERIFY_TIMER_NAME,
+        )
     return 0 if ok else 1

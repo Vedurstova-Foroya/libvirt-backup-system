@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shlex
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +12,6 @@ CONFIG_KEYS = {
     "BACKUP_PATH",
     "HOST_ID",
     "VM_BLACKLIST",
-    "BACKUP_COMPRESS",
     "SYSTEMD_ON_CALENDAR",
     "BACKUP_REQUIRE_NFS_MOUNT",
     "SPACE_MARGIN_PERCENT",
@@ -21,8 +19,6 @@ CONFIG_KEYS = {
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
     "COMMAND_TIMEOUT_SECONDS",
-    "BACKUP_RETENTION_MONTHS",
-    "BACKUP_CLEANUP_ON_RUN",
 }
 
 
@@ -31,7 +27,6 @@ DEFAULTS = {
     "BACKUP_PATH": "",
     "HOST_ID": "",
     "VM_BLACKLIST": "",
-    "BACKUP_COMPRESS": "true",
     "SYSTEMD_ON_CALENDAR": "*-*-* 02:30:00",
     "BACKUP_REQUIRE_NFS_MOUNT": "true",
     "SPACE_MARGIN_PERCENT": "20",
@@ -39,8 +34,6 @@ DEFAULTS = {
     "BACKUP_INCREMENTAL_MULTIPLIER": "1.2",
     "REQUIRE_ROOT": "true",
     "COMMAND_TIMEOUT_SECONDS": "86400",
-    "BACKUP_RETENTION_MONTHS": "12",
-    "BACKUP_CLEANUP_ON_RUN": "true",
     # Kopia-engine keys (read by the kopia_* modules in phase 1; consumed by
     # backup / restore / retention from phase 3 onward).
     "KOPIA_REPO_PATH": "",
@@ -64,7 +57,6 @@ COMMENTED_ENV_KEYS = {
     "LIBVIRT_URI",
     "HOST_ID",
     "VM_BLACKLIST",
-    "BACKUP_COMPRESS",
     "SYSTEMD_ON_CALENDAR",
     "BACKUP_REQUIRE_NFS_MOUNT",
     "SPACE_MARGIN_PERCENT",
@@ -72,8 +64,20 @@ COMMENTED_ENV_KEYS = {
     "BACKUP_INCREMENTAL_MULTIPLIER",
     "REQUIRE_ROOT",
     "COMMAND_TIMEOUT_SECONDS",
-    "BACKUP_RETENTION_MONTHS",
-    "BACKUP_CLEANUP_ON_RUN",
+    "KOPIA_REPO_PATH",
+    "KOPIA_PASSWORD_FILE",
+    "KOPIA_CACHE_DIR",
+    "KOPIA_PARALLELISM",
+    "KOPIA_SPLITTER",
+    "KOPIA_COMPRESSION",
+    "KEEP_LATEST",
+    "KEEP_HOURLY",
+    "KEEP_DAILY",
+    "KEEP_WEEKLY",
+    "KEEP_MONTHLY",
+    "KEEP_ANNUAL",
+    "KOPIA_MAINTENANCE_INTERVAL",
+    "KOPIA_VERIFY_INTERVAL",
 }
 
 
@@ -90,11 +94,11 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Libvirt connection used by virsh for VM discovery and state checks.",
     "LIBVIRT_URI",
     None,
-    "# Backup root. Backups are written as:",
-    "#   BACKUP_PATH/<host-id>/<vm-uuid>/<yyyy-mm>/<chain-id>/",
-    "# Only running VMs are backed up: the first run of each calendar month is",
-    "# a full, later runs in the same month are incrementals into the same",
-    "# chain-id directory. Offline VMs are logged and skipped.",
+    "# Backup root. The per-host kopia repository is written under:",
+    "#   BACKUP_PATH/<host-id>/kopia-repo/",
+    "# One repo per host, sharing the same password file. Peer hosts' repos",
+    "# live at sibling BACKUP_PATH/<other-host-id>/kopia-repo/ paths and are",
+    "# discovered automatically for cross-host listing and restore.",
     "BACKUP_PATH",
     None,
     "# Require BACKUP_PATH to be a mounted filesystem, usually an NFS/QNAP mount.",
@@ -102,16 +106,15 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "BACKUP_REQUIRE_NFS_MOUNT",
     None,
     '# Backup host folder name. Empty means "use /etc/machine-id".',
-    "# Keep this stable: renaming HOST_ID writes new chains under a fresh folder",
-    "# and leaves the old data untouched in the prior HOST_ID directory.",
+    "# Scopes the per-host kopia repo: snapshots from this host land under",
+    "# BACKUP_PATH/<HOST_ID>/kopia-repo/. Keep this stable: renaming HOST_ID",
+    "# starts a fresh repo under a new folder and leaves the old data",
+    "# untouched in the prior HOST_ID directory.",
     "HOST_ID",
     None,
     "# VM UUIDs to skip. Separate with spaces or commas.",
     "# Use ``virsh domuuid <vm-name>`` to look up a VM's UUID.",
     "VM_BLACKLIST",
-    None,
-    "# Add --compress to virtnbdbackup commands.",
-    "BACKUP_COMPRESS",
     None,
     "# systemd OnCalendar value used when the timer unit is installed.",
     "# Run start after changing this so the timer is refreshed and reloaded.",
@@ -135,13 +138,54 @@ ENV_TEMPLATE: tuple[str | None, ...] = (
     "# Timeout for external commands, in seconds.",
     "COMMAND_TIMEOUT_SECONDS",
     None,
-    "# Number of most-recent calendar months of backups to keep per VM. ``0``",
-    "# disables pruning entirely. Default of 12 retains roughly one year.",
-    "BACKUP_RETENTION_MONTHS",
+    "# Kopia repo location. Empty means BACKUP_PATH/<HOST_ID>/kopia-repo/",
+    "# (the convention). Set this to override; the override MUST stay within",
+    "# BACKUP_PATH or preflight rejects it.",
+    "KOPIA_REPO_PATH",
     None,
-    "# Run the monthly retention pass after every successful ``run``. Disable to",
-    "# manage retention out-of-band; pruning failures never roll back backups.",
-    "BACKUP_CLEANUP_ON_RUN",
+    "# Path to the shared kopia password file (mode 600, root-owned).",
+    "# Written by ``install`` and rotated by ``change-password``. Lose this",
+    "# file on every host and the repos become unreadable.",
+    "KOPIA_PASSWORD_FILE",
+    None,
+    "# Local on-disk cache for kopia chunk metadata. Speeds up subsequent",
+    "# operations against the same repo. Can be deleted at any time;",
+    "# kopia rebuilds it on demand.",
+    "KOPIA_CACHE_DIR",
+    None,
+    "# Passed to ``kopia snapshot create --parallel``. Higher values trade",
+    "# CPU and read bandwidth for shorter per-VM backup windows; lower",
+    "# values reduce contention with the running VMs.",
+    "KOPIA_PARALLELISM",
+    None,
+    "# Repo splitter (chunker). Fixed-size is the correct choice for opaque",
+    "# block streams (raw disk images coming out of nbdcopy). Change only",
+    "# with a clean cutover; mixing splitters in one repo defeats dedup.",
+    "KOPIA_SPLITTER",
+    None,
+    "# Repo-wide compression. Applied via the global kopia policy on start.",
+    "KOPIA_COMPRESSION",
+    None,
+    "# Retention policy mapped onto ``kopia policy set --global --keep-*``.",
+    "# The kopia maintenance timer prunes expired snapshots in the background;",
+    "# the backup loop itself does not perform pruning.",
+    "KEEP_LATEST",
+    "KEEP_HOURLY",
+    "KEEP_DAILY",
+    "KEEP_WEEKLY",
+    "KEEP_MONTHLY",
+    "KEEP_ANNUAL",
+    None,
+    "# Cadence for ``kopia maintenance run`` against the local repo. Daily",
+    "# quick maintenance, weekly full maintenance. No global owner: each",
+    "# host maintains its own repo.",
+    "KOPIA_MAINTENANCE_INTERVAL",
+    None,
+    "# Cadence for ``kopia snapshot verify`` against the local repo.",
+    "# Cross-host verify is opt-in via",
+    "# ``libvirt-backup-system verify --include-hosts=...`` and is not",
+    "# scheduled by default.",
+    "KOPIA_VERIFY_INTERVAL",
 )
 
 
@@ -269,19 +313,3 @@ class Config:
             else:
                 lines.append(item)
         return "\n".join(lines) + "\n"
-
-
-def is_month_dir_name(name: str) -> bool:
-    # Calendar-month format YYYY-MM where month is 01-12. The fixed shape lets
-    # verify, retention, and restore enumerate month dirs without touching any
-    # operator junk that may have been dropped under a VM directory.
-    if len(name) != 7 or name[4] != "-":
-        return False
-    year, month = name[:4], name[5:]
-    return year.isdigit() and month.isdigit() and 1 <= int(month) <= 12
-
-
-def iter_month_dirs(root: Path) -> Iterable[Path]:
-    if not root.exists():
-        return []
-    return sorted(path for path in root.iterdir() if path.is_dir() and is_month_dir_name(path.name))

@@ -11,8 +11,8 @@ TimeoutStartSec=infinity
 EnvironmentFile={environment_file}
 ExecStart={bin_path} --config {config_arg} {subcommand}
 # Defense-in-depth hardening. The service runs as root because it shells out to
-# virsh/virtnbdbackup against qemu:///system; StateDirectory= creates the state
-# dir so lock.py's run-lock mkdir succeeds on a fresh install.
+# virsh / qemu-nbd / kopia against qemu:///system; StateDirectory= creates the
+# state dir so lock.py's run-lock mkdir succeeds on a fresh install.
 StateDirectory=libvirt-backup-system
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
@@ -36,6 +36,47 @@ WantedBy=timers.target
 """
 
 
+# Maintenance / verify pairs reuse the ``kopia-passthrough`` subcommand so the
+# unit body stays declarative: cli.py owns config-file resolution + password
+# loading, and ExecStart only needs the wrapper + kopia argv tail. Daily quick
+# maintenance is enough for compaction + GC; weekly full maintenance is left to
+# operators (``lbs kopia-passthrough -- maintenance run --full=true``) to keep
+# the unit count low and the rendering trivial.
+UNIT_KOPIA_SERVICE = """[Unit]
+Description={description}
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=infinity
+EnvironmentFile={environment_file}
+ExecStart={bin_path} --config {config_arg} kopia-passthrough -- {kopia_args}
+StateDirectory=libvirt-backup-system
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+KillMode=mixed
+TimeoutStopSec=30min
+"""
+
+
+UNIT_INTERVAL_TIMER = """[Unit]
+Description={description}
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec={interval}
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+# Kept exported for legacy imports; not used by the maintenance/verify pair.
 UNIT_GENERIC_SERVICE = """[Unit]
 Description={description}
 After=network-online.target
@@ -52,16 +93,4 @@ ProtectControlGroups=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-"""
-
-
-UNIT_INTERVAL_TIMER = """[Unit]
-Description={description}
-
-[Timer]
-OnBootSec=15min
-OnUnitActiveSec={interval}
-
-[Install]
-WantedBy=timers.target
 """

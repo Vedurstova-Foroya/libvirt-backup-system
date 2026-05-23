@@ -168,6 +168,17 @@ def test_maintenance_run_omits_full_and_safety_by_default(tmp_path: Path, monkey
     args, _ = captured[0]
     assert "--full" not in args
     assert all("--safety=" not in arg for arg in args)
+    # ``--dry-run`` is opt-in so the production maintenance timer keeps acting
+    # on the repo while doctor's smoke test stays read-only.
+    assert "--dry-run" not in args
+
+
+def test_maintenance_run_dry_run_appends_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured = _make_run_capture(monkeypatch)
+    kopia_client.maintenance_run(config_file=tmp_path / "c", password_file=password, dry_run=True)
+    args, _ = captured[0]
+    assert "--dry-run" in args
 
 
 def test_maintenance_set_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

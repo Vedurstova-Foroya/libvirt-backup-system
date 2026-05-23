@@ -217,12 +217,18 @@ def maintenance_run(
     cache_dir: Path | None = None,
     full: bool = False,
     safety: str | None = None,
+    dry_run: bool = False,
 ) -> None:
     args = [*build_config_args(config_file), "maintenance", "run"]
     if full:
         args.append("--full")
     if safety is not None:
         args.append(f"--safety={safety}")
+    if dry_run:
+        # ``maintenance run --dry-run`` reports what would be deleted/rewritten
+        # without touching the repo. doctor invokes this to surface scheduled
+        # maintenance issues without races against the live unit.
+        args.append("--dry-run")
     run_kopia_streamed(args, password_file=password_file, cache_dir=cache_dir)
 
 

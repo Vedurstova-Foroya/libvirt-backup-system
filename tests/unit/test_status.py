@@ -6,9 +6,13 @@ from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.systemd_start import start
 from libvirt_backup_system.systemd_units import (
     CHECK_UNIT_NAME,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
     RUN_UNIT_NAME,
     STATUS_UNITS,
     TIMER_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
     status,
 )
 
@@ -21,7 +25,11 @@ def test_status_returns_one_when_systemctl_unavailable(tmp_path: Path, capsys) -
 def test_status_ignores_loaded_inactive_units(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
     calls: list[list[str]] = []
-    codes = iter([0, 3, 0])
+    # Make at least one unit return rc=3 (the "loaded but inactive" case)
+    # so _status_returncode is exercised; otherwise the loaded-inactive
+    # downgrade branch goes uncovered when every status call already
+    # returns 0.
+    codes = iter([0, 3, *([0] * (len(STATUS_UNITS) - 2))])
 
     def fake_run(args, *, check, **kwargs):
         calls.append(args)
@@ -33,11 +41,20 @@ def test_status_ignores_loaded_inactive_units(monkeypatch) -> None:
     assert status() == 0
     status_calls = [c for c in calls if c[:3] == ["systemctl", "status", "--no-pager"]]
     assert [c[-1] for c in status_calls] == list(STATUS_UNITS)
+    # STATUS_UNITS MUST cover the maintenance + verify pairs so operators
+    # who run `lbs status` see the kopia housekeeping timers alongside the
+    # backup timer.
+    assert MAINTENANCE_TIMER_NAME in STATUS_UNITS
+    assert MAINTENANCE_UNIT_NAME in STATUS_UNITS
+    assert VERIFY_TIMER_NAME in STATUS_UNITS
+    assert VERIFY_UNIT_NAME in STATUS_UNITS
 
 
 def test_status_preserves_real_systemctl_failures(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
-    codes = iter([0, 4, 0])
+    # First unit succeeds, second returns rc=4 (non-3, non-zero) so the
+    # whole status() call returns 4 — the rest of the iteration is exhausted.
+    codes = iter([0, 4, *([0] * (len(STATUS_UNITS) - 2))])
 
     def fake_run(args, *, check, **kwargs):
         return type("R", (), {"returncode": next(codes)})()
@@ -48,7 +65,7 @@ def test_status_preserves_real_systemctl_failures(monkeypatch) -> None:
 
 def test_status_preserves_failed_loaded_units(monkeypatch) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_units.systemctl_available", lambda root: True)
-    codes = iter([0, 3, 0])
+    codes = iter([0, 3, *([0] * (len(STATUS_UNITS) - 2))])
 
     def fake_run(args, *, check, **kwargs):
         if args[:2] == ["systemctl", "show"]:
@@ -94,6 +111,98 @@ def test_start_rejects_relative_backup_path(tmp_path: Path, monkeypatch, capsys)
     assert "BACKUP_PATH must be an absolute path" in err
 
 
+def test_render_unit_kopia_service_unknown_kind_raises(tmp_path: Path) -> None:
+    import pytest
+
+    from libvirt_backup_system.systemd_units import render_unit_kopia_service
+
+    with pytest.raises(ValueError, match="unknown kopia unit kind"):
+        render_unit_kopia_service(
+            tmp_path / "usr/local/bin/lbs",
+            tmp_path / "etc/cfg",
+            kind="not-a-real-kind",
+        )
+
+
+def test_render_unit_interval_timer_rejects_control_char(capsys) -> None:
+    from libvirt_backup_system.systemd_units import render_unit_interval_timer
+
+    assert render_unit_interval_timer(description="x", interval="24h\nbad") is None
+    err = capsys.readouterr().err
+    assert "timer interval must not contain control characters" in err
+
+
+def test_start_rejects_invalid_kopia_service_path_via_render_failure(tmp_path: Path, monkeypatch, capsys) -> None:
+    # systemd_start._render_kopia_pair MUST surface a ValueError from
+    # render_unit_kopia_service. Patch the imported renderer to simulate
+    # the failure path the production install would hit on a hostile
+    # config_path.
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+    config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    config.parent.mkdir(parents=True)
+    config.write_text(f"BACKUP_PATH={backup_dir}\n", encoding="utf-8")
+
+    def boom(*_args: object, **_kwargs: object) -> str:
+        raise ValueError("boom rendering kopia service")
+
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.render_unit_kopia_service", boom)
+
+    assert start(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "boom rendering kopia service" in err
+
+
+def test_start_rejects_invalid_maintenance_interval(tmp_path: Path, monkeypatch, capsys) -> None:
+    # An empty KOPIA_MAINTENANCE_INTERVAL must short-circuit start instead of
+    # rendering a malformed [Timer] body that systemd would reject on
+    # daemon-reload.
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+    config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f"BACKUP_PATH={backup_dir}\nKOPIA_MAINTENANCE_INTERVAL= \n",
+        encoding="utf-8",
+    )
+
+    assert start(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "timer interval must not be empty" in err
+
+
+def test_start_rejects_invalid_verify_interval(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+    config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f"BACKUP_PATH={backup_dir}\nKOPIA_VERIFY_INTERVAL=--bad\n",
+        encoding="utf-8",
+    )
+
+    assert start(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "timer interval must not start with '-'" in err
+
+
+def test_start_rejects_invalid_kopia_service_path(tmp_path: Path, monkeypatch, capsys) -> None:
+    # render_unit_kopia_service inherits validate_systemd_path; trigger that
+    # branch by handing it a config_path with a backtick (forbidden char).
+    monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
+
+    assert start(str(tmp_path), config_path=str(tmp_path / "bad`name.env")) == 1
+
+    err = capsys.readouterr().err
+    assert "config_path must not contain '`'" in err
+
+
 def test_start_rejects_invalid_timer_calendar(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
     config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
@@ -130,15 +239,28 @@ def test_start_installs_units_enables_and_starts_timer_schedule(tmp_path: Path, 
         ["systemctl", "daemon-reload"],
         ["systemctl", "enable", TIMER_UNIT_NAME],
         ["systemctl", "start", TIMER_UNIT_NAME],
+        ["systemctl", "enable", MAINTENANCE_TIMER_NAME],
+        ["systemctl", "start", MAINTENANCE_TIMER_NAME],
+        ["systemctl", "enable", VERIFY_TIMER_NAME],
+        ["systemctl", "start", VERIFY_TIMER_NAME],
     ]
     systemd_dir = tmp_path / "etc/systemd/system"
     assert (systemd_dir / RUN_UNIT_NAME).exists()
     assert (systemd_dir / CHECK_UNIT_NAME).exists()
     assert (systemd_dir / TIMER_UNIT_NAME).exists()
+    assert (systemd_dir / MAINTENANCE_UNIT_NAME).exists()
+    assert (systemd_dir / MAINTENANCE_TIMER_NAME).exists()
+    assert (systemd_dir / VERIFY_UNIT_NAME).exists()
+    assert (systemd_dir / VERIFY_TIMER_NAME).exists()
     out = capsys.readouterr().out
     assert "installed systemd units" in out
     assert "started systemd timer schedule" in out
     assert "Persistent=true" not in (systemd_dir / TIMER_UNIT_NAME).read_text(encoding="utf-8")
+    # The maintenance timer body must contain OnUnitActiveSec= from the
+    # config default. Verifies the interval-timer renderer is wired through
+    # systemd_start.
+    assert "OnUnitActiveSec=24h" in (systemd_dir / MAINTENANCE_TIMER_NAME).read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=7d" in (systemd_dir / VERIFY_TIMER_NAME).read_text(encoding="utf-8")
 
 
 def test_start_configures_timeout_before_calendar_validation(tmp_path: Path, monkeypatch) -> None:
@@ -195,3 +317,5 @@ def test_start_returns_one_when_systemctl_fails(tmp_path: Path, monkeypatch, cap
     assert "systemctl daemon-reload failed" in err
     assert "systemctl enable libvirt-backup-system.timer failed" in err
     assert "systemctl start libvirt-backup-system.timer failed" in err
+    assert "systemctl enable libvirt-backup-system-maintenance.timer failed" in err
+    assert "systemctl enable libvirt-backup-system-verify.timer failed" in err

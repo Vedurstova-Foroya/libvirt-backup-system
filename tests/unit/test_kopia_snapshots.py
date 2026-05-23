@@ -143,6 +143,24 @@ def test_snapshot_verify_omits_unset_options(tmp_path: Path, monkeypatch: pytest
     kopia_snapshots.snapshot_verify(config_file=tmp_path / "c", password_file=password)
     args, _ = captured[0]
     assert all("--verify-files-percent" not in arg for arg in args)
+    assert "--dry-run" not in args
+
+
+def test_snapshot_verify_dry_run_appends_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured = _make_run_capture(monkeypatch)
+    kopia_snapshots.snapshot_verify(
+        config_file=tmp_path / "c",
+        password_file=password,
+        dry_run=True,
+        snapshot_ids=["abc"],
+    )
+    args, _ = captured[0]
+    assert "--dry-run" in args
+    # snapshot IDs are positional and trail every option so kopia does not
+    # mistake the next flag for a snapshot id.
+    assert args[-1] == "abc"
+    assert args.index("--dry-run") < args.index("abc")
 
 
 def test_snapshot_restore_to_path_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

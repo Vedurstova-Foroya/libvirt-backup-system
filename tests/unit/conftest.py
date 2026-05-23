@@ -51,6 +51,29 @@ def stub_ensure_kopia_repo(monkeypatch: pytest.MonkeyPatch, *, return_code: int 
 
 
 @pytest.fixture(autouse=True)
+def _stub_install_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace ``installer.install_kopia`` / ``install_nbdcopy`` with no-ops.
+
+    Every ``install(str(tmp_path))`` path now hits the pinned-binary
+    bootstrap (``installer_binaries.install_kopia`` + ``install_nbdcopy``),
+    which would otherwise reach out to ``github.com`` / ``deb.debian.org``
+    in unit tests. The autouse stub keeps the existing test surface intact
+    while the dedicated ``test_installer_binaries.py`` suite exercises the
+    real implementation through monkeypatched ``urllib.request`` /
+    ``shell.run``.
+    """
+
+    def fake_install_kopia(prefix: object = None) -> None:
+        return None
+
+    def fake_install_nbdcopy(prefix: object = None) -> None:
+        return None
+
+    monkeypatch.setattr("libvirt_backup_system.installer.install_kopia", fake_install_kopia)
+    monkeypatch.setattr("libvirt_backup_system.installer.install_nbdcopy", fake_install_nbdcopy)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_host_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     # Pin the default install prefix to a per-session tmp dir so any
     # ``Config.load()`` call that falls through with ``prefix=None`` resolves

@@ -9,8 +9,6 @@ from libvirt_backup_system.config import (
     default_config_path,
     float_value,
     int_value,
-    is_month_dir_name,
-    iter_month_dirs,
     parse_env_file,
     prefixed,
     root_prefix,
@@ -42,7 +40,18 @@ BROKEN
         "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     }
-    assert "BACKUP_PATH=/tmp/backups\n" in cfg.render_env()
+    rendered = cfg.render_env()
+    # BACKUP_PATH is rendered uncommented (operator must set it).
+    assert "BACKUP_PATH=/tmp/backups\n" in rendered
+    # New kopia keys are rendered as commented defaults so operators see them.
+    assert "# KOPIA_REPO_PATH=" in rendered
+    assert "# KOPIA_PASSWORD_FILE=/etc/libvirt-backup-system/kopia.pw" in rendered
+    assert "# KEEP_DAILY=30" in rendered
+    assert "# KOPIA_MAINTENANCE_INTERVAL=24h" in rendered
+    # Legacy chain-era keys must not appear anywhere in the rendered env.
+    assert "BACKUP_COMPRESS" not in rendered
+    assert "BACKUP_RETENTION_MONTHS" not in rendered
+    assert "BACKUP_CLEANUP_ON_RUN" not in rendered
 
 
 def test_config_helpers(tmp_path: Path, monkeypatch) -> None:
@@ -56,20 +65,6 @@ def test_config_helpers(tmp_path: Path, monkeypatch) -> None:
     assert int_value({"x": "3"}, "x") == 3
     assert float_value({"x": "1.5"}, "x") == 1.5
     assert split_words("one,two three") == ["one", "two", "three"]
-    assert is_month_dir_name("2026-05")
-    assert is_month_dir_name("2026-12")
-    assert not is_month_dir_name("2026-13")
-    assert not is_month_dir_name("2026-00")
-
-
-def test_iter_month_dirs(tmp_path: Path) -> None:
-    root = tmp_path / "vm"
-    assert list(iter_month_dirs(root)) == []
-    # Mix valid (01-12), invalid (>12, =00, no-pad), and ordinary entries that
-    # operators might drop alongside real month dirs.
-    for name in ["2026-05", "not-a-month", "2025-12", "2026-5", "2026-13", "2026-00"]:
-        (root / name).mkdir(parents=True)
-    assert [path.name for path in iter_month_dirs(root)] == ["2025-12", "2026-05"]
 
 
 def test_load_uses_default_config_environment(tmp_path: Path, monkeypatch) -> None:

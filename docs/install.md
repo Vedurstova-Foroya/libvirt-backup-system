@@ -3,53 +3,64 @@
 ## Prerequisites
 
 The CLI shells out to `virsh`, `qemu-nbd`, `nbdcopy`, `qemu-img`, `df`, and
-`kopia`. On a KVM host the libvirt and qemu tooling is usually already
-present; `kopia` and `nbdcopy` are the pieces you typically need to add.
+`kopia`. The installer takes care of `kopia` and `nbdcopy`
+automatically (see [Bundled binary install](#bundled-binary-install)
+below); you only need the libvirt + qemu tooling on the host beforehand.
 
 ### Debian 12 (bookworm) and Debian 13 (trixie)
 
 ```sh
 sudo apt update
-sudo apt install -y libvirt-clients qemu-utils libnbd-bin
+sudo apt install -y libvirt-clients qemu-utils
 ```
 
-`libnbd-bin` provides `nbdcopy`; `qemu-utils` provides `qemu-img` and
-`qemu-nbd`.
+`qemu-utils` provides `qemu-img` and `qemu-nbd`.
 
 ### Ubuntu 22.04 (jammy), 24.04 (noble)
 
 ```sh
 sudo apt update
-sudo apt install -y libvirt-clients qemu-utils libnbd-bin
+sudo apt install -y libvirt-clients qemu-utils
 ```
 
-### Install kopia
+### Bundled binary install
 
-Pin a known-good version and verify the SHA256 before installing. See
-[kopia releases](https://github.com/kopia/kopia/releases) for the latest
-pinned version.
-
-Debian/Ubuntu via apt repo:
-
-```sh
-curl -fsSL https://kopia.io/signing-key | sudo gpg --dearmor -o /etc/apt/keyrings/kopia-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kopia-keyring.gpg] http://packages.kopia.io/apt/ stable main" \
-  | sudo tee /etc/apt/sources.list.d/kopia.list
-sudo apt update
-sudo apt install -y kopia
-```
-
-Direct download (matches what production hosts run; pin both URL and SHA256
-when bumping):
-
-```sh
-curl -fL -o /tmp/kopia.tar.gz https://github.com/kopia/kopia/releases/download/v0.21.1/kopia-0.21.1-linux-x64.tar.gz
-echo '<sha256>  /tmp/kopia.tar.gz' | sha256sum -c -
-sudo tar -xzf /tmp/kopia.tar.gz -C /usr/local/bin --strip-components=1 kopia-0.21.1-linux-x64/kopia
-```
+On first install the orchestrator fetches a pinned `kopia` tarball from
+the upstream GitHub release page and a pinned `libnbd-bin` (plus
+`libnbd0`) `.deb` from the Debian archive, sha256-verifies each artifact
+against a constant baked into `libvirt_backup_system/installer_binaries.py`,
+and installs them via an atomic move (`kopia` to `/usr/local/bin/kopia`)
+and `dpkg -i` (with `apt-get install -f` fallback for `libnbd-bin`). The
+step is idempotent: if `kopia --version` already reports the pinned
+version and `nbdcopy --version` runs successfully, the install skips the
+network round-trip entirely. Bumping the pinned versions is a deliberate
+operator action — the matching sha256 must be refreshed in the same
+commit.
 
 After installing this project, run `sudo libvirt-backup-system check` to
 confirm every required binary resolves before relying on scheduled backups.
+
+### Offline / air-gapped install
+
+When outbound HTTPS to `github.com` / `deb.debian.org` is not available,
+pre-place the binaries by hand and the installer will detect them and
+skip the bundled-install step:
+
+```sh
+# kopia: download elsewhere, verify the upstream sha256, then copy to
+# /usr/local/bin/kopia (mode 0755 root-owned) at the version the
+# installer pins.
+sudo install -m 0755 -o root -g root /path/to/kopia /usr/local/bin/kopia
+kopia --version
+
+# nbdcopy: install via the host's package manager once a mirror is
+# available, or copy + dpkg -i the pinned .debs you mirrored ahead of time.
+sudo apt install -y libnbd-bin
+nbdcopy --version
+```
+
+With both binaries present and runnable, `sudo libvirt-backup-system install`
+proceeds straight to the password + repo + systemd-unit setup.
 
 ## Install
 

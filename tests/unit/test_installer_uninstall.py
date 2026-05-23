@@ -177,9 +177,62 @@ def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypa
     systemd_dir.mkdir(parents=True)
     (systemd_dir / "libvirt-backup-system.timer").write_text("stale timer\n", encoding="utf-8")
     (systemd_dir / "libvirt-backup-system.service").write_text("stale service\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-maintenance.timer").write_text("stale\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-maintenance.service").write_text("stale\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-verify.timer").write_text("stale\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-verify.service").write_text("stale\n", encoding="utf-8")
     assert uninstall(None) == 0
     assert calls[0] == ["systemctl", "disable", "--now", "libvirt-backup-system.timer"]
+    # Maintenance + verify pairs MUST be disabled too, otherwise the timers
+    # keep firing against a removed bin_path.
+    disable_args = [c for c in calls if c[:2] == ["systemctl", "disable"]]
+    assert ["systemctl", "disable", "--now", "libvirt-backup-system-maintenance.timer"] in disable_args
+    assert ["systemctl", "disable", "--now", "libvirt-backup-system-verify.timer"] in disable_args
     assert calls[-1] == ["systemctl", "daemon-reload"]
+    # The maintenance/verify unit files MUST be removed alongside the backup
+    # pair so a re-install starts from a clean systemd state.
+    assert not (systemd_dir / "libvirt-backup-system-maintenance.service").exists()
+    assert not (systemd_dir / "libvirt-backup-system-maintenance.timer").exists()
+    assert not (systemd_dir / "libvirt-backup-system-verify.service").exists()
+    assert not (systemd_dir / "libvirt-backup-system-verify.timer").exists()
+
+
+def test_uninstall_prints_kopia_repo_retention_hint(tmp_path: Path, monkeypatch, capsys) -> None:
+    # The plan promises "to delete backups: rm -rf <kopia-repo>" so an
+    # operator who *does* want to wipe history can do so in one command.
+    backup_path = tmp_path / "backups"
+    backup_path.mkdir()
+
+    def fake_config(
+        config_path: str | None = None,
+        prefix: str | None = None,
+        *,
+        apply_env_overrides: bool = True,
+    ) -> Config:
+        values = dict(DEFAULTS)
+        values["BACKUP_PATH"] = str(backup_path)
+        values["HOST_ID"] = "host-x"
+        return Config(values=values, path=tmp_path / "etc/config.env", prefix=tmp_path)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.Config.load", fake_config)
+
+    assert uninstall(str(tmp_path)) == 0
+
+    out = capsys.readouterr().out
+    assert "kopia repo retained" in out
+    assert "host-x/kopia-repo" in out
+    assert "rm -rf" in out
+
+
+def test_uninstall_hint_skipped_when_backup_path_empty(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Without BACKUP_PATH there is no canonical repo to point at; printing a
+    # bogus path would be more confusing than the no-op.
+    monkeypatch.setattr("libvirt_backup_system.installer.Config.load", _fake_config_factory(tmp_path))
+
+    assert uninstall(str(tmp_path)) == 0
+
+    out = capsys.readouterr().out
+    assert "kopia repo retained" not in out
 
 
 def test_uninstall_continues_when_unlink_raises_permission_error(

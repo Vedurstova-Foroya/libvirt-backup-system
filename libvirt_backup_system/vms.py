@@ -46,8 +46,8 @@ def is_safe_vm_name(name: str) -> bool:
     # Reject control characters (incl. NUL, newline, tab, DEL) defensively.
     # Real libvirt rejects these at define-time, but a corrupted state file or
     # a hostile environment variable could still surface one here, and any
-    # control char in a path argument flowing to virsh/virtnbdbackup is an
-    # injection risk we want to refuse rather than pass through.
+    # control char in a path argument flowing to virsh / qemu-nbd / kopia is
+    # an injection risk we want to refuse rather than pass through.
     return not any(ord(char) < 32 or ord(char) == 127 for char in name)
 
 

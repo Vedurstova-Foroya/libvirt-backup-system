@@ -107,3 +107,25 @@ def test_install_reports_stale_systemd_unit_removal_failure(tmp_path: Path, monk
     err = capsys.readouterr().err
     assert "failed to remove stale systemd unit" in err
     assert "no perms" in err
+
+
+def test_install_reports_stale_kopia_unit_removal_failure(tmp_path: Path, monkeypatch, capsys) -> None:
+    # Re-install with BACKUP_PATH unset must scrub leftover maintenance +
+    # verify unit files; a PermissionError on the maintenance .service MUST
+    # propagate as a nonzero exit so an operator sees the cleanup failed.
+    maintenance_path = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance.service"
+    maintenance_path.parent.mkdir(parents=True)
+    maintenance_path.write_text("stale-maintenance\n", encoding="utf-8")
+    write_kopia_password_file(tmp_path)
+    original_unlink = Path.unlink
+
+    def fake_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == maintenance_path:
+            raise PermissionError("no perms")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.unlink", fake_unlink)
+    assert install(str(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "failed to remove stale systemd unit" in err
+    assert str(maintenance_path) in err
