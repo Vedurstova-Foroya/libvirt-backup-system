@@ -79,18 +79,26 @@ function __lbs_query_restore_points
     or libvirt-backup-system list-restore-points 2>/dev/null
 end
 
+function __lbs_restore_is_option
+    set -l token "$argv[1]"
+    test "$token" = -v; or test "$token" = --verbose
+end
+
 # Number of positional args already typed after the `restore` subcommand.
 # Returns 0 (suggest UUID), 1 (suggest TIMESTAMP), or -1 (not in a restore
 # context). The literal-`restore` scan tolerates global flags (--config,
 # --prefix) preceding the subcommand and the fish-builtin `sudo` prefix
-# stripping.
+# stripping. Restore-local flags like --verbose do not count as positional
+# args.
 function __lbs_restore_positional_count
     set -l tokens (commandline -opc)
     set -l found 0
     set -l count 0
     for token in $tokens
         if test $found = 1
-            set count (math $count + 1)
+            if not __lbs_restore_is_option "$token"
+                set count (math $count + 1)
+            end
         end
         if test "$token" = restore
             set found 1
@@ -117,8 +125,10 @@ function __lbs_restore_timestamps_for_uuid
     set -l uuid ""
     for token in $tokens
         if test $found = 1
-            set uuid $token
-            break
+            if not __lbs_restore_is_option "$token"
+                set uuid $token
+                break
+            end
         end
         if test "$token" = restore
             set found 1

@@ -9,6 +9,8 @@ import pytest
 from libvirt_backup_system import doctor
 from libvirt_backup_system.systemd_units import (
     CHECK_UNIT_NAME,
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
     MAINTENANCE_UNIT_NAME,
     RUN_UNIT_NAME,
@@ -54,7 +56,9 @@ def test_check_units_missing_unit_file(tmp_path: Path) -> None:
     # Maintenance/verify unit names MUST appear in the missing-list so an
     # operator can copy-paste the path into a `cp` or `ls`.
     assert any(MAINTENANCE_UNIT_NAME in failure for failure in failures)
+    assert any(MAINTENANCE_FULL_UNIT_NAME in failure for failure in failures)
     assert any(MAINTENANCE_TIMER_NAME in failure for failure in failures)
+    assert any(MAINTENANCE_FULL_TIMER_NAME in failure for failure in failures)
     assert any(VERIFY_UNIT_NAME in failure for failure in failures)
     assert any(VERIFY_TIMER_NAME in failure for failure in failures)
 
@@ -92,6 +96,8 @@ def test_check_units_subset_present_subset_missing(tmp_path: Path, monkeypatch: 
     write_unit(cfg, TIMER_UNIT_NAME, content="x")
     write_unit(cfg, MAINTENANCE_UNIT_NAME, content="x")
     write_unit(cfg, MAINTENANCE_TIMER_NAME, content="x")
+    write_unit(cfg, MAINTENANCE_FULL_UNIT_NAME, content="x")
+    write_unit(cfg, MAINTENANCE_FULL_TIMER_NAME, content="x")
     monkeypatch.setattr(doctor, "_expected_unit_text", lambda _cfg, _name: "x")
     failures = doctor._check_units(cfg)
     assert any(VERIFY_UNIT_NAME in failure and "missing" in failure for failure in failures)

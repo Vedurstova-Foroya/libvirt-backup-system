@@ -152,8 +152,10 @@ Superset of ``check``: runs the full preflight layer and then validates that
 the wrapper, opt directory, and config file are in place; the systemd unit
 files match what a fresh install would render (catches drift after editing
 the env file without re-running install); the timer is enabled and active;
-the local kopia repo is connected and accessible; and the most recent
-libvirt-backup-system.service run completed cleanly.
+the local kopia repo is connected and accessible; local kopia maintenance
+and verify dry-runs pass; peer repos are reachable read-only with the shared
+password; and the most recent libvirt-backup-system.service run completed
+cleanly.
 
 Use ``check`` for the pre-run preflight only; use ``doctor`` when you also
 want install/registration/last-run health."""

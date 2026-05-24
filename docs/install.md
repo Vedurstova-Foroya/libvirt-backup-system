@@ -136,6 +136,12 @@ When `BACKUP_PATH` is configured, it also creates:
 - `/etc/systemd/system/libvirt-backup-system.service`
 - `/etc/systemd/system/libvirt-backup-system-check.service`
 - `/etc/systemd/system/libvirt-backup-system.timer`
+- `/etc/systemd/system/libvirt-backup-system-maintenance.service`
+- `/etc/systemd/system/libvirt-backup-system-maintenance.timer`
+- `/etc/systemd/system/libvirt-backup-system-maintenance-full.service`
+- `/etc/systemd/system/libvirt-backup-system-maintenance-full.timer`
+- `/etc/systemd/system/libvirt-backup-system-verify.service`
+- `/etc/systemd/system/libvirt-backup-system-verify.timer`
 
 ### Shell completion
 

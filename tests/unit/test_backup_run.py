@@ -21,7 +21,7 @@ from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vms import VM
 
 from .conftest import ALPHA_UUID, BETA_UUID
-from .test_backup import FakeSnapper, _disk_entry, _disk_target, _find_event, _install_stubs, _vm
+from .test_backup import FakeSnapper, _disk_target, _find_event, _install_stubs, _vm
 
 
 def test_stream_disk_failure_returns_false_and_still_commits(
@@ -81,12 +81,29 @@ def test_backup_vm_runs_commit_even_when_streaming_fails(
 def test_missing_snapshot_base_logs_and_returns_false(
     monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Manifest enumerates ``vda`` but the snapper's ``list_disks`` returns
-    # ``vdb`` only — the join lookup in ``_stream_all_disks`` then yields
-    # ``None`` for the base path and the run aborts.
-    _install_stubs(monkeypatch, disks=[_disk_entry("vda", "/img/vda.qcow2")])
+    _install_stubs(monkeypatch)
+    manifest = manifest_module.Manifest(
+        vm_name="alpha",
+        vm_uuid=ALPHA_UUID,
+        host_id="host-a",
+        run_id="run-1",
+        timestamp="20260101T010101",
+        libvirt_uri="qemu:///system",
+        domain_xml="<domain/>",
+        disks=(
+            manifest_module.ManifestDisk(
+                target="vda",
+                source_path="/img/vda.qcow2",
+                virtual_size_bytes=1,
+                snapshot_filename="vda.raw",
+            ),
+        ),
+    )
     snapper = FakeSnapper(disks=[_disk_target("vdb", "/img/vdb.qcow2")])
-    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    ok, _consistency = backup._stream_all_disks(
+        backup_config, _vm(), manifest, "run-1", snapper, [_disk_target("vdb", "/img/vdb.qcow2")]
+    )
+    assert ok is False
     assert "missing snapshot base for disk" in capsys.readouterr().err
     assert snapper.commit_calls  # commit still runs to unwind overlays
 

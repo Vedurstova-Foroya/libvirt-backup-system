@@ -133,6 +133,23 @@ def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatc
     assert rows == []
 
 
+def test_local_rows_reconnects_when_repo_exists_but_config_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg, local_config_present=False)
+    monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
+
+    def fake_ensure(_cfg: Config, *, apply_global_policy: bool = True) -> int:
+        assert apply_global_policy is False
+        local_cfg.write_text("{}", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(kopia_repo, "ensure_local_repo", fake_ensure)
+    _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot()]})
+    assert list_restore_points._local_rows(cfg)[0].snapshot_id == "snap-1"
+
+
 def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)

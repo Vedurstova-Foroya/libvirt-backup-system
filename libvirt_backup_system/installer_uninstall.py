@@ -7,6 +7,15 @@ from .config import Config, prefixed
 from .fish_completion import remove_fish_completion
 from .logging_json import event
 
+KOPIA_SYSTEMD_UNITS = (
+    "libvirt-backup-system-maintenance.service",
+    "libvirt-backup-system-maintenance.timer",
+    "libvirt-backup-system-maintenance-full.service",
+    "libvirt-backup-system-maintenance-full.timer",
+    "libvirt-backup-system-verify.service",
+    "libvirt-backup-system-verify.timer",
+)
+
 
 def remove_installed_files(root: Path) -> bool:
     ok = True
@@ -15,10 +24,7 @@ def remove_installed_files(root: Path) -> bool:
         prefixed("/etc/systemd/system/libvirt-backup-system.service", root),
         prefixed("/etc/systemd/system/libvirt-backup-system-check.service", root),
         prefixed("/etc/systemd/system/libvirt-backup-system.timer", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system-maintenance.service", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system-maintenance.timer", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system-verify.service", root),
-        prefixed("/etc/systemd/system/libvirt-backup-system-verify.timer", root),
+        *(prefixed(f"/etc/systemd/system/{name}", root) for name in KOPIA_SYSTEMD_UNITS),
     ]:
         try:
             path.unlink()
@@ -36,6 +42,21 @@ def remove_installed_files(root: Path) -> bool:
             event("info", "removed directory", path=str(opt_dir))
         except OSError as exc:
             event("error", "failed to remove directory", path=str(opt_dir), error=str(exc))
+            ok = False
+    return ok
+
+
+def remove_stale_kopia_units(systemd_dir: Path) -> bool:
+    ok = True
+    for name in KOPIA_SYSTEMD_UNITS:
+        path = systemd_dir / name
+        try:
+            path.unlink()
+            event("info", "removed stale systemd unit", path=str(path))
+        except FileNotFoundError:
+            pass
+        except (PermissionError, OSError) as exc:
+            event("error", "failed to remove stale systemd unit", path=str(path), error=str(exc))
             ok = False
     return ok
 

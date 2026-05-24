@@ -96,6 +96,15 @@ def test_uuid_completion_lists_distinct_uuids_with_host_id(tmp_path: Path) -> No
     assert "host2 (1 restore points)" in out
 
 
+def test_uuid_completion_ignores_verbose_flag_before_uuid(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    out = _run_fish(fish, bindir, "libvirt-backup-system restore -v ")
+    values = [line.split("\t", 1)[0] for line in out.splitlines()]
+    assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in values
+    assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" in values
+
+
 def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:
     fish = _require_fish()
     bindir = _seed_fakes(tmp_path)
@@ -107,6 +116,20 @@ def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:
     values = [line.split("\t", 1)[0] for line in out.splitlines()]
     # Both alpha rows must surface; beta's row must NOT (its UUID does not
     # match the one the operator already typed).
+    assert "20260101T000000" in values
+    assert "20260102T030000" in values
+    assert "20260105T000000" not in values
+
+
+def test_timestamp_completion_ignores_verbose_flag_before_uuid(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    out = _run_fish(
+        fish,
+        bindir,
+        "libvirt-backup-system restore --verbose aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa ",
+    )
+    values = [line.split("\t", 1)[0] for line in out.splitlines()]
     assert "20260101T000000" in values
     assert "20260102T030000" in values
     assert "20260105T000000" not in values

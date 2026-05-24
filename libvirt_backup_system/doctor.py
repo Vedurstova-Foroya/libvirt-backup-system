@@ -23,7 +23,10 @@ from .preflight import collect_check_failures, host_id_drift_failures
 from .shell import CommandError, run
 from .systemd_units import (
     CHECK_UNIT_NAME,
+    KOPIA_FULL_MAINTENANCE_INTERVAL,
     KOPIA_UNIT_DESCRIPTIONS,
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
     MAINTENANCE_UNIT_NAME,
     RUN_UNIT_NAME,
@@ -48,6 +51,8 @@ DOCTOR_UNIT_NAMES = (
     TIMER_UNIT_NAME,
     MAINTENANCE_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
+    MAINTENANCE_FULL_TIMER_NAME,
     VERIFY_UNIT_NAME,
     VERIFY_TIMER_NAME,
 )
@@ -86,13 +91,20 @@ def _expected_unit_text(config: Config, name: str) -> str | None:
         if name == CHECK_UNIT_NAME:
             return render_unit_service(backup_path, bin_path, config.path, subcommand="check")
         if name == MAINTENANCE_UNIT_NAME:
-            return render_unit_kopia_service(bin_path, config.path, kind="maintenance")
+            return render_unit_kopia_service(bin_path, config.path, kind="maintenance", backup_path=backup_path)
+        if name == MAINTENANCE_FULL_UNIT_NAME:
+            return render_unit_kopia_service(bin_path, config.path, kind="maintenance-full", backup_path=backup_path)
         if name == VERIFY_UNIT_NAME:
-            return render_unit_kopia_service(bin_path, config.path, kind="verify")
+            return render_unit_kopia_service(bin_path, config.path, kind="verify", backup_path=backup_path)
         if name == MAINTENANCE_TIMER_NAME:
             return render_unit_interval_timer(
                 description=KOPIA_UNIT_DESCRIPTIONS["maintenance"],
                 interval=config.get("KOPIA_MAINTENANCE_INTERVAL"),
+            )
+        if name == MAINTENANCE_FULL_TIMER_NAME:
+            return render_unit_interval_timer(
+                description=KOPIA_UNIT_DESCRIPTIONS["maintenance-full"],
+                interval=KOPIA_FULL_MAINTENANCE_INTERVAL,
             )
         if name == VERIFY_TIMER_NAME:
             return render_unit_interval_timer(

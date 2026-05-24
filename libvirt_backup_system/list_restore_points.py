@@ -34,7 +34,10 @@ def _local_rows(config: Config) -> list[BackupRow]:
     """List rows from this host's own repo (always present after install)."""
     cfg_file = kopia_repo.local_config_file(config)
     if not cfg_file.is_file():
-        return []
+        if not kopia_repo.local_repo_exists(config):
+            return []
+        if kopia_repo.ensure_local_repo(config, apply_global_policy=False) != 0:
+            return []
     return _rows_from_repo(config, host_id=config.get("HOST_ID"), config_file=cfg_file)
 
 

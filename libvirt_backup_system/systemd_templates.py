@@ -38,13 +38,11 @@ WantedBy=timers.target
 
 # Maintenance / verify pairs reuse the ``kopia-passthrough`` subcommand so the
 # unit body stays declarative: cli.py owns config-file resolution + password
-# loading, and ExecStart only needs the wrapper + kopia argv tail. Daily quick
-# maintenance is enough for compaction + GC; weekly full maintenance is left to
-# operators (``lbs kopia-passthrough -- maintenance run --full=true``) to keep
-# the unit count low and the rendering trivial.
+# loading, and ExecStart only needs the wrapper + kopia argv tail.
 UNIT_KOPIA_SERVICE = """[Unit]
 Description={description}
 After=network-online.target
+{requires_mounts_for}
 
 [Service]
 Type=oneshot

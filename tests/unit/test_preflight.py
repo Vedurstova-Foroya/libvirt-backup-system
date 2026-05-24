@@ -68,6 +68,13 @@ def test_required_present_flags_empty_required_keys(tmp_path: Path) -> None:
     assert any("SYSTEMD_ON_CALENDAR must not be empty" in failure for failure in failures)
 
 
+def test_required_present_allows_empty_kopia_repo_path(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = ""
+    failures = preflight._validate_required_present(cfg)
+    assert "KOPIA_REPO_PATH must not be empty" not in failures
+
+
 def test_validate_vm_blacklist_flags_invalid_uuids(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.values["VM_BLACKLIST"] = "not-a-uuid, aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

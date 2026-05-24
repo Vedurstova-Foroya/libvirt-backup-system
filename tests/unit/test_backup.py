@@ -21,7 +21,6 @@ import pytest
 
 from libvirt_backup_system import backup, kopia_snapshots
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.disks import DiskEntry
 from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vm_snapshot import DiskTarget, FrozenSnapshot
 from libvirt_backup_system.vms import VM
@@ -122,10 +121,6 @@ def _vm(name: str = "alpha", uuid: str = ALPHA_UUID, state: str = "running") -> 
     return VM(name=name, state=state, uuid=uuid)
 
 
-def _disk_entry(target: str = "vda", source: str = "/img/alpha.qcow2") -> DiskEntry:
-    return DiskEntry(target=target, source=Path(source))
-
-
 def _disk_target(target: str = "vda", source: str = "/img/alpha.qcow2") -> DiskTarget:
     return DiskTarget(target=target, source=Path(source))
 
@@ -133,7 +128,6 @@ def _disk_target(target: str = "vda", source: str = "/img/alpha.qcow2") -> DiskT
 def _install_stubs(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    disks: list[DiskEntry] | None = None,
     virtual_size: object = 1024,
     domain_xml: str = "<domain/>",
     mount_ok: object = True,
@@ -154,11 +148,6 @@ def _install_stubs(
         "domain_xml": [],
         "mount_checks": [],
     }
-    disks = disks if disks is not None else [_disk_entry()]
-
-    def fake_vm_disks(uri: str, name: str) -> list[DiskEntry]:
-        return list(disks)
-
     def fake_virtual_size(path: str) -> int:
         captured["virtual_size"].append(path)
         if isinstance(virtual_size, BaseException):
@@ -184,7 +173,6 @@ def _install_stubs(
         if create_path is not None:
             create_path(**kwargs)
 
-    monkeypatch.setattr(backup, "vm_disk_paths_with_targets", fake_vm_disks)
     monkeypatch.setattr(backup, "disk_virtual_size_bytes", fake_virtual_size)
     monkeypatch.setattr(backup, "_read_domain_xml", fake_read_xml)
     monkeypatch.setattr(backup, "runtime_backup_path_ok", fake_mount)
@@ -210,8 +198,7 @@ def test_timestamp_wraps_utc_timestamp() -> None:
 def test_backup_vm_happy_path_quiesces_and_streams_each_disk(
     monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    disk_entries = [_disk_entry("vda", "/img/vda.qcow2"), _disk_entry("vdb", "/img/vdb.qcow2")]
-    captured = _install_stubs(monkeypatch, disks=disk_entries, virtual_size=4096)
+    captured = _install_stubs(monkeypatch, virtual_size=4096)
     snapper = FakeSnapper(disks=[_disk_target("vda", "/img/vda.qcow2"), _disk_target("vdb", "/img/vdb.qcow2")])
     assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is True
     assert snapper.freeze_calls and snapper.commit_calls

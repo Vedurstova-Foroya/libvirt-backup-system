@@ -75,13 +75,15 @@ surface that `check` covers. Specifically, `doctor` is a superset of
 `check` — it runs the full preflight layer and then appends:
 
 - Wrapper script, package directory, and config file are in place.
-- All three systemd unit files exist on disk with content matching what a
+- All systemd unit and timer files exist on disk with content matching what a
   fresh `install` would render (catches drift after editing the env file
   without re-running install).
 - Backup timer is enabled and active.
 - Last `libvirt-backup-system.service` run completed cleanly.
 - Local kopia repo connects with the shared password and
   `kopia repository status` is clean.
+- Local `kopia maintenance run --dry-run` and `kopia snapshot verify
+  --dry-run` complete cleanly.
 - Every peer repo under `BACKUP_PATH/*/kopia-repo/` is reachable read-only
   with the shared password (cross-host-restore smoke test).
 
@@ -125,11 +127,12 @@ sudo libvirt-backup-system run
 
 ## `status`
 
-Prints `systemctl status` for the installed timer and service. Output is
-the raw human-readable systemctl output (not JSON), so the next-fire time,
-last-run result, and any recent journal lines are visible at a glance. Exit
-code is the worst (highest) systemctl return code across the two units, so
-unloaded units propagate as failure.
+Prints `systemctl status` for the backup timer/service, check service,
+maintenance timer/service, and verify timer/service units. Output is the raw
+human-readable systemctl output (not JSON), so the next-fire time, last-run
+result, and any recent journal lines are visible at a glance. Exit code is the
+worst (highest) systemctl return code across those units, so unloaded units
+propagate as failure.
 
 ```sh
 sudo libvirt-backup-system status

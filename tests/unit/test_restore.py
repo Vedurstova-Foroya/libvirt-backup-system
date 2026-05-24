@@ -163,7 +163,7 @@ def test_restore_manifest_logs_when_parse_fails(
     assert "manifest read failed" in capsys.readouterr().err
 
 
-def test_disk_snapshot_id_returns_first_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disk_snapshot_id_returns_single_hit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_list(**kwargs: Any) -> list[Any]:
@@ -172,7 +172,7 @@ def test_disk_snapshot_id_returns_first_hit(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_list", fake_list)
     assert restore._disk_snapshot_id(make_config(tmp_path), make_row(tmp_path), "vda") == "snap-xyz"
-    assert captured["tags"] == {"kind": "disk", "run-id": "run-1", "disk": "vda"}
+    assert captured["tags"] == {"kind": "disk", "vm-uuid": ALPHA_UUID, "run-id": "run-1", "disk": "vda"}
 
 
 @pytest.mark.parametrize(

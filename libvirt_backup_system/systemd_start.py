@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import kopia_repo
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
 from .shell import configure_default_timeout
 from .systemd_units import (
     CHECK_UNIT_NAME,
+    KOPIA_FULL_MAINTENANCE_INTERVAL,
     KOPIA_UNIT_DESCRIPTIONS,
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
     MAINTENANCE_UNIT_NAME,
     RUN_UNIT_NAME,
@@ -27,21 +31,29 @@ from .systemd_units import (
 
 @dataclass(frozen=True)
 class _Rendered:
+    config: Config
     resolved_config: Path
     service_text: str
     check_service_text: str
     timer_text: str
     maintenance_service_text: str
     maintenance_timer_text: str
+    maintenance_full_service_text: str
+    maintenance_full_timer_text: str
     verify_service_text: str
     verify_timer_text: str
 
 
 def _render_kopia_pair(
-    *, bin_path: Path, resolved_config: Path, kind: str, interval: str
+    *, bin_path: Path, resolved_config: Path, backup_path: str, kind: str, interval: str
 ) -> tuple[str, str] | None:
     try:
-        service_text = render_unit_kopia_service(bin_path, resolved_config, kind=kind)
+        service_text = render_unit_kopia_service(
+            bin_path,
+            resolved_config,
+            kind=kind,
+            backup_path=backup_path,
+        )
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return None
@@ -85,26 +97,40 @@ def _render_installed_units(root: Path, config_path: str | None) -> _Rendered | 
     maintenance = _render_kopia_pair(
         bin_path=bin_path,
         resolved_config=resolved_config,
+        backup_path=backup_path,
         kind="maintenance",
         interval=cfg.get("KOPIA_MAINTENANCE_INTERVAL"),
     )
     if maintenance is None:
         return None
+    maintenance_full = _render_kopia_pair(
+        bin_path=bin_path,
+        resolved_config=resolved_config,
+        backup_path=backup_path,
+        kind="maintenance-full",
+        interval=KOPIA_FULL_MAINTENANCE_INTERVAL,
+    )
+    if maintenance_full is None:
+        return None
     verify = _render_kopia_pair(
         bin_path=bin_path,
         resolved_config=resolved_config,
+        backup_path=backup_path,
         kind="verify",
         interval=cfg.get("KOPIA_VERIFY_INTERVAL"),
     )
     if verify is None:
         return None
     return _Rendered(
+        config=cfg,
         resolved_config=resolved_config,
         service_text=service_text,
         check_service_text=check_service_text,
         timer_text=timer_text,
         maintenance_service_text=maintenance[0],
         maintenance_timer_text=maintenance[1],
+        maintenance_full_service_text=maintenance_full[0],
+        maintenance_full_timer_text=maintenance_full[1],
         verify_service_text=verify[0],
         verify_timer_text=verify[1],
     )
@@ -125,6 +151,8 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
     (systemd_dir / TIMER_UNIT_NAME).write_text(rendered.timer_text, encoding="utf-8")
     (systemd_dir / MAINTENANCE_UNIT_NAME).write_text(rendered.maintenance_service_text, encoding="utf-8")
     (systemd_dir / MAINTENANCE_TIMER_NAME).write_text(rendered.maintenance_timer_text, encoding="utf-8")
+    (systemd_dir / MAINTENANCE_FULL_UNIT_NAME).write_text(rendered.maintenance_full_service_text, encoding="utf-8")
+    (systemd_dir / MAINTENANCE_FULL_TIMER_NAME).write_text(rendered.maintenance_full_timer_text, encoding="utf-8")
     (systemd_dir / VERIFY_UNIT_NAME).write_text(rendered.verify_service_text, encoding="utf-8")
     (systemd_dir / VERIFY_TIMER_NAME).write_text(rendered.verify_timer_text, encoding="utf-8")
     event(
@@ -133,8 +161,10 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
         config_path=str(rendered.resolved_config),
         systemd_dir=str(systemd_dir),
     )
+    if kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
+        return 1
     commands: list[list[str]] = [["systemctl", "daemon-reload"]]
-    for timer in (TIMER_UNIT_NAME, MAINTENANCE_TIMER_NAME, VERIFY_TIMER_NAME):
+    for timer in (TIMER_UNIT_NAME, MAINTENANCE_TIMER_NAME, MAINTENANCE_FULL_TIMER_NAME, VERIFY_TIMER_NAME):
         commands.append(["systemctl", "enable", timer])
         commands.append(["systemctl", "start", timer])
     ok = run_systemctl(root, commands)
@@ -144,6 +174,7 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
             "started systemd timer schedule",
             unit=TIMER_UNIT_NAME,
             maintenance_timer=MAINTENANCE_TIMER_NAME,
+            maintenance_full_timer=MAINTENANCE_FULL_TIMER_NAME,
             verify_timer=VERIFY_TIMER_NAME,
         )
     return 0 if ok else 1

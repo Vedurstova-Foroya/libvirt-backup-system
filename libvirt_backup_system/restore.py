@@ -121,13 +121,16 @@ def _disk_snapshot_id(config: Config, row: BackupRow, target: str) -> str | None
             config_file=row.config_file,
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
-            tags={"kind": "disk", "run-id": row.run_id, "disk": target},
+            tags={"kind": "disk", "vm-uuid": row.vm_uuid, "run-id": row.run_id, "disk": target},
         )
     except (CommandError, ValueError) as exc:
         event("error", "disk snapshot lookup failed", target=target, error=str(exc))
         return None
     if not snapshots:
         event("error", "disk snapshot missing for run", target=target, run_id=row.run_id)
+        return None
+    if len(snapshots) > 1:
+        event("error", "disk snapshot lookup matched multiple snapshots", target=target, run_id=row.run_id)
         return None
     return snapshots[0].snapshot_id
 

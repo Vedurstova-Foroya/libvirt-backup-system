@@ -179,6 +179,8 @@ def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypa
     (systemd_dir / "libvirt-backup-system.service").write_text("stale service\n", encoding="utf-8")
     (systemd_dir / "libvirt-backup-system-maintenance.timer").write_text("stale\n", encoding="utf-8")
     (systemd_dir / "libvirt-backup-system-maintenance.service").write_text("stale\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-maintenance-full.timer").write_text("stale\n", encoding="utf-8")
+    (systemd_dir / "libvirt-backup-system-maintenance-full.service").write_text("stale\n", encoding="utf-8")
     (systemd_dir / "libvirt-backup-system-verify.timer").write_text("stale\n", encoding="utf-8")
     (systemd_dir / "libvirt-backup-system-verify.service").write_text("stale\n", encoding="utf-8")
     assert uninstall(None) == 0
@@ -187,12 +189,15 @@ def test_uninstall_systemd_activation_and_missing_files(tmp_path: Path, monkeypa
     # keep firing against a removed bin_path.
     disable_args = [c for c in calls if c[:2] == ["systemctl", "disable"]]
     assert ["systemctl", "disable", "--now", "libvirt-backup-system-maintenance.timer"] in disable_args
+    assert ["systemctl", "disable", "--now", "libvirt-backup-system-maintenance-full.timer"] in disable_args
     assert ["systemctl", "disable", "--now", "libvirt-backup-system-verify.timer"] in disable_args
     assert calls[-1] == ["systemctl", "daemon-reload"]
     # The maintenance/verify unit files MUST be removed alongside the backup
     # pair so a re-install starts from a clean systemd state.
     assert not (systemd_dir / "libvirt-backup-system-maintenance.service").exists()
     assert not (systemd_dir / "libvirt-backup-system-maintenance.timer").exists()
+    assert not (systemd_dir / "libvirt-backup-system-maintenance-full.service").exists()
+    assert not (systemd_dir / "libvirt-backup-system-maintenance-full.timer").exists()
     assert not (systemd_dir / "libvirt-backup-system-verify.service").exists()
     assert not (systemd_dir / "libvirt-backup-system-verify.timer").exists()
 

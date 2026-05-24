@@ -116,10 +116,19 @@ def test_install_renders_kopia_maintenance_and_verify_unit_pairs(tmp_path: Path,
 
     maintenance_service = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance.service"
     maintenance_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance.timer"
+    maintenance_full_service = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance-full.service"
+    maintenance_full_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-maintenance-full.timer"
     verify_service = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.service"
     verify_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.timer"
     assert "kopia-passthrough -- maintenance run --safety=full" in maintenance_service.read_text(encoding="utf-8")
     assert "OnUnitActiveSec=24h" in maintenance_timer.read_text(encoding="utf-8")
+    assert "kopia-passthrough -- maintenance run --safety=full --full" in maintenance_full_service.read_text(
+        encoding="utf-8"
+    )
+    assert "OnUnitActiveSec=7d" in maintenance_full_timer.read_text(encoding="utf-8")
+    assert f"RequiresMountsFor={backup_dir}" in maintenance_service.read_text(encoding="utf-8")
+    assert f"RequiresMountsFor={backup_dir}" in maintenance_full_service.read_text(encoding="utf-8")
+    assert f"RequiresMountsFor={backup_dir}" in verify_service.read_text(encoding="utf-8")
     assert "snapshot verify --max-failures=0 --verify-files-percent=1" in verify_service.read_text(encoding="utf-8")
     assert "OnUnitActiveSec=7d" in verify_timer.read_text(encoding="utf-8")
 
@@ -135,6 +144,8 @@ def test_install_renders_kopia_maintenance_and_verify_unit_pairs(tmp_path: Path,
     assert install(str(tmp_path)) == 0
     assert not maintenance_service.exists()
     assert not maintenance_timer.exists()
+    assert not maintenance_full_service.exists()
+    assert not maintenance_full_timer.exists()
     assert not verify_service.exists()
     assert not verify_timer.exists()
 

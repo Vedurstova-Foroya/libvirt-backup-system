@@ -19,6 +19,8 @@ CHECK_UNIT_NAME = "libvirt-backup-system-check.service"
 TIMER_UNIT_NAME = "libvirt-backup-system.timer"
 MAINTENANCE_UNIT_NAME = "libvirt-backup-system-maintenance.service"
 MAINTENANCE_TIMER_NAME = "libvirt-backup-system-maintenance.timer"
+MAINTENANCE_FULL_UNIT_NAME = "libvirt-backup-system-maintenance-full.service"
+MAINTENANCE_FULL_TIMER_NAME = "libvirt-backup-system-maintenance-full.timer"
 VERIFY_UNIT_NAME = "libvirt-backup-system-verify.service"
 VERIFY_TIMER_NAME = "libvirt-backup-system-verify.timer"
 STATUS_UNITS = (
@@ -27,21 +29,26 @@ STATUS_UNITS = (
     CHECK_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
     MAINTENANCE_UNIT_NAME,
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
     VERIFY_TIMER_NAME,
     VERIFY_UNIT_NAME,
 )
 UNIT_DESCRIPTIONS = {"run": "Libvirt VM backup orchestrator", "check": "Libvirt VM backup preflight check"}
 KOPIA_UNIT_DESCRIPTIONS = {
     "maintenance": "Libvirt VM backup kopia maintenance",
+    "maintenance-full": "Libvirt VM backup kopia full maintenance",
     "verify": "Libvirt VM backup kopia snapshot verify",
 }
-# Quick daily maintenance keeps the unit count low — operators can trigger a
-# full maintenance pass on demand via ``lbs kopia-passthrough -- maintenance
-# run --full=true``. Verify performs a 1% files probe weekly.
+# Quick maintenance runs on the configured daily-ish cadence; full
+# maintenance is scheduled separately weekly for GC. Verify performs a 1%
+# files probe weekly.
 KOPIA_UNIT_ARGS = {
     "maintenance": "maintenance run --safety=full",
+    "maintenance-full": "maintenance run --safety=full --full",
     "verify": "snapshot verify --max-failures=0 --verify-files-percent=1",
 }
+KOPIA_FULL_MAINTENANCE_INTERVAL = "7d"
 DISPATCH_OPT_OUT_ENV = "LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH"
 
 
@@ -151,6 +158,14 @@ def _escape_systemd_path(path: str) -> str:
     return path.replace("\\", "\\\\").replace("%", "%%").replace("\t", "\\\t").replace(" ", "\\ ")
 
 
+def _requires_mounts_for(backup_path: str) -> str:
+    backup_path = backup_path.strip()
+    if not backup_path:
+        return ""
+    validate_systemd_path(backup_path, "BACKUP_PATH")
+    return f"RequiresMountsFor={_escape_systemd_path(backup_path)}\n"
+
+
 def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run") -> str:
     if subcommand not in UNIT_DESCRIPTIONS:
         raise ValueError(f"unknown unit subcommand: {subcommand}")
@@ -162,11 +177,9 @@ def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, 
     # COMMAND_TIMEOUT_SECONDS per child process, which is the meaningful safety
     # net; a static systemd timeout would either kill legitimate multi-VM runs
     # or be so large it adds no value.
-    validate_systemd_path(backup_path, "BACKUP_PATH")
-    requires = f"RequiresMountsFor={_escape_systemd_path(backup_path)}\n" if backup_path else ""
     return UNIT_SERVICE.format(
         description=UNIT_DESCRIPTIONS[subcommand],
-        requires_mounts_for=requires,
+        requires_mounts_for=_requires_mounts_for(backup_path),
         bin_path=_quote_systemd_path(binary),
         environment_file=_escape_systemd_path(config),
         config_arg=_quote_systemd_path(config),
@@ -210,13 +223,14 @@ def render_unit_timer(root: Path, calendar: str) -> str | None:
     return UNIT_TIMER.format(calendar=calendar)
 
 
-def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str) -> str:
+def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str, backup_path: str = "") -> str:
     if kind not in KOPIA_UNIT_DESCRIPTIONS:
         raise ValueError(f"unknown kopia unit kind: {kind}")
     config = validate_systemd_path(config_path, "config_path")
     binary = validate_systemd_path(bin_path, "bin_path")
     return UNIT_KOPIA_SERVICE.format(
         description=KOPIA_UNIT_DESCRIPTIONS[kind],
+        requires_mounts_for=_requires_mounts_for(backup_path),
         bin_path=_quote_systemd_path(binary),
         environment_file=_escape_systemd_path(config),
         config_arg=_quote_systemd_path(config),

@@ -37,10 +37,12 @@ def verify(config: Config, *, include_hosts: Iterable[str] | None = None) -> int
     if include_hosts is None:
         return 0 if ok else 1
 
-    selected = set(include_hosts)
-    for peer in kopia_repo.iter_connected_peers(config):
-        if peer.host_id not in selected:
+    for host_id in dict.fromkeys(include_hosts):
+        peer_config_file = kopia_repo.ensure_peer_connected(config, host_id)
+        if peer_config_file is None:
+            event("error", "requested peer repo unavailable", host_id=host_id)
+            ok = False
             continue
-        if not _verify_repo(config, host_id=peer.host_id, config_file_path=peer.config_file):
+        if not _verify_repo(config, host_id=host_id, config_file_path=peer_config_file):
             ok = False
     return 0 if ok else 1

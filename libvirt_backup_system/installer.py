@@ -15,13 +15,16 @@ from .installer_helpers import print_install_next_steps as _print_install_next_s
 from .installer_helpers import write_initial_config as _write_initial_config
 from .installer_helpers import write_wrapper as _write_wrapper
 from .installer_password import install_password as _install_password
-from .installer_uninstall import purge_paths, remove_installed_files, resolve_purge_paths
+from .installer_uninstall import purge_paths, remove_installed_files, remove_stale_kopia_units, resolve_purge_paths
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .shell import configure_default_timeout
 from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 from .systemd_units import (
+    KOPIA_FULL_MAINTENANCE_INTERVAL,
     KOPIA_UNIT_DESCRIPTIONS,
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
     MAINTENANCE_UNIT_NAME,
     VERIFY_TIMER_NAME,
@@ -143,10 +146,8 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
 
     _print_install_next_steps(resolved_config, bin_path)
     if not backup_path:
-        # _install_without_backup_path scrubs the legacy backup pair; remove
-        # the maintenance + verify pair here so a config that grew BACKUP_PATH
-        # and shrank back to empty does not leave the new units behind.
-        if not _remove_stale_kopia_units(systemd_dir):
+        # Scrub kopia housekeeping units before the legacy backup pair cleanup.
+        if not remove_stale_kopia_units(systemd_dir):
             return 1
         return _install_without_backup_path(root, systemd_dir, resolved_config)
 
@@ -156,6 +157,8 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     (systemd_dir / "libvirt-backup-system.timer").write_text(rendered["timer"], encoding="utf-8")
     (systemd_dir / MAINTENANCE_UNIT_NAME).write_text(rendered["maintenance_service"], encoding="utf-8")
     (systemd_dir / MAINTENANCE_TIMER_NAME).write_text(rendered["maintenance_timer"], encoding="utf-8")
+    (systemd_dir / MAINTENANCE_FULL_UNIT_NAME).write_text(rendered["maintenance_full_service"], encoding="utf-8")
+    (systemd_dir / MAINTENANCE_FULL_TIMER_NAME).write_text(rendered["maintenance_full_timer"], encoding="utf-8")
     (systemd_dir / VERIFY_UNIT_NAME).write_text(rendered["verify_service"], encoding="utf-8")
     (systemd_dir / VERIFY_TIMER_NAME).write_text(rendered["verify_timer"], encoding="utf-8")
     event("info", "installed", opt_dir=str(opt_dir), bin_path=str(bin_path), config_path=str(resolved_config))
@@ -166,36 +169,25 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     return 0 if run_systemctl(root, [["systemctl", "daemon-reload"]]) else 1
 
 
-def _remove_stale_kopia_units(systemd_dir: Path) -> bool:
-    """Best-effort scrub of maintenance/verify pair files.
-
-    Mirrors the cleanup ``_install_without_backup_path`` does for the legacy
-    backup pair: a re-install with BACKUP_PATH cleared back to empty must
-    not leave the kopia housekeeping units pointing at a path that no
-    longer applies.
-    """
-    ok = True
-    for name in (MAINTENANCE_UNIT_NAME, MAINTENANCE_TIMER_NAME, VERIFY_UNIT_NAME, VERIFY_TIMER_NAME):
-        path = systemd_dir / name
-        try:
-            path.unlink()
-            event("info", "removed stale systemd unit", path=str(path))
-        except FileNotFoundError:
-            pass
-        except (PermissionError, OSError) as exc:
-            event("error", "failed to remove stale systemd unit", path=str(path), error=str(exc))
-            ok = False
-    return ok
-
-
 def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path) -> dict[str, str]:
     """Render every unit file the installer writes. Empty dict signals failure."""
     backup_path = cfg.get("BACKUP_PATH").strip()
     try:
         service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="run")
         check_service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="check")
-        maintenance_service = render_unit_kopia_service(bin_path, resolved_config, kind="maintenance")
-        verify_service = render_unit_kopia_service(bin_path, resolved_config, kind="verify")
+        maintenance_service = render_unit_kopia_service(
+            bin_path,
+            resolved_config,
+            kind="maintenance",
+            backup_path=backup_path,
+        )
+        maintenance_full_service = render_unit_kopia_service(
+            bin_path,
+            resolved_config,
+            kind="maintenance-full",
+            backup_path=backup_path,
+        )
+        verify_service = render_unit_kopia_service(bin_path, resolved_config, kind="verify", backup_path=backup_path)
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return {}
@@ -204,11 +196,15 @@ def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path
         description=KOPIA_UNIT_DESCRIPTIONS["maintenance"],
         interval=cfg.get("KOPIA_MAINTENANCE_INTERVAL"),
     )
+    maintenance_full_timer = render_unit_interval_timer(
+        description=KOPIA_UNIT_DESCRIPTIONS["maintenance-full"],
+        interval=KOPIA_FULL_MAINTENANCE_INTERVAL,
+    )
     verify_timer = render_unit_interval_timer(
         description=KOPIA_UNIT_DESCRIPTIONS["verify"],
         interval=cfg.get("KOPIA_VERIFY_INTERVAL"),
     )
-    if timer_text is None or maintenance_timer is None or verify_timer is None:
+    if timer_text is None or maintenance_timer is None or maintenance_full_timer is None or verify_timer is None:
         return {}
     return {
         "service": service_text,
@@ -216,6 +212,8 @@ def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path
         "timer": timer_text,
         "maintenance_service": maintenance_service,
         "maintenance_timer": maintenance_timer,
+        "maintenance_full_service": maintenance_full_service,
+        "maintenance_full_timer": maintenance_full_timer,
         "verify_service": verify_service,
         "verify_timer": verify_timer,
     }
@@ -266,6 +264,8 @@ def _uninstall_locked(
             ["systemctl", "stop", "libvirt-backup-system.service"],
             ["systemctl", "disable", "--now", MAINTENANCE_TIMER_NAME],
             ["systemctl", "stop", MAINTENANCE_UNIT_NAME],
+            ["systemctl", "disable", "--now", MAINTENANCE_FULL_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_FULL_UNIT_NAME],
             ["systemctl", "disable", "--now", VERIFY_TIMER_NAME],
             ["systemctl", "stop", VERIFY_UNIT_NAME],
         ],

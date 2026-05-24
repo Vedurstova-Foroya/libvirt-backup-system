@@ -28,13 +28,12 @@ from typing import cast
 
 from . import kopia_repo, kopia_snapshots
 from .config import Config
-from .disks import vm_disk_paths_with_targets
 from .logging_json import event
 from .manifest import Manifest, ManifestDisk, snapshot_filename_for_target, utc_timestamp
 from .paths import backup_root, runtime_backup_path_ok
 from .preflight_estimate import disk_virtual_size_bytes
 from .shell import CommandError
-from .vm_snapshot import LibvirtSnapshotter, VmSnapshotter
+from .vm_snapshot import DiskTarget, LibvirtSnapshotter, VmSnapshotter
 from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
 __all__ = [
@@ -57,28 +56,27 @@ def timestamp(now: dt.datetime | None = None) -> str:
     return utc_timestamp(now)
 
 
-def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str) -> Manifest:
+def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list[DiskTarget]) -> Manifest:
     libvirt_uri = config.get("LIBVIRT_URI")
-    disks = vm_disk_paths_with_targets(libvirt_uri, vm.name)
     manifest_disks: list[ManifestDisk] = []
-    for entry in disks:
+    for disk in disks:
         try:
-            virtual = disk_virtual_size_bytes(str(entry.source))
+            virtual = disk_virtual_size_bytes(str(disk.source))
         except (CommandError, OSError, ValueError) as exc:
             event(
                 "warning",
                 "could not read virtual disk size; defaulting to 0",
                 vm=vm.name,
-                disk=str(entry.source),
+                disk=str(disk.source),
                 error=str(exc),
             )
             virtual = 0
         manifest_disks.append(
             ManifestDisk(
-                target=entry.target,
-                source_path=str(entry.source),
+                target=disk.target,
+                source_path=str(disk.source),
                 virtual_size_bytes=virtual,
-                snapshot_filename=snapshot_filename_for_target(entry.target),
+                snapshot_filename=snapshot_filename_for_target(disk.target),
             )
         )
     domain_xml = _read_domain_xml(libvirt_uri, vm.name)
@@ -161,8 +159,9 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
     run_id = str(uuid.uuid4())
     stamp = utc_timestamp()
     event("info", "backup started", vm=vm.name, run_id=run_id, timestamp=stamp)
-    manifest = _build_manifest(config, vm, run_id, stamp)
-    success, consistency = _stream_all_disks(config, vm, manifest, run_id, snapper_obj)
+    snapper_disks = snapper_obj.list_disks(vm.name)
+    manifest = _build_manifest(config, vm, run_id, stamp, snapper_disks)
+    success, consistency = _stream_all_disks(config, vm, manifest, run_id, snapper_obj, snapper_disks)
     if not success:
         return False
     if not runtime_backup_path_ok(config):
@@ -180,7 +179,7 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
 
 
 def _stream_all_disks(
-    config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter
+    config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter, snapper_disks: list[DiskTarget]
 ) -> tuple[bool, str]:
     """Drive freeze → stream each disk → commit, all through the same snapper.
 
@@ -192,7 +191,6 @@ def _stream_all_disks(
     so an overlay is never left wedged on the running domain even if a stream
     raises mid-flight.
     """
-    snapper_disks = snapper.list_disks(vm.name)
     frozen = snapper.freeze(vm.name, snapper_disks)
     consistency = "quiesced" if frozen.quiesced else "crash"
     ok = True
