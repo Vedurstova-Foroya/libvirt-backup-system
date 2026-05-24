@@ -31,7 +31,7 @@ def _row(tmp_path: Path) -> list_restore_points.BackupRow:
         vm_uuid=ALPHA_UUID,
         timestamp="20260521T023001",
         host_id="host-a",
-        vm_name="",
+        vm_name="alpha",
         run_id=RUN_ID_A,
         snapshot_id="snap-1",
         config_file=tmp_path / "k.config",
@@ -41,13 +41,15 @@ def _row(tmp_path: Path) -> list_restore_points.BackupRow:
 def test_format_rows_renders_aligned_table(tmp_path: Path) -> None:
     out = list_restore_points.format_rows([_row(tmp_path)])
     lines = out.splitlines()
-    assert lines[0].startswith("VM_UUID")
+    assert lines[0].startswith("source-host-id")
+    assert lines[0].split() == ["source-host-id", "vm-uuid", "vm-name", "timestamp", "run-id"]
     assert ALPHA_UUID in lines[1]
-    assert "snap-1" in lines[1]
+    assert "alpha" in lines[1]
+    assert "snap-1" not in out
 
 
 def test_format_rows_renders_header_only_for_empty_rows() -> None:
-    assert list_restore_points.format_rows([]).startswith("VM_UUID")
+    assert list_restore_points.format_rows([]).startswith("source-host-id")
 
 
 def test_list_restore_points_returns_one_when_backup_path_missing(
@@ -76,5 +78,5 @@ def test_list_restore_points_prints_table_and_returns_zero(
     monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [_row(tmp_path)])
     assert list_restore_points.list_restore_points(cfg) == 0
     out = capsys.readouterr().out
-    assert "snap-1" in out
-    assert "VM_UUID" in out
+    assert "snap-1" not in out
+    assert "source-host-id" in out

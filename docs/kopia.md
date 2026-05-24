@@ -46,7 +46,7 @@ Each backup run produces two kinds of snapshots:
 | Kind | Tags | Content |
 |---|---|---|
 | `kind=disk` | `vm-uuid`, `run-id`, `disk=<target>`, `host` | One logical file `<target>.raw` |
-| `kind=meta` | `vm-uuid`, `run-id`, `host` | `manifest.json` |
+| `kind=meta` | `vm-uuid`, `vm-name`, `timestamp`, `run-id`, `host` | `manifest.json` |
 
 The `manifest.json` carries the VM name, UUID, host id, run id, timestamp,
 libvirt URI, full domain XML, and the per-disk table (target name, source

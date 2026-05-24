@@ -41,13 +41,19 @@ def _snapshot(
     snap_id: str = "snap-1",
     start_time: str = "2026-05-21T02:30:01Z",
     vm_uuid: str = ALPHA_UUID,
+    vm_name: str = "alpha",
     run_id: str = RUN_ID_A,
+    timestamp_tag: str | None = None,
 ) -> kopia_snapshots.KopiaSnapshot:
     tags = {}
     if vm_uuid:
         tags["vm-uuid"] = vm_uuid
     if run_id:
         tags["run-id"] = run_id
+    if vm_name:
+        tags["vm-name"] = vm_name
+    if timestamp_tag is not None:
+        tags["timestamp"] = timestamp_tag
     tags["kind"] = "meta"
     return kopia_snapshots.KopiaSnapshot(
         snapshot_id=snap_id,
@@ -136,9 +142,17 @@ def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: p
     row = rows[0]
     assert row.vm_uuid == ALPHA_UUID
     assert row.host_id == "host-a"
+    assert row.vm_name == "alpha"
     assert row.run_id == RUN_ID_A
     assert row.timestamp == "20260521T023001"
     assert row.config_file == local_cfg
+
+
+def test_local_rows_prefers_timestamp_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(timestamp_tag="20260101T010101")]})
+    assert list_restore_points._local_rows(cfg)[0].timestamp == "20260101T010101"
 
 
 def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,6 +161,17 @@ def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: py
     snaps = [_snapshot(vm_uuid=""), _snapshot(run_id="")]
     _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
     assert list_restore_points._local_rows(cfg) == []
+
+
+def test_local_rows_allows_older_snapshots_without_vm_name_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(vm_name="")]})
+    rows = list_restore_points._local_rows(cfg)
+    assert len(rows) == 1
+    assert rows[0].vm_name == ""
 
 
 def test_rows_from_repo_returns_empty_on_command_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

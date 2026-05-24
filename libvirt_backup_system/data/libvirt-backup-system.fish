@@ -5,7 +5,7 @@
 # Fish auto-loads files in that directory; no `source` line is required.
 #
 # Keep this file in sync with the argparse parser in
-# libvirt_backup_system/cli.py. A unit test parses the .fish file and
+# libvirt_backup_system/cli_parser.py. A unit test parses the .fish file and
 # cross-checks it against build_parser() so the two stay aligned.
 
 # Disable default file completion: the binary takes named subcommands, not
@@ -13,10 +13,11 @@
 # the few flags that accept paths.
 complete -c libvirt-backup-system -f
 
-set -l __lbs_subcommands install uninstall check preflight doctor run start status list-vms verify list-restore-points restore
+set -l __lbs_subcommands install change-password uninstall check preflight doctor run start status list-vms verify list-restore-points restore
 
 # Top-level subcommand suggestions (only before any subcommand has been chosen).
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a install -d "Install wrapper, config, package, and systemd units"
+complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a change-password -d "Rotate the shared kopia password on the local host"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a uninstall -d "Remove installed files (config/state/logs kept unless --purge-* is passed)"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a check -d "Run preflight: config, binaries, paths, free space"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a preflight -d "Alias of check"
@@ -25,7 +26,7 @@ complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_sub
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a start -d "Refresh systemd units and activate the timer"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a status -d "systemctl status for the installed timer and service"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a list-vms -d "List selected VMs after VM_BLACKLIST is applied"
-complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a verify -d "Run virtnbdrestore -a verify against discovered backups"
+complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a verify -d "Run kopia snapshot verify against discovered repos"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a list-restore-points -d "List every restorable backup run across all hosts and VMs"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a restore -d "Restore a backup run identified by VM_UUID and TIMESTAMP"
 
@@ -33,6 +34,16 @@ complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_sub
 complete -c libvirt-backup-system -l config -r -F -d "Path to libvirt-backup.env"
 complete -c libvirt-backup-system -l prefix -r -F -d "Root prefix for install/runtime paths"
 complete -c libvirt-backup-system -s h -l help -d "Show help and exit"
+
+# install flags.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password -r -d "Shared kopia repo password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-file -r -F -d "Path to a file holding the kopia password; '-' reads stdin"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-env -r -d "Environment variable name holding the kopia password"
+
+# change-password flags.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password -r -d "New shared kopia repo password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-file -r -F -d "Path to a file holding the new kopia password; '-' reads stdin"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-env -r -d "Environment variable name holding the new kopia password"
 
 # uninstall flags.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from uninstall" -l purge-config -d "Also remove /etc/libvirt-backup-system/libvirt-backup.env"
@@ -44,7 +55,10 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-vms" -l j
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-vms" -l include-blacklisted -d "Also list VMs filtered out by VM_BLACKLIST"
 
 # verify flag.
-complete -c libvirt-backup-system -n "__fish_seen_subcommand_from verify" -l vm -r -d "Restrict verification to one VM by name or UUID"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from verify" -l include-hosts -r -d "Comma-separated peer host_ids to verify in addition to the local repo"
+
+# restore flag.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -s v -l verbose -d "Stream full restore output"
 
 # --- Dynamic restore completion ---------------------------------------------
 #
@@ -91,13 +105,10 @@ end
 
 function __lbs_restore_uuids
     # Deduplicate by UUID so a VM with many restore points appears once in the
-    # menu. The description shows the VM name and the count of restore points
-    # so the operator can see at a glance which VMs have multiple snapshots;
-    # the per-snapshot detail (full vs inc) surfaces on the second TAB once a
-    # UUID is picked. Avoid putting "full"/"inc" here — the first row for any
-    # UUID is always the chain full, which made it look like only full
-    # backups existed when the menu actually lists VMs.
-    __lbs_query_restore_points | awk 'NR > 1 { c[$1]++; if (!s[$1]++) n[$1] = $3 } END { for (u in c) printf "%s\t%s (%d backups)\n", u, n[u], c[u] }' | sort
+    # menu. The Kopia-era list-restore-points table is:
+    # source-host-id vm-uuid vm-name timestamp run-id. The description shows
+    # the first host seen plus the count of restore points for that UUID.
+    __lbs_query_restore_points | awk 'NR > 1 { c[$2]++; if (!s[$2]++) h[$2] = $1 } END { for (u in c) printf "%s\t%s (%d restore points)\n", u, h[u], c[u] }' | sort
 end
 
 function __lbs_restore_timestamps_for_uuid
@@ -118,10 +129,9 @@ function __lbs_restore_timestamps_for_uuid
     end
     # ``sort -r`` puts the most recent timestamp at the top of the menu so
     # the operator's typical "restore to the latest point" intent lands a
-    # single arrow-down away. The description is just the kind ("full" /
-    # "inc") so the operator can spot standalone-restorable points versus
-    # chain-dependent ones.
-    __lbs_query_restore_points | awk -v u="$uuid" 'NR > 1 && $1 == u {print $2"\t"$5}' | sort -r
+    # single arrow-down away. The description shows source host and RUN_ID for
+    # diagnostics without requiring the operator to keep the table visible.
+    __lbs_query_restore_points | awk -v u="$uuid" 'NR > 1 && $2 == u {print $(NF-1)"\t"$1" "$NF}' | sort -r
 end
 
 complete -c libvirt-backup-system \

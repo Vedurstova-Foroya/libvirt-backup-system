@@ -171,8 +171,15 @@ def test_disk_and_meta_tags(backup_config: Config) -> None:
     vm = _vm(uuid=BETA_UUID)
     disk_tags = backup._disk_tags(backup_config, vm, "run-9", "vda")
     assert disk_tags == {"vm-uuid": BETA_UUID, "disk": "vda", "host": "host-a", "run-id": "run-9", "kind": "disk"}
-    meta_tags = backup._meta_tags(backup_config, vm, "run-9")
-    assert meta_tags == {"vm-uuid": BETA_UUID, "host": "host-a", "run-id": "run-9", "kind": "meta"}
+    meta_tags = backup._meta_tags(backup_config, vm, "run-9", "20260101T010101")
+    assert meta_tags == {
+        "vm-uuid": BETA_UUID,
+        "vm-name": vm.name,
+        "host": "host-a",
+        "run-id": "run-9",
+        "kind": "meta",
+        "timestamp": "20260101T010101",
+    }
 
 
 def test_run_backups_runs_only_running_vms_and_returns_zero(

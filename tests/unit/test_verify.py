@@ -45,7 +45,7 @@ def test_verify_local_repo_returns_one_on_failure(
     assert "boom" in err
 
 
-def test_verify_peers_filters_by_include_hosts(
+def test_verify_include_hosts_verifies_local_repo_and_selected_peers(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     peer_a = PeerRepo(host_id="host-a", repo_path=tmp_path / "a", config_file=tmp_path / "a.cfg")
@@ -59,8 +59,8 @@ def test_verify_peers_filters_by_include_hosts(
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", fake_verify)
     assert verify_mod.verify(backup_config, include_hosts=["host-a", "host-c"]) == 0
-    # host-b is dropped because it is not in the include set.
-    assert seen == [peer_a.config_file, peer_c.config_file]
+    # The local repo is always verified; host-b is dropped because it is not in the include set.
+    assert seen == [kopia_repo.local_config_file(backup_config), peer_a.config_file, peer_c.config_file]
 
 
 def test_verify_peers_returns_one_when_any_peer_fails(
@@ -78,25 +78,42 @@ def test_verify_peers_returns_one_when_any_peer_fails(
     assert verify_mod.verify(backup_config, include_hosts=["host-a", "host-b"]) == 1
 
 
+def test_verify_include_hosts_returns_one_when_local_repo_fails(
+    backup_config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    peer = PeerRepo(host_id="host-a", repo_path=tmp_path / "a", config_file=tmp_path / "a.cfg")
+    monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: [peer])
+
+    def selective(**kwargs: Any) -> None:
+        if kwargs["config_file"] == kopia_repo.local_config_file(backup_config):
+            raise CommandError(CommandResult(args=["kopia"], returncode=3, stdout="", stderr="local bad"))
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_verify", selective)
+    assert verify_mod.verify(backup_config, include_hosts=["host-a"]) == 1
+
+
 def test_verify_peers_returns_zero_when_no_peers_match(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # iter_connected_peers returns hosts that all get filtered out by
-    # include_hosts. The result is vacuously ok=True so we return 0.
+    # iter_connected_peers returns hosts that all get filtered out by include_hosts.
+    # Only the local repo is verified.
     peer = PeerRepo(host_id="host-a", repo_path=tmp_path / "a", config_file=tmp_path / "a.cfg")
     monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: [peer])
     called: list[Any] = []
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **kw: called.append(kw))
     assert verify_mod.verify(backup_config, include_hosts=["other-host"]) == 0
-    assert called == []
+    assert [call["config_file"] for call in called] == [kopia_repo.local_config_file(backup_config)]
 
 
 def test_verify_peers_returns_zero_when_iter_returns_empty(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    called: list[Any] = []
+
     monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: [])
-    monkeypatch.setattr(kopia_snapshots, "snapshot_verify", _ok_verify)
+    monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **kw: called.append(kw))
     assert verify_mod.verify(backup_config, include_hosts=[]) == 0
+    assert [call["config_file"] for call in called] == [kopia_repo.local_config_file(backup_config)]
 
 
 def test_verify_success_emits_info_event(

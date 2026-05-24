@@ -40,9 +40,12 @@ class _RestoreContext:
 
 
 def _match_row(config: Config, vm_uuid: str, timestamp: str) -> BackupRow | None:
-    for row in enumerate_backups(config, vm_uuid=vm_uuid):
-        if row.timestamp == timestamp:
-            return row
+    matches = [row for row in enumerate_backups(config, vm_uuid=vm_uuid) if row.timestamp == timestamp]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return None
+    event("error", "restore timestamp matched multiple backups", vm_uuid=vm_uuid, timestamp=timestamp)
     return None
 
 
@@ -90,6 +93,26 @@ def _restore_manifest(config: Config, row: BackupRow, staging: Path) -> Manifest
     except (OSError, ValueError) as exc:
         event("error", "manifest read failed", path=str(meta_dir / MANIFEST_FILENAME), error=str(exc))
         return None
+
+
+def _manifest_matches_request(manifest: Manifest, row: BackupRow, vm_uuid: str, timestamp: str) -> bool:
+    expected = {
+        "vm_uuid": vm_uuid,
+        "timestamp": timestamp,
+        "host_id": row.host_id,
+        "run_id": row.run_id,
+    }
+    actual = {
+        "vm_uuid": manifest.vm_uuid,
+        "timestamp": manifest.timestamp,
+        "host_id": manifest.host_id,
+        "run_id": manifest.run_id,
+    }
+    mismatches = [key for key, value in expected.items() if actual[key] != value]
+    if mismatches:
+        event("error", "manifest does not match selected restore point", fields=",".join(mismatches))
+        return False
+    return True
 
 
 def _disk_snapshot_id(config: Config, row: BackupRow, target: str) -> str | None:
@@ -309,6 +332,8 @@ def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = Tru
         return 1
     manifest = _restore_manifest(config, row, staging)
     if manifest is None:
+        return 1
+    if not _manifest_matches_request(manifest, row, vm_uuid, timestamp):
         return 1
     if not is_safe_vm_name(manifest.vm_name):
         event("error", "manifest carries unsafe vm name", vm_name=manifest.vm_name)

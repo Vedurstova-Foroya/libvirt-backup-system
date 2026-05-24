@@ -157,8 +157,8 @@ def change_local_password(config: Config, new_value: str) -> int:
         event(
             "error",
             "kopia password file write failed AFTER rotation; recover manually",
-            old_password="<your previous password>",
-            new_password="<your new password>",
+            old_password=old_value,
+            new_password=new_value,
             error=str(exc),
         )
         return 1

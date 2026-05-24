@@ -58,6 +58,7 @@ def test_freeze_attempts_quiesce_then_records_overlays(monkeypatch: pytest.Monke
     assert "--atomic" in calls[0]
     assert "--no-metadata" in calls[0]
     assert set(result.overlays) == {"vda", "vdb"}
+    assert all(path.parent.is_dir() for path in result.overlays.values())
 
 
 def test_freeze_retries_without_quiesce_on_qga_failure(

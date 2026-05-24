@@ -116,12 +116,14 @@ def _disk_tags(config: Config, vm: VM, run_id: str, target: str) -> dict[str, st
     }
 
 
-def _meta_tags(config: Config, vm: VM, run_id: str) -> dict[str, str]:
+def _meta_tags(config: Config, vm: VM, run_id: str, stamp: str) -> dict[str, str]:
     return {
         "vm-uuid": vm.uuid,
+        "vm-name": vm.name,
         "kind": "meta",
         "host": config.get("HOST_ID"),
         "run-id": run_id,
+        "timestamp": stamp,
     }
 
 
@@ -162,8 +164,6 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
     manifest = _build_manifest(config, vm, run_id, stamp)
     success, consistency = _stream_all_disks(config, vm, manifest, run_id, snapper_obj)
     if not success:
-        return False
-    if not _write_meta_snapshot(config, vm, manifest, run_id):
         return False
     if not runtime_backup_path_ok(config):
         event("error", "backup completed but backup path no longer mounted", vm=vm.name)
@@ -206,6 +206,8 @@ def _stream_all_disks(
             if not _stream_single_disk(config, vm, run_id, disk.target, base, snapper):
                 ok = False
                 break
+        if ok and not _write_meta_snapshot(config, vm, manifest, run_id):
+            ok = False
     finally:
         try:
             snapper.commit(frozen)
@@ -257,7 +259,7 @@ def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str
                 password_file=kopia_repo.password_file_path(config),
                 cache_dir=kopia_repo.cache_dir(config),
                 path=staging,
-                tags=_meta_tags(config, vm, run_id),
+                tags=_meta_tags(config, vm, run_id, manifest.timestamp),
                 override_source=_override_source(config, vm.uuid, "meta"),
                 parallelism=_parallelism(config),
             )

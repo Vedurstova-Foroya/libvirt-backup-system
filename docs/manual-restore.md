@@ -9,8 +9,8 @@ sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 ```
 
 `list-restore-points` prints every recorded run across every per-host repo
-under `BACKUP_PATH`. The first two columns are the VM UUID and the per-run
-timestamp; copy that pair straight into `restore`. `restore` connects to the
+under `BACKUP_PATH`. Copy the `vm-uuid` and `timestamp` columns straight into
+`restore`. `restore` connects to the
 matching host's kopia repo with the shared password, reads the meta
 snapshot's `manifest.json`, materializes each disk snapshot through
 `qemu-img convert -f raw -O qcow2 -S 4096`, and re-defines the domain.

@@ -108,7 +108,8 @@ Runs preflight, acquires the run lock, and backs up every running VM.
 Offline VMs are logged as `skipping vm because it is offline` and skipped.
 Each VM produces one kopia disk snapshot per disk plus one meta snapshot
 carrying the run manifest (domain XML, disk table, run id). Snapshots are
-tagged with `vm-uuid`, `run-id`, `disk`, `host`, and `kind`.
+tagged with `vm-uuid`, `run-id`, `disk`, `host`, and `kind`; meta snapshots
+also carry `vm-name` and `timestamp` for restore-point listings.
 
 Manual backups require the systemd schedule to have been activated first
 with a successful `start`. On a systemd host, `run` exits nonzero with a
@@ -161,8 +162,8 @@ still useful.
 
 Walks every per-host repo under `BACKUP_PATH/*/kopia-repo/`, connects
 read-only with the shared password, lists `kind:meta` snapshots, and prints
-one row per (host, VM UUID, timestamp). The first two columns are the VM
-UUID and the per-run timestamp; copy that pair straight into `restore`.
+one row per (host, VM UUID, timestamp). Copy the `vm-uuid` and `timestamp`
+columns straight into `restore`.
 
 ```sh
 sudo libvirt-backup-system list-restore-points
@@ -173,12 +174,11 @@ sudo libvirt-backup-system list-restore-points | less -S
 Output columns:
 
 ```
-VM_UUID  TIMESTAMP  HOST_ID  RUN_ID  SNAPSHOT_ID
+source-host-id  vm-uuid  vm-name  timestamp  run-id
 ```
 
-`HOST_ID` is the source host (where the backup was taken). `SNAPSHOT_ID` is
-the kopia ID of the meta snapshot; pass it to `kopia snapshot list` or
-`kopia snapshot restore` directly for ad-hoc operations (see
+`source-host-id` is where the backup was taken. `run-id` joins the meta
+snapshot to its disk snapshots for diagnostics and manual operations (see
 [Kopia operations](kopia.md)).
 
 ## `restore`
@@ -230,9 +230,10 @@ Each backup run produces:
 - One **disk snapshot** per disk, tagged
   `kind=disk vm-uuid=<uuid> run-id=<uuid> disk=<target> host=<host-id>`,
   containing one logical file `<target>.raw`.
-- One **meta snapshot** tagged `kind=meta vm-uuid=<uuid> run-id=<uuid>
-  host=<host-id>`, containing `manifest.json` (VM name, UUID, run id,
-  timestamp, libvirt URI, domain XML, disk table).
+- One **meta snapshot** tagged `kind=meta vm-uuid=<uuid> vm-name=<name>
+  timestamp=<YYYYMMDDTHHMMSS> run-id=<uuid> host=<host-id>`, containing
+  `manifest.json` (VM name, UUID, run id, timestamp, libvirt URI, domain XML,
+  disk table).
 
 `restore` resolves a meta snapshot by `(vm-uuid, timestamp)`, reads the
 manifest, then looks up each disk snapshot by `run-id + disk=<target>`.

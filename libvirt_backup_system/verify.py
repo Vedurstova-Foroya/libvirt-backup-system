@@ -1,8 +1,9 @@
 """``verify`` wrapper around ``kopia snapshot verify``.
 
-Walks the local repo by default; opt-in cross-host verification picks
-specific peer repos through ``include_hosts``. VM_BLACKLIST is intentionally
-ignored — verifying blacklisted-VM backups is still useful for the operator.
+Walks the local repo by default; opt-in cross-host verification additionally
+picks specific peer repos through ``include_hosts``. VM_BLACKLIST is
+intentionally ignored — verifying blacklisted-VM backups is still useful for
+the operator.
 """
 
 from __future__ import annotations
@@ -32,16 +33,11 @@ def _verify_repo(config: Config, *, host_id: str, config_file_path: object) -> b
 
 
 def verify(config: Config, *, include_hosts: Iterable[str] | None = None) -> int:
+    ok = _verify_repo(config, host_id=config.get("HOST_ID"), config_file_path=kopia_repo.local_config_file(config))
     if include_hosts is None:
-        return (
-            0
-            if _verify_repo(
-                config, host_id=config.get("HOST_ID"), config_file_path=kopia_repo.local_config_file(config)
-            )
-            else 1
-        )
+        return 0 if ok else 1
+
     selected = set(include_hosts)
-    ok = True
     for peer in kopia_repo.iter_connected_peers(config):
         if peer.host_id not in selected:
             continue

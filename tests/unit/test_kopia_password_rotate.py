@@ -155,3 +155,5 @@ def test_change_local_password_reports_write_failure_after_rotation(
     err = capsys.readouterr().err
     assert "write failed AFTER rotation" in err
     assert "recover manually" in err
+    assert "old-pw" in err
+    assert "new-pw" in err

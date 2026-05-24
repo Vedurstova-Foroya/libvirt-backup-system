@@ -42,11 +42,11 @@ sudo libvirt-backup-system change-password --new-kopia-password=<value>
 ```
 
 `list-restore-points` lists every restorable snapshot across all hosts. The
-first two columns are the VM UUID and per-run timestamp; copy them straight
-into `restore`. `restore` either overwrites the local VM (when the snapshot
-came from this host and the domain exists locally) or stages and defines the
-VM turnkey from the backup (everywhere else). No `--source-host` flag — cross-
-host restore is the same command as same-host restore.
+`vm-uuid` and `timestamp` columns are the values to copy into `restore`.
+`restore` either overwrites the local VM (when the snapshot came from this
+host and the domain exists locally) or stages and defines the VM turnkey from
+the backup (everywhere else). No `--source-host` flag — cross-host restore is
+the same command as same-host restore.
 
 ## Backup layout
 
@@ -65,7 +65,9 @@ BACKUP_PATH/
 Per host, per VM, per backup run the orchestrator creates one Kopia snapshot
 per disk plus one meta snapshot carrying the run manifest (domain XML, disk
 table, run id). Snapshots are tagged with `vm-uuid`, `run-id`, `disk`, `host`,
-and `kind` so restore can rejoin them and cross-host operations can filter.
+and `kind`; meta snapshots also carry `vm-name` and `timestamp` so
+restore-point listings can show the domain name and exact run timestamp
+without materializing the manifest.
 
 ## Retention
 

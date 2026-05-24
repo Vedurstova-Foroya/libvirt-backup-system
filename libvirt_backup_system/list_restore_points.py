@@ -3,9 +3,8 @@
 Kopia migration: each host's repo lives under
 ``BACKUP_PATH/<host>/kopia-repo/``. We connect read-only to every peer repo
 discovered there, list ``kind:meta`` snapshots (one per run), and emit one
-table row per (host, vm-uuid, timestamp) triple. The first two columns are
-the VM UUID and the per-run timestamp so the operator can copy them
-straight into ``restore``.
+table row per (host, vm-uuid, timestamp) triple. Copy the VM UUID and the
+per-run timestamp columns straight into ``restore``.
 """
 
 from __future__ import annotations
@@ -71,9 +70,9 @@ def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[
         rows.append(
             BackupRow(
                 vm_uuid=vm_uuid,
-                timestamp=_timestamp_from_start(snap.start_time),
+                timestamp=snap.tags.get("timestamp") or _timestamp_from_start(snap.start_time),
                 host_id=host_id,
-                vm_name="",  # populated by restore via the meta manifest, not here
+                vm_name=snap.tags.get("vm-name", ""),
                 run_id=run_id,
                 snapshot_id=snap.snapshot_id,
                 config_file=config_file,
@@ -110,13 +109,13 @@ def enumerate_backups(config: Config, *, vm_uuid: str | None = None) -> list[Bac
     return rows
 
 
-_HEADERS = ("VM_UUID", "TIMESTAMP", "HOST_ID", "RUN_ID", "SNAPSHOT_ID")
+_HEADERS = ("source-host-id", "vm-uuid", "vm-name", "timestamp", "run-id")
 
 
 def format_rows(rows: list[BackupRow]) -> str:
     cells: list[tuple[str, ...]] = [_HEADERS]
     for row in rows:
-        cells.append((row.vm_uuid, row.timestamp, row.host_id, row.run_id, row.snapshot_id))
+        cells.append((row.host_id, row.vm_uuid, row.vm_name, row.timestamp, row.run_id))
     widths = [max(len(cell[i]) for cell in cells) for i in range(len(_HEADERS))]
     lines: list[str] = []
     for cell in cells:

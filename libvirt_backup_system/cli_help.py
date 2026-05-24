@@ -219,11 +219,10 @@ LIST_RESTORE_POINTS_HELP = "List every restorable backup run across all hosts an
 LIST_RESTORE_POINTS_DESCRIPTION = """\
 Connect read-only to every per-host kopia repo discovered under
 ``BACKUP_PATH/<host>/kopia-repo/`` (including the local repo) and list every
-``kind:meta`` snapshot -- one per backup run. The first two columns are the
-VM_UUID and the per-run TIMESTAMP so the operator can copy-paste that pair
-straight into ``restore``. Trailing columns show HOST_ID, RUN_ID, and
-SNAPSHOT_ID for diagnostics. Rows are grouped by source host so backups
-taken on a different KVM host are visible alongside the local ones."""
+``kind:meta`` snapshot -- one per backup run. Copy the VM_UUID and per-run
+TIMESTAMP columns straight into ``restore``. Rows include source host, VM
+name, and RUN_ID, and are grouped by source host so backups taken on a
+different KVM host are visible alongside the local ones."""
 
 
 RESTORE_HELP = "Restore a backup run identified by VM_UUID and TIMESTAMP."

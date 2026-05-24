@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
+import re
 from pathlib import Path
 
 import pytest
 
+from libvirt_backup_system.cli_parser import build_parser
 from libvirt_backup_system.fish_completion import (
     FISH_COMPLETION_DIR,
     FISH_COMPLETION_NAME,
@@ -11,6 +14,38 @@ from libvirt_backup_system.fish_completion import (
     install_fish_completion,
     remove_fish_completion,
 )
+
+
+def _completion_text() -> str:
+    import libvirt_backup_system
+
+    pkg_root = Path(libvirt_backup_system.__file__).resolve().parent
+    return (pkg_root / "data" / FISH_COMPLETION_NAME).read_text(encoding="utf-8")
+
+
+def _subparser_action(parser: argparse.ArgumentParser) -> argparse._SubParsersAction[argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    raise AssertionError("parser has no subparser action")
+
+
+def _parser_visible_subcommands() -> set[str]:
+    action = _subparser_action(build_parser())
+    return {name for name in action.choices if name != "kopia-passthrough"}
+
+
+def _parser_options(command: str | None = None) -> set[str]:
+    parser = build_parser()
+    actions = parser._actions
+    if command is not None:
+        actions = _subparser_action(parser).choices[command]._actions
+    return {
+        option.lstrip("-")
+        for action in actions
+        for option in action.option_strings
+        if option.startswith("--") and action.help != argparse.SUPPRESS
+    }
 
 
 def test_packaged_completion_file_exists() -> None:
@@ -21,6 +56,43 @@ def test_packaged_completion_file_exists() -> None:
 
     pkg_root = Path(libvirt_backup_system.__file__).resolve().parent
     assert (pkg_root / "data" / FISH_COMPLETION_NAME).is_file()
+
+
+def test_completion_mentions_visible_argparse_subcommands() -> None:
+    text = _completion_text()
+    completed_subcommands = set(re.findall(r"-a ([a-z][a-z0-9-]*)", text))
+    assert _parser_visible_subcommands() <= completed_subcommands
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_options"),
+    [
+        (None, {"config", "prefix"}),
+        ("install", {"kopia-password", "kopia-password-file", "kopia-password-env"}),
+        (
+            "change-password",
+            {"new-kopia-password", "new-kopia-password-file", "new-kopia-password-env"},
+        ),
+        ("uninstall", {"purge-config", "purge-state", "purge-logs"}),
+        ("list-vms", {"json", "include-blacklisted"}),
+        ("verify", {"include-hosts"}),
+        ("restore", {"verbose"}),
+    ],
+)
+def test_completion_mentions_operator_visible_argparse_options(
+    command: str | None, expected_options: set[str]
+) -> None:
+    text = _completion_text()
+    assert expected_options <= _parser_options(command)
+    for option in expected_options:
+        assert f"-l {option}" in text
+
+
+def test_completion_drops_legacy_virtnbd_chain_surface() -> None:
+    text = _completion_text().lower()
+    assert "virtnbd" not in text
+    assert "chain" not in text
+    assert "-l vm" not in text
 
 
 def test_fish_completion_target_lands_under_prefix(tmp_path: Path) -> None:

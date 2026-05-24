@@ -20,10 +20,13 @@ import libvirt_backup_system
 
 COMPLETION_FILE = Path(libvirt_backup_system.__file__).resolve().parent / "data" / "libvirt-backup-system.fish"
 FIXTURE_OUTPUT = (
-    "VM_UUID                               TIMESTAMP        VM_NAME  HOST_ID  KIND  MONTH    CHAIN_ID\n"
-    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260101T000000  alpha    host1    full  2026-01  20260101T000000\n"
-    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260102T030000  alpha    host1    inc   2026-01  20260101T000000\n"
-    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  20260105T000000  beta     host1    full  2026-01  20260105T000000\n"
+    "source-host-id  vm-uuid                              vm-name   timestamp        run-id\n"
+    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  alpha vm  20260101T000000  "
+    "11111111-1111-1111-1111-111111111111\n"
+    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  alpha vm  20260102T030000  "
+    "22222222-2222-2222-2222-222222222222\n"
+    "host2           bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  beta      20260105T000000  "
+    "33333333-3333-3333-3333-333333333333\n"
 )
 
 
@@ -76,7 +79,7 @@ def _run_fish(fish: str, bindir: Path, completion_line: str) -> str:
     return result.stdout
 
 
-def test_uuid_completion_lists_distinct_uuids_with_vm_name(tmp_path: Path) -> None:
+def test_uuid_completion_lists_distinct_uuids_with_host_id(tmp_path: Path) -> None:
     fish = _require_fish()
     bindir = _seed_fakes(tmp_path)
     out = _run_fish(fish, bindir, "libvirt-backup-system restore ")
@@ -87,14 +90,10 @@ def test_uuid_completion_lists_distinct_uuids_with_vm_name(tmp_path: Path) -> No
     assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in values
     assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" in values
     assert values.count("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") == 1
-    # Description carries the VM name plus a backup count. We deliberately
-    # avoid showing full/inc kind here because the first row for every UUID
-    # is the chain full, which used to mislead operators into thinking the
-    # menu listed only full backups instead of VMs.
-    assert "alpha (2 backups)" in out
-    assert "beta (1 backups)" in out
-    assert "full" not in out
-    assert "inc" not in out
+    # Description carries the source host plus a restore-point count from the
+    # Kopia table's source-host-id column.
+    assert "host1 (2 restore points)" in out
+    assert "host2 (1 restore points)" in out
 
 
 def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:
@@ -113,7 +112,7 @@ def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:
     assert "20260105T000000" not in values
 
 
-def test_timestamp_completion_carries_kind_description(tmp_path: Path) -> None:
+def test_timestamp_completion_carries_host_and_run_id_description(tmp_path: Path) -> None:
     fish = _require_fish()
     bindir = _seed_fakes(tmp_path)
     out = _run_fish(
@@ -121,11 +120,11 @@ def test_timestamp_completion_carries_kind_description(tmp_path: Path) -> None:
         bindir,
         "libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa ",
     )
-    # The kind ("full" / "inc") rides as the description so the operator can
-    # spot the chain start versus mid-chain points in the menu.
+    # The description carries source host and RUN_ID from list-restore-points for
+    # diagnostics while the completion value stays copy-pasteable TIMESTAMP.
     rows = {line.split("\t", 1)[0]: line.split("\t", 1)[1] for line in out.splitlines() if "\t" in line}
-    assert rows["20260101T000000"] == "full"
-    assert rows["20260102T030000"] == "inc"
+    assert rows["20260101T000000"] == "host1 11111111-1111-1111-1111-111111111111"
+    assert rows["20260102T030000"] == "host1 22222222-2222-2222-2222-222222222222"
 
 
 def test_timestamp_completion_orders_newest_first(tmp_path: Path) -> None:

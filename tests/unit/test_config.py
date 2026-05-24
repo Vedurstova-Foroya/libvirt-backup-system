@@ -99,6 +99,55 @@ def test_load_ignores_env_overrides_when_disabled(tmp_path: Path, monkeypatch) -
     assert cfg.get("BACKUP_PATH") == "/from/file"
 
 
+def test_kopia_and_retention_env_vars_override_file_and_defaults(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "libvirt-backup.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "KOPIA_REPO_PATH=/from/file/repo",
+                "KOPIA_PASSWORD_FILE=/from/file/password",
+                "KOPIA_CACHE_DIR=/from/file/cache",
+                "KOPIA_PARALLELISM=2",
+                "KOPIA_SPLITTER=DYNAMIC-4M-BUZHASH",
+                "KOPIA_COMPRESSION=s2-default",
+                "KEEP_LATEST=1",
+                "KEEP_HOURLY=2",
+                "KEEP_DAILY=3",
+                "KEEP_WEEKLY=4",
+                "KEEP_MONTHLY=5",
+                "KEEP_ANNUAL=6",
+                "KOPIA_MAINTENANCE_INTERVAL=12h",
+                "KOPIA_VERIFY_INTERVAL=3d",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    overrides = {
+        "KOPIA_REPO_PATH": "/from/env/repo",
+        "KOPIA_PASSWORD_FILE": "/from/env/password",
+        "KOPIA_CACHE_DIR": "/from/env/cache",
+        "KOPIA_PARALLELISM": "9",
+        "KOPIA_SPLITTER": "FIXED-8M",
+        "KOPIA_COMPRESSION": "zstd",
+        "KEEP_LATEST": "10",
+        "KEEP_HOURLY": "11",
+        "KEEP_DAILY": "12",
+        "KEEP_WEEKLY": "13",
+        "KEEP_MONTHLY": "14",
+        "KEEP_ANNUAL": "15",
+        "KOPIA_MAINTENANCE_INTERVAL": "6h",
+        "KOPIA_VERIFY_INTERVAL": "2d",
+    }
+    for key, value in overrides.items():
+        monkeypatch.setenv(key, value)
+
+    cfg = Config.load(config_path=str(env_file), prefix=str(tmp_path))
+
+    for key, value in overrides.items():
+        assert cfg.get(key) == value
+
+
 def test_load_leaves_host_id_empty_when_machine_id_missing(tmp_path: Path, monkeypatch) -> None:
     # Config.load returns HOST_ID="" instead of raising so preflight's
     # required-present check surfaces a clean "HOST_ID must not be empty".
