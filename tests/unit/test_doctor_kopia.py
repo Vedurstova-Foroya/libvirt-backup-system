@@ -33,6 +33,17 @@ def test_check_local_kopia_repo_missing_repo(tmp_path: Path, monkeypatch: pytest
     assert any("local kopia repo missing" in failure for failure in failures)
 
 
+def test_check_local_kopia_repo_rejects_invalid_repo_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+
+    def invalid_path(_cfg: Config) -> Path:
+        raise ValueError("KOPIA_REPO_PATH must stay within BACKUP_PATH")
+
+    monkeypatch.setattr(kopia_repo, "local_repo_path", invalid_path)
+    failures = doctor._check_local_kopia_repo(cfg)
+    assert failures == ["local kopia repo path rejected: KOPIA_REPO_PATH must stay within BACKUP_PATH"]
+
+
 def test_check_local_kopia_repo_missing_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
@@ -161,6 +172,7 @@ def test_check_local_kopia_maintenance_dry_run_passes(tmp_path: Path, monkeypatc
     monkeypatch.setattr(kopia_client, "maintenance_run", fake_maintenance_run)
     assert doctor._check_local_kopia_maintenance_dry_run(cfg) == []
     assert captured[0]["dry_run"] is True
+    assert captured[0]["safety"] == "none"
 
 
 def test_check_local_kopia_maintenance_dry_run_surfaces_failure(

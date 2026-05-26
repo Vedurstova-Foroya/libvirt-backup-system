@@ -43,7 +43,8 @@ def _snapshot(
     vm_uuid: str = ALPHA_UUID,
     vm_name: str = "alpha",
     run_id: str = RUN_ID_A,
-    timestamp_tag: str | None = None,
+    timestamp_tag: str | None = "20260521T023001",
+    host_tag: str = "host-a",
 ) -> kopia_snapshots.KopiaSnapshot:
     tags = {}
     if vm_uuid:
@@ -54,6 +55,8 @@ def _snapshot(
         tags["vm-name"] = vm_name
     if timestamp_tag is not None:
         tags["timestamp"] = timestamp_tag
+    if host_tag:
+        tags["host"] = host_tag
     tags["kind"] = "meta"
     return kopia_snapshots.KopiaSnapshot(
         snapshot_id=snap_id,
@@ -107,24 +110,6 @@ def _stub_snapshot_list(
     monkeypatch.setattr(kopia_snapshots, "snapshot_list", fake_list)
 
 
-def test_timestamp_from_start_normalizes_rfc3339() -> None:
-    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01Z") == "20260521T023001"
-
-
-def test_timestamp_from_start_handles_subseconds() -> None:
-    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01.123Z") == "20260521T023001"
-
-
-def test_timestamp_from_start_handles_empty_string() -> None:
-    assert list_restore_points._timestamp_from_start("") == ""
-
-
-def test_timestamp_from_start_preserves_value_without_trailing_z() -> None:
-    # Falls back to the raw shape minus dashes/colons so a kopia format change
-    # is visible to the operator instead of being silently swallowed.
-    assert list_restore_points._timestamp_from_start("2026-05-21T02:30:01+00:00") == "20260521T023001+0000"
-
-
 def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     _stub_repo_helpers(monkeypatch, cfg, local_config_present=False)
@@ -165,7 +150,7 @@ def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: p
     assert row.config_file == local_cfg
 
 
-def test_local_rows_prefers_timestamp_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_rows_uses_timestamp_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(timestamp_tag="20260101T010101")]})
@@ -175,8 +160,15 @@ def test_local_rows_prefers_timestamp_tag(tmp_path: Path, monkeypatch: pytest.Mo
 def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
-    snaps = [_snapshot(vm_uuid=""), _snapshot(run_id="")]
+    snaps = [_snapshot(vm_uuid=""), _snapshot(run_id=""), _snapshot(timestamp_tag=None), _snapshot(host_tag="")]
     _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
+    assert list_restore_points._local_rows(cfg) == []
+
+
+def test_local_rows_skips_snapshots_with_host_tag_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(host_tag="host-b")]})
     assert list_restore_points._local_rows(cfg) == []
 
 
@@ -214,7 +206,7 @@ def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.
         kopia_repo.PeerRepo("host-b", tmp_path / "rb", peer_cfg),
     ]
     _stub_repo_helpers(monkeypatch, cfg, peers=peers)
-    _stub_snapshot_list(monkeypatch, {peer_cfg: [_snapshot(snap_id="b-1")]})
+    _stub_snapshot_list(monkeypatch, {peer_cfg: [_snapshot(snap_id="b-1", host_tag="host-b")]})
     rows = list_restore_points._peer_rows(cfg)
     assert len(rows) == 1
     assert rows[0].host_id == "host-b"
@@ -238,7 +230,15 @@ def test_enumerate_backups_combines_local_and_peer_rows(tmp_path: Path, monkeypa
         monkeypatch,
         {
             local_cfg: [_snapshot(snap_id="a-late", start_time="2026-05-21T02:30:01Z")],
-            peer_cfg: [_snapshot(snap_id="b-early", start_time="2026-05-20T02:30:01Z", vm_uuid=BETA_UUID)],
+            peer_cfg: [
+                _snapshot(
+                    snap_id="b-early",
+                    start_time="2026-05-20T02:30:01Z",
+                    vm_uuid=BETA_UUID,
+                    timestamp_tag="20260520T023001",
+                    host_tag="host-b",
+                )
+            ],
         },
     )
     rows = list_restore_points.enumerate_backups(cfg)
@@ -249,8 +249,8 @@ def test_enumerate_backups_sorts_descending_by_timestamp(tmp_path: Path, monkeyp
     cfg = _make_config(tmp_path, host_id="host-a")
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     snaps = [
-        _snapshot(snap_id="older", start_time="2026-05-20T02:30:01Z"),
-        _snapshot(snap_id="newer", start_time="2026-05-21T02:30:01Z"),
+        _snapshot(snap_id="older", start_time="2026-05-20T02:30:01Z", timestamp_tag="20260520T023001"),
+        _snapshot(snap_id="newer", start_time="2026-05-21T02:30:01Z", timestamp_tag="20260521T023001"),
     ]
     _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
     rows = list_restore_points.enumerate_backups(cfg)

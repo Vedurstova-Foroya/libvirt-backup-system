@@ -14,9 +14,9 @@ KOPIA_UNIT_DESCRIPTIONS = {
     "verify": "Libvirt VM backup kopia snapshot verify",
 }
 KOPIA_UNIT_ARGS = {
-    "maintenance": "maintenance run --safety=full",
-    "maintenance-full": "maintenance run --safety=full --full",
-    "verify": "snapshot verify --max-failures=0 --verify-files-percent=1",
+    "maintenance": "kopia-passthrough -- maintenance run --safety=full",
+    "maintenance-full": "kopia-passthrough -- maintenance run --safety=full --full",
+    "verify": "verify",
 }
 KOPIA_FULL_MAINTENANCE_INTERVAL = "7d"
 _SYSTEMD_PATH_FORBIDDEN_CHARS = frozenset("`'\"\\")

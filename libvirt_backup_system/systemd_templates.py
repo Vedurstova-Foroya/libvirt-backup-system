@@ -36,9 +36,9 @@ WantedBy=timers.target
 """
 
 
-# Maintenance / verify pairs reuse the ``kopia-passthrough`` subcommand so the
-# unit body stays declarative: cli.py owns config-file resolution + password
-# loading, and ExecStart only needs the wrapper + kopia argv tail.
+# Maintenance uses ``kopia-passthrough`` for direct repo maintenance. Verify
+# goes through the first-class ``verify`` command so cli.py applies the same
+# run-lock safety as operator-triggered verification.
 UNIT_KOPIA_SERVICE = """[Unit]
 Description={description}
 After=network-online.target
@@ -48,7 +48,7 @@ After=network-online.target
 Type=oneshot
 TimeoutStartSec=infinity
 EnvironmentFile={environment_file}
-ExecStart={bin_path} --config {config_arg} kopia-passthrough -- {kopia_args}
+ExecStart={bin_path} --config {config_arg} {kopia_args}
 StateDirectory=libvirt-backup-system
 NoNewPrivileges=yes
 ProtectKernelTunables=yes

@@ -287,10 +287,11 @@ def _print_kopia_repo_retention_hint(cfg: Config) -> None:
     """
     backup_path = cfg.get("BACKUP_PATH").strip()
     if not backup_path:
-        # Without BACKUP_PATH there is no canonical repo to point at; nothing
-        # was ever written, so no hint is meaningful.
         return
-    repo_path = kopia_repo.local_repo_path(cfg)
+    try:
+        repo_path = kopia_repo.local_repo_path(cfg)
+    except ValueError:
+        return
     event(
         "info",
         "kopia repo retained",

@@ -226,10 +226,17 @@ def test_validate_kopia_repo_path_empty_is_allowed(tmp_path: Path) -> None:
     assert preflight._validate_kopia_repo_path(cfg) == []
 
 
-def test_validate_kopia_repo_path_accepts_subpath_of_backup_path(tmp_path: Path) -> None:
+def test_validate_kopia_repo_path_accepts_discoverable_convention(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "backups" / cfg.get("HOST_ID") / "kopia-repo")
+    assert preflight._validate_kopia_repo_path(cfg) == []
+
+
+def test_validate_kopia_repo_path_rejects_non_discoverable_subpath(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "backups" / "alt-repo")
-    assert preflight._validate_kopia_repo_path(cfg) == []
+    failures = preflight._validate_kopia_repo_path(cfg)
+    assert failures and "must use BACKUP_PATH/HOST_ID/kopia-repo" in failures[0]
 
 
 def test_validate_kopia_repo_path_rejects_path_outside_backup_path(tmp_path: Path) -> None:

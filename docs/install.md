@@ -94,9 +94,9 @@ Behavior:
   `/etc/libvirt-backup-system/kopia.pw` mode 600 root-owned, creates the
   local repo at `BACKUP_PATH/<host-id>/kopia-repo/`, applies the global
   retention/compression policy, registers systemd units. It refuses to write
-  a new password unless `--acknowledge-password-loss` is present; on refusal
-  it prints the resolved password so the operator can store exactly that
-  value before rerunning.
+  a new password unless `--acknowledge-password-loss` is present; refusal
+  messages do not print the password, so store the exact value in your
+  secrets vault before running install.
 - Re-running with the same password: idempotent.
 - Re-running with a different password: hard fail. Use
   `libvirt-backup-system change-password` to rotate.
@@ -107,7 +107,8 @@ Or install first, edit the environment file, validate it, and then start the
 timer:
 
 ```sh
-sudo python3 -m libvirt_backup_system install --kopia-password=<value>
+sudo python3 -m libvirt_backup_system install --kopia-password=<value> \
+  --acknowledge-password-loss
 sudoedit /etc/libvirt-backup-system/libvirt-backup.env
 sudo libvirt-backup-system check
 sudo libvirt-backup-system start
@@ -165,9 +166,10 @@ the operator installs fish.
 #### Dynamic restore completion
 
 `sudo libvirt-backup-system restore <TAB>` queries `list-restore-points` and
-suggests the available VM UUIDs (with the VM name in the description). After
-picking a UUID, a second `<TAB>` lists the timestamps recorded for that VM so
-the operator can pick the right run from the menu.
+suggests the available VM UUIDs with the source host and restore-point count
+in the description. After picking a UUID, a second `<TAB>` lists the
+timestamps recorded for that VM so the operator can pick the right run from
+the menu.
 
 The query runs `sudo -n libvirt-backup-system list-restore-points` so the
 completion never prompts for a password mid-TAB: it relies on the sysadmin's

@@ -28,7 +28,8 @@ Common workflows:
 
   First install and activate the timer:
     sudo BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
-         --kopia-password-file=/root/kopia.pw
+         --kopia-password-file=/root/kopia.pw \\
+         --acknowledge-password-loss
     sudoedit /etc/libvirt-backup-system/libvirt-backup.env
     sudo libvirt-backup-system check
     sudo libvirt-backup-system start
@@ -60,7 +61,7 @@ How the snapshot is located:
   ``BACKUP_PATH/<host>/kopia-repo/`` (not just the current HOST_ID) so a
   recovery host that mounted the backup tree can restore VMs that were
   taken on a different KVM host. The per-run ``kind:meta`` snapshot is
-  matched by its ``vm-uuid`` and start-time tags.
+  matched by its ``vm-uuid`` and ``timestamp`` tags.
 
 What action is chosen:
   OVERWRITE  Same host AND a local libvirt domain with VM_UUID exists.

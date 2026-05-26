@@ -68,12 +68,15 @@ def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[
     for snap in snapshots:
         vm_uuid = snap.tags.get("vm-uuid", "")
         run_id = snap.tags.get("run-id", "")
-        if not vm_uuid or not run_id:
+        timestamp = snap.tags.get("timestamp", "")
+        if not vm_uuid or not run_id or not timestamp:
+            continue
+        if snap.tags.get("host", "") != host_id:
             continue
         rows.append(
             BackupRow(
                 vm_uuid=vm_uuid,
-                timestamp=snap.tags.get("timestamp") or _timestamp_from_start(snap.start_time),
+                timestamp=timestamp,
                 host_id=host_id,
                 vm_name=snap.tags.get("vm-name", ""),
                 run_id=run_id,
@@ -82,25 +85,6 @@ def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[
             )
         )
     return rows
-
-
-def _timestamp_from_start(value: str) -> str:
-    """Reduce kopia's RFC3339 start time to ``YYYYMMDDTHHMMSS`` UTC.
-
-    Falls back to the raw value when parsing fails so a kopia version change
-    does not silently swallow the column the operator copies from.
-    """
-    if not value:
-        return ""
-    cleaned = value.replace("-", "").replace(":", "")
-    # ``2026-05-21T02:30:01Z`` becomes ``20260521T023001Z``; strip the trailing Z
-    # and the sub-second part.
-    if "." in cleaned:
-        head, _ = cleaned.split(".", 1)
-        cleaned = head
-    if cleaned.endswith("Z"):
-        cleaned = cleaned[:-1]
-    return cleaned
 
 
 def enumerate_backups(config: Config, *, vm_uuid: str | None = None) -> list[BackupRow]:

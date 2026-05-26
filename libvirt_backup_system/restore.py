@@ -141,6 +141,49 @@ def _overwrite_dest_map(manifest: Manifest) -> dict[str, Path]:
     return {disk.target: Path(disk.source_path) for disk in manifest.disks}
 
 
+def _overwrite_temp_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
+    """Sibling temporary paths used before destructive overwrite starts."""
+    return {target: dest.with_name(f".{dest.name}.{target}.restore.tmp") for target, dest in dest_map.items()}
+
+
+def _overwrite_backup_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
+    """Sibling rollback paths for original disks during overwrite replace."""
+    return {target: dest.with_name(f".{dest.name}.{target}.restore.old") for target, dest in dest_map.items()}
+
+
+def _cleanup_paths(paths: dict[str, Path]) -> None:
+    for path in paths.values():
+        with suppress(FileNotFoundError):
+            path.unlink()
+
+
+def _rollback_overwrite_disks(backup_map: dict[str, Path], dest_map: dict[str, Path]) -> None:
+    for target, backup in backup_map.items():
+        if not backup.exists():
+            continue
+        dest = dest_map[target]
+        with suppress(OSError):
+            backup.replace(dest)
+
+
+def _replace_overwrite_disks(temp_map: dict[str, Path], dest_map: dict[str, Path]) -> bool:
+    backup_map = _overwrite_backup_dest_map(dest_map)
+    _cleanup_paths(backup_map)
+    for target, temp in temp_map.items():
+        dest = dest_map[target]
+        backup = backup_map[target]
+        try:
+            if dest.exists():
+                dest.replace(backup)
+            temp.replace(dest)
+        except OSError as exc:
+            event("error", "restored disk replace failed", target=target, src=str(temp), dest=str(dest), error=str(exc))
+            _rollback_overwrite_disks(backup_map, dest_map)
+            return False
+    _cleanup_paths(backup_map)
+    return True
+
+
 def _turnkey_dest_map(manifest: Manifest, staging: Path) -> dict[str, Path]:
     """Per-disk destination paths for the turnkey branch: under ``staging``."""
     return {disk.target: staging / f"{disk.target}.qcow2" for disk in manifest.disks}
@@ -182,10 +225,16 @@ def _write_restored_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
 
 
 def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> int:
-    if not _shutdown_and_undefine(config, vm_name):
-        return 1
     dest_map = _overwrite_dest_map(ctx.manifest)
-    if not _materialize_disks(ctx, config, dest_map):
+    temp_map = _overwrite_temp_dest_map(dest_map)
+    if not _materialize_disks(ctx, config, temp_map):
+        _cleanup_paths(temp_map)
+        return 1
+    if not _shutdown_and_undefine(config, vm_name):
+        _cleanup_paths(temp_map)
+        return 1
+    if not _replace_overwrite_disks(temp_map, dest_map):
+        _cleanup_paths(temp_map)
         return 1
     # The manifest XML already references these original paths, so no
     # source-path rewrite is necessary; identity (name + uuid) is fixed up

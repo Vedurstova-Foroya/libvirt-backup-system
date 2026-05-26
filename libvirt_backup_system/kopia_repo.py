@@ -20,6 +20,7 @@ from . import kopia_client
 from .config import Config, prefixed
 from .logging_json import event
 from .shell import CommandError
+from .storage import subpath_is_safe
 
 KOPIA_CONFIG_DIR = "/var/lib/libvirt-backup-system/kopia-configs"
 REPO_DIR_NAME = "kopia-repo"
@@ -53,9 +54,18 @@ def local_repo_path(config: Config) -> Path:
     overrides the convention but follows the same rule.
     """
     raw = config.get("KOPIA_REPO_PATH").strip()
+    convention = config.path_value("BACKUP_PATH") / config.get("HOST_ID") / REPO_DIR_NAME
     if raw:
-        return Path(raw)
-    return config.path_value("BACKUP_PATH") / config.get("HOST_ID") / REPO_DIR_NAME
+        repo_path = Path(raw)
+        backup_path = config.path_value("BACKUP_PATH")
+        if not repo_path.is_absolute():
+            raise ValueError("KOPIA_REPO_PATH must be an absolute path")
+        if not subpath_is_safe(backup_path, repo_path):
+            raise ValueError(f"KOPIA_REPO_PATH must stay within BACKUP_PATH ({backup_path}): {repo_path}")
+        if repo_path != convention:
+            raise ValueError(f"KOPIA_REPO_PATH must use BACKUP_PATH/HOST_ID/{REPO_DIR_NAME}: {convention}")
+        return repo_path
+    return convention
 
 
 def local_config_file(config: Config) -> Path:
@@ -74,7 +84,10 @@ def _ensure_config_dir(config: Config) -> Path:
 
 
 def local_repo_exists(config: Config) -> bool:
-    repo_path = local_repo_path(config)
+    try:
+        repo_path = local_repo_path(config)
+    except ValueError:
+        return False
     return (repo_path / "kopia.repository.f").is_file()
 
 
@@ -90,12 +103,16 @@ def ensure_local_repo(config: Config, *, apply_global_policy: bool = True) -> in
     if not password.is_file():
         event("error", "kopia password file missing", path=str(password))
         return 1
-    repo_path = local_repo_path(config)
+    try:
+        repo_path = local_repo_path(config)
+    except ValueError as exc:
+        event("error", "kopia repo path rejected", error=str(exc))
+        return 1
     config_file = local_config_file(config)
     cache = cache_dir(config)
     cache.mkdir(parents=True, exist_ok=True)
     try:
-        if local_repo_exists(config):
+        if (repo_path / "kopia.repository.f").is_file():
             event("info", "connecting to existing kopia repo", path=str(repo_path))
             kopia_client.repository_connect_filesystem(
                 config_file=config_file,
@@ -122,23 +139,6 @@ def ensure_local_repo(config: Config, *, apply_global_policy: bool = True) -> in
         return 1
     if apply_global_policy and _apply_global_policy(config) != 0:
         return 1
-    try:
-        kopia_client.maintenance_set_owner(
-            config_file=config_file,
-            password_file=password,
-            owner=f"{config.get('HOST_ID')}@{config.get('HOST_ID')}",
-            cache_dir=cache,
-        )
-    except CommandError as exc:
-        # set-owner is a best-effort claim — kopia uses heuristics from the
-        # connecting client otherwise. Log and continue rather than fail the
-        # install on a non-fatal warning.
-        event(
-            "warning",
-            "kopia maintenance owner could not be set",
-            returncode=exc.result.returncode,
-            stderr=exc.result.stderr.strip(),
-        )
     return 0
 
 

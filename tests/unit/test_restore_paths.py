@@ -168,7 +168,10 @@ def test_restore_overwrite_disk_materialize_failure(tmp_path: Path, monkeypatch:
     _install_meta_writer(monkeypatch, make_manifest())
     _install_disk_snapshot(monkeypatch, present=False)
 
+    calls: list[list[str]] = []
+
     def fake_run(args: list[str], **_: Any) -> CommandResult:
+        calls.append(args)
         if "domname" in args:
             return CommandResult(args, 0, "myvm\n", "")
         if "domstate" in args:
@@ -178,3 +181,4 @@ def test_restore_overwrite_disk_materialize_failure(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(restore, "run", fake_run)
     monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
     assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    assert not any("destroy" in args or "undefine" in args for args in calls)

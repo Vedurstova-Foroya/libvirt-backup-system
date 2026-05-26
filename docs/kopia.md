@@ -85,6 +85,9 @@ matches; hard-fails on a mismatch.
 
 ```sh
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
+sudo libvirt-backup-system change-password --new-kopia-password-file=/path
+echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
+sudo NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Per host:
@@ -101,8 +104,9 @@ a peer's does not), so partial rotations are visible.
 ### Recovery from a half-rotated host
 
 If step 3 fails after step 2 succeeds (full disk, etc), the repo decrypts
-only with the new value but the file still holds the old one. The log line
-prints both placeholders. Recover by hand:
+only with the new value but the file still holds the old one. The emergency
+recovery log includes the actual old and new password values; treat that log
+line as a secret. Recover by hand:
 
 ```sh
 sudo install -m 600 -o root -g root /dev/null /etc/libvirt-backup-system/kopia.pw
@@ -183,15 +187,16 @@ sudo -E kopia --config-file="$CFG" maintenance run --full
 ```
 
 Quick maintenance compacts indexes and runs short-running cleanups; full
-maintenance runs garbage collection on unreachable chunks. The maintenance
-owner is set to `$HOST_ID@$HOST_ID` at install time so kopia's owner
-heuristics don't pick a wrong host.
+maintenance runs garbage collection on unreachable chunks. Setup does not
+claim an explicit Kopia maintenance owner; each per-host repo remains
+independent and no cross-host owner coordination is required.
 
 ## Verify
 
 The verify timer (`libvirt-backup-system-verify.timer`,
-`KOPIA_VERIFY_INTERVAL=7d`) runs `kopia snapshot verify --max-failures=0`
-against the local repo. Cross-host verify is opt-in:
+`KOPIA_VERIFY_INTERVAL=7d`) runs `libvirt-backup-system verify`, which takes
+the same run lock as manual verification and checks 1% of files in the local
+repo. Cross-host verify is opt-in:
 
 ```sh
 sudo libvirt-backup-system verify
@@ -261,13 +266,6 @@ To force a GC pass after a manual retention adjustment:
 sudo -E kopia --config-file="$CFG" maintenance run --full
 ```
 
-If maintenance is reporting that another owner holds the lock, claim it
-explicitly:
-
-```sh
-sudo -E kopia --config-file="$CFG" maintenance set --owner="$(hostname)@$(hostname)"
-```
-
-Be careful: only one host should own maintenance for a given repo. In our
-layout each host owns its own repo, so the owner is always set to the local
-host id at install time.
+The local maintenance units run against this host's own repo. Setup does not
+claim an explicit Kopia maintenance owner; each per-host repo remains
+independent and no cross-host owner coordination is required.

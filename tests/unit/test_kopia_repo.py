@@ -54,8 +54,35 @@ def test_local_repo_path_falls_back_to_convention(tmp_path: Path) -> None:
 
 def test_local_repo_path_honors_override(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "backup" / "host-a" / "kopia-repo")
+    assert kopia_repo.local_repo_path(cfg) == tmp_path / "backup" / "host-a" / "kopia-repo"
+
+
+def test_local_repo_path_rejects_non_discoverable_override(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "backup" / "custom-repo")
+    with pytest.raises(ValueError, match="must use BACKUP_PATH/HOST_ID/kopia-repo"):
+        kopia_repo.local_repo_path(cfg)
+
+
+def test_local_repo_path_rejects_override_outside_backup_path(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
     cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "custom-repo")
-    assert kopia_repo.local_repo_path(cfg) == tmp_path / "custom-repo"
+    with pytest.raises(ValueError, match="must stay within BACKUP_PATH"):
+        kopia_repo.local_repo_path(cfg)
+
+
+def test_local_repo_path_rejects_relative_override(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = "relative/repo"
+    with pytest.raises(ValueError, match="absolute path"):
+        kopia_repo.local_repo_path(cfg)
+
+
+def test_local_repo_exists_returns_false_for_rejected_override(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "outside")
+    assert kopia_repo.local_repo_exists(cfg) is False
 
 
 def test_ensure_local_repo_creates_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,7 +99,7 @@ def test_ensure_local_repo_creates_when_missing(tmp_path: Path, monkeypatch: pyt
     policy_calls = [args for args in recorder.calls if "policy" in args]
     assert policy_calls, "global policy must be applied on first install"
     set_owner_calls = [args for args in recorder.calls if "set" in args and "maintenance" in args]
-    assert set_owner_calls, "maintenance owner must be set"
+    assert not set_owner_calls, "local repo setup must not claim maintenance ownership"
 
 
 def test_ensure_local_repo_connects_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,18 +137,20 @@ def test_ensure_local_repo_surfaces_kopia_failure(tmp_path: Path, monkeypatch: p
     assert kopia_repo.ensure_local_repo(cfg) == 1
 
 
-def test_ensure_local_repo_tolerates_set_owner_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ensure_local_repo_rejects_override_outside_backup_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     cfg = _make_config(tmp_path)
+    cfg.values["KOPIA_REPO_PATH"] = str(tmp_path / "outside")
     _write_password(cfg)
 
-    def fake_run(args: list[str], *, check: bool = True, **_: Any) -> CommandResult:
-        if "set" in args and "maintenance" in args:
-            raise CommandError(CommandResult(args, 1, "", "owner-fail"))
-        return CommandResult(args, 0, "", "")
+    def fail_run(*_args: Any, **_kwargs: Any) -> CommandResult:
+        pytest.fail("kopia must not be invoked for an unsafe repo path")
 
-    monkeypatch.setattr(kopia_client, "run", fake_run)
-    monkeypatch.setattr(kopia_client, "run_streamed", fake_run)
-    assert kopia_repo.ensure_local_repo(cfg) == 0
+    monkeypatch.setattr(kopia_client, "run", fail_run)
+    monkeypatch.setattr(kopia_client, "run_streamed", fail_run)
+    assert kopia_repo.ensure_local_repo(cfg) == 1
+    assert "kopia repo path rejected" in capsys.readouterr().err
 
 
 def test_discover_peer_repos_lists_present_repos(tmp_path: Path) -> None:
@@ -229,8 +258,6 @@ def test_ensure_local_repo_fails_when_policy_set_fails(tmp_path: Path, monkeypat
 def test_apply_global_policy_skips_empty_int_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg)
-    # Override one KEEP_* to empty and one to garbage; both must drop from the
-    # ``kopia policy set`` flag list rather than crashing the call.
     cfg.values["KEEP_LATEST"] = ""
     cfg.values["KEEP_HOURLY"] = "not-an-int"
     recorder = _RunRecorder()

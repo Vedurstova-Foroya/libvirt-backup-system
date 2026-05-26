@@ -43,7 +43,7 @@ def test_install_password_first_install_requires_acknowledgement(
     assert installer_password.install_password(cfg, kopia_password.PasswordSpec(literal="install-pw")) == 1
     err = capsys.readouterr().err
     assert "--acknowledge-password-loss" in err
-    assert "install-pw" in err
+    assert "install-pw" not in err
     assert not _password_path(cfg).exists()
 
 

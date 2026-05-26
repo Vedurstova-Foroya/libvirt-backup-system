@@ -142,6 +142,9 @@ def _validate_kopia_repo_path(config: Config) -> list[str]:
         return ["KOPIA_REPO_PATH must be an absolute path"]
     if not subpath_is_safe(backup_path, repo_path):
         return [f"KOPIA_REPO_PATH must stay within BACKUP_PATH ({backup_path}): {repo_path}"]
+    convention = backup_path / config.get("HOST_ID") / kopia_repo.REPO_DIR_NAME
+    if repo_path != convention:
+        return [f"KOPIA_REPO_PATH must use BACKUP_PATH/HOST_ID/{kopia_repo.REPO_DIR_NAME}: {convention}"]
     return []
 
 

@@ -76,9 +76,9 @@ Timeout for external commands.
 KOPIA_REPO_PATH=
 ```
 
-Override the repo path. Defaults to
-`BACKUP_PATH/<HOST_ID>/kopia-repo` when empty. Must stay within
-`BACKUP_PATH`. One repo per host, identified by its directory name.
+Repo path override. Defaults to `BACKUP_PATH/<HOST_ID>/kopia-repo` when
+empty. If set, it must still equal that discoverable per-host path; peer
+listing and restore intentionally scan only `BACKUP_PATH/*/kopia-repo`.
 
 ```
 KOPIA_PASSWORD_FILE=/etc/libvirt-backup-system/kopia.pw
@@ -151,9 +151,9 @@ its own repo.
 KOPIA_VERIFY_INTERVAL=7d
 ```
 
-Cadence for `kopia snapshot verify` against the local repo. Cross-host
-verify is opt-in via `libvirt-backup-system verify --include-hosts=...` and
-is not scheduled by default.
+Cadence for `libvirt-backup-system verify` against the local repo. Cross-host
+verify is opt-in via `libvirt-backup-system verify --include-hosts=...` and is
+not scheduled by default.
 
 ## Preflight estimate
 

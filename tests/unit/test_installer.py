@@ -129,7 +129,9 @@ def test_install_renders_kopia_maintenance_and_verify_unit_pairs(tmp_path: Path,
     assert f"RequiresMountsFor={backup_dir}" in maintenance_service.read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in maintenance_full_service.read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in verify_service.read_text(encoding="utf-8")
-    assert "snapshot verify --max-failures=0 --verify-files-percent=1" in verify_service.read_text(encoding="utf-8")
+    verify_text = verify_service.read_text(encoding="utf-8")
+    assert " verify" in verify_text
+    assert "kopia-passthrough" not in verify_text
     assert "OnUnitActiveSec=7d" in verify_timer.read_text(encoding="utf-8")
 
     # Clearing BACKUP_PATH and re-installing MUST scrub the kopia

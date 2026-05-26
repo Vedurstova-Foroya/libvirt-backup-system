@@ -9,8 +9,12 @@ def check_local_kopia_repo(config: Config) -> list[str]:
     """Connect to the local repo and probe status."""
     if not config.get("BACKUP_PATH").strip():
         return []
+    try:
+        repo_path = kopia_repo.local_repo_path(config)
+    except ValueError as exc:
+        return [f"local kopia repo path rejected: {exc}"]
     if not kopia_repo.local_repo_exists(config):
-        return [f"local kopia repo missing at {kopia_repo.local_repo_path(config)}; run install"]
+        return [f"local kopia repo missing at {repo_path}; run install"]
     cfg = kopia_repo.local_config_file(config)
     if not cfg.is_file():
         return [f"local kopia config-file missing: {cfg}; run install"]
@@ -48,6 +52,7 @@ def check_local_kopia_maintenance_dry_run(config: Config) -> list[str]:
             config_file=cfg,
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
+            safety="none",
             dry_run=True,
         )
     except CommandError as exc:

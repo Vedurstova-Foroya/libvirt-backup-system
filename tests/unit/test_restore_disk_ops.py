@@ -53,6 +53,54 @@ def test_turnkey_dest_map_lands_under_staging(tmp_path: Path) -> None:
     assert dest_map == {"vda": staging / "vda.qcow2", "vdb": staging / "vdb.qcow2"}
 
 
+def test_overwrite_temp_dest_map_uses_sibling_hidden_paths(tmp_path: Path) -> None:
+    dest_map = {"vda": tmp_path / "pool-a" / "sys.qcow2"}
+    temp_map = restore._overwrite_temp_dest_map(dest_map)
+    assert temp_map == {"vda": tmp_path / "pool-a" / ".sys.qcow2.vda.restore.tmp"}
+
+
+def test_replace_overwrite_disks_moves_temp_to_final(tmp_path: Path) -> None:
+    dest = tmp_path / "disk.qcow2"
+    dest.write_bytes(b"old")
+    temp = tmp_path / ".disk.qcow2.vda.restore.tmp"
+    temp.write_bytes(b"new")
+    assert restore._replace_overwrite_disks({"vda": temp}, {"vda": dest}) is True
+    assert dest.read_bytes() == b"new"
+    assert not temp.exists()
+    assert not (tmp_path / ".disk.qcow2.vda.restore.old").exists()
+
+
+def test_replace_overwrite_disks_rolls_back_after_later_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.qcow2"
+    second = tmp_path / "second.qcow2"
+    first.write_bytes(b"old-first")
+    second.write_bytes(b"old-second")
+    first_temp = tmp_path / ".first.qcow2.vda.restore.tmp"
+    second_temp = tmp_path / ".second.qcow2.vdb.restore.tmp"
+    first_temp.write_bytes(b"new-first")
+    second_temp.write_bytes(b"new-second")
+    original_replace = Path.replace
+
+    def fail_second_temp_replace(self: Path, target: Path) -> Path:
+        if self == second_temp and target == second:
+            raise OSError("second replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_temp_replace)
+    assert (
+        restore._replace_overwrite_disks(
+            {"vda": first_temp, "vdb": second_temp},
+            {"vda": first, "vdb": second},
+        )
+        is False
+    )
+    assert first.read_bytes() == b"old-first"
+    assert second.read_bytes() == b"old-second"
+    assert second_temp.read_bytes() == b"new-second"
+
+
 def test_materialize_disks_writes_to_dest_map_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``_materialize_disks`` must honor caller-supplied destinations per disk.
 

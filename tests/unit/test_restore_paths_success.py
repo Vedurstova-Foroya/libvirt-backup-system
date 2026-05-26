@@ -97,8 +97,8 @@ def test_restore_overwrite_path_success(
     assert captured["name"] == "myvm"
     assert captured["vm_uuid"] == ALPHA_UUID
     expected_path = Path(manifest.disks[0].source_path)
-    assert streamed == [expected_path]
-    assert expected_path.parent == src_dir
+    assert streamed == [src_dir / ".myvm-vda.qcow2.vda.restore.tmp"]
+    assert expected_path.read_bytes() == b"\x00"
     out = capsys.readouterr().out
     assert "restore overwrite completed" in out
     assert "restored disk" in out
@@ -143,9 +143,11 @@ def test_restore_overwrite_writes_each_disk_to_its_own_source_path(
     monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
     assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP, verbose=False) == 0
     assert streamed == [
-        Path(manifest.disks[0].source_path),
-        Path(manifest.disks[1].source_path),
+        Path(manifest.disks[0].source_path).with_name(".alpha-system.qcow2.vda.restore.tmp"),
+        Path(manifest.disks[1].source_path).with_name(".alpha-data.qcow2.vdb.restore.tmp"),
     ]
+    assert Path(manifest.disks[0].source_path).read_bytes() == b"\x00"
+    assert Path(manifest.disks[1].source_path).read_bytes() == b"\x00"
 
 
 def test_restore_turnkey_different_host(

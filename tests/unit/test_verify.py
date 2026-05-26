@@ -31,6 +31,7 @@ def test_verify_local_repo_returns_zero_on_success(backup_config: Config, monkey
     assert calls[0]["config_file"] == kopia_repo.local_config_file(backup_config)
     assert calls[0]["password_file"] == kopia_repo.password_file_path(backup_config)
     assert calls[0]["cache_dir"] == kopia_repo.cache_dir(backup_config)
+    assert calls[0]["verify_files_percent"] == 1.0
 
 
 def test_verify_local_repo_returns_one_on_failure(

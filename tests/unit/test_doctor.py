@@ -207,7 +207,9 @@ def test_expected_unit_text_verify_service_branch(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     text = doctor._expected_unit_text(cfg, VERIFY_UNIT_NAME)
     assert text is not None
-    assert "snapshot verify --max-failures=0 --verify-files-percent=1" in text
+    assert " --config " in text
+    assert " verify" in text
+    assert "kopia-passthrough" not in text
 
 
 def test_expected_unit_text_maintenance_timer_branch(tmp_path: Path) -> None:

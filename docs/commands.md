@@ -9,17 +9,16 @@ creates the local kopia repo at `BACKUP_PATH/<host-id>/kopia-repo/` with the
 global retention/compression policy applied.
 
 ```sh
-sudo libvirt-backup-system install --kopia-password=<value>
-sudo libvirt-backup-system install --kopia-password-file=/path/to/file
-echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=-
-sudo KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW
-sudo libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
+sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
+sudo libvirt-backup-system install --kopia-password-file=/path/to/file --acknowledge-password-loss
+echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=- --acknowledge-password-loss
+sudo KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
 ```
 
 On first install, `--acknowledge-password-loss` is required before a newly
-supplied password is written. Without it, the command prints the resolved
-password and exits nonzero so the operator can store that exact value in a
-secrets vault before rerunning.
+supplied password is written. Without it, the command exits nonzero with a
+secret-free error; store the exact value in a secrets vault before running
+install.
 
 The same install command runs on every host. There is no bootstrap host.
 Idempotent if the supplied password matches the existing file; hard-fails if
@@ -46,6 +45,7 @@ rewrap the master key, atomically replace the password file.
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
 sudo libvirt-backup-system change-password --new-kopia-password-file=/path
 echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
+sudo NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Run the same command on every host. Order does not matter; each host rotates
@@ -207,12 +207,14 @@ sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 sudo libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 20260507T101112
 ```
 
-There are no other flags: the timestamp is the exact per-run target (no
-rounding, no closest-match). When the backup manifest records file-backed
-disks that all live in a single directory, restored disks are written back
-there and the VM is defined with the original VM name and UUID. Otherwise
-the staging directory at `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/`
-holds the restored qcow2s.
+The only restore flag is `-v`/`--verbose`; there is still no
+`--source-host`. The timestamp is the exact per-run target (no rounding, no
+closest-match). For same-host restores where a local domain with the same
+UUID exists, disks are restored to temporary sibling files first, then the
+VM is shut down, undefined, and the temporary files replace the original
+per-disk source paths. Cross-host or fresh restores write qcow2s under
+`/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/` and rewrite the
+restored domain XML to those staged paths.
 
 Internally each disk snapshot is piped through `qemu-img convert -f raw -O
 qcow2 -S 4096` to produce a sparse qcow2 on the destination. The meta

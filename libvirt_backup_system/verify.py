@@ -24,6 +24,7 @@ def _verify_repo(config: Config, *, host_id: str, config_file_path: object) -> b
             config_file=config_file_path,  # type: ignore[arg-type]
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
+            verify_files_percent=1.0,
         )
     except CommandError as exc:
         event("error", "kopia verify failed", host_id=host_id, stderr=exc.result.stderr.strip())

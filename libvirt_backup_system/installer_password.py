@@ -57,7 +57,6 @@ def install_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
         event(
             "error",
             "kopia password loss acknowledgement required before first install",
-            password=resolved,
             flag="--acknowledge-password-loss",
             recovery="store this exact password in a secrets vault; losing it on every host makes backups unreadable",
         )

@@ -65,7 +65,7 @@ sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
      snapshot list --all --json --tags=vm-uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa --tags=kind:meta
 ```
 
-Each entry's `id` is a kopia snapshot ID. Pick the one whose `startTime`
+Each entry's `id` is a kopia snapshot ID. Pick the one whose `timestamp` tag
 matches the run you want.
 
 Pull the meta snapshot into a staging dir:
