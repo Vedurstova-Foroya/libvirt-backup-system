@@ -102,25 +102,22 @@ def test_load_ignores_env_overrides_when_disabled(tmp_path: Path, monkeypatch) -
 def test_kopia_and_retention_env_vars_override_file_and_defaults(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / "libvirt-backup.env"
     env_file.write_text(
-        "\n".join(
-            [
-                "KOPIA_REPO_PATH=/from/file/repo",
-                "KOPIA_PASSWORD_FILE=/from/file/password",
-                "KOPIA_CACHE_DIR=/from/file/cache",
-                "KOPIA_PARALLELISM=2",
-                "KOPIA_SPLITTER=DYNAMIC-4M-BUZHASH",
-                "KOPIA_COMPRESSION=s2-default",
-                "KEEP_LATEST=1",
-                "KEEP_HOURLY=2",
-                "KEEP_DAILY=3",
-                "KEEP_WEEKLY=4",
-                "KEEP_MONTHLY=5",
-                "KEEP_ANNUAL=6",
-                "KOPIA_MAINTENANCE_INTERVAL=12h",
-                "KOPIA_VERIFY_INTERVAL=3d",
-            ]
-        )
-        + "\n",
+        """\
+KOPIA_REPO_PATH=/from/file/repo
+KOPIA_PASSWORD_FILE=/from/file/password
+KOPIA_CACHE_DIR=/from/file/cache
+KOPIA_PARALLELISM=2
+KOPIA_SPLITTER=DYNAMIC-4M-BUZHASH
+KOPIA_COMPRESSION=s2-default
+KEEP_LATEST=1
+KEEP_HOURLY=2
+KEEP_DAILY=3
+KEEP_WEEKLY=4
+KEEP_MONTHLY=5
+KEEP_ANNUAL=6
+KOPIA_MAINTENANCE_INTERVAL=12h
+KOPIA_VERIFY_INTERVAL=3d
+""",
         encoding="utf-8",
     )
     overrides = {

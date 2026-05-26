@@ -142,10 +142,10 @@ def run_stream(
     popen: Any,
 ) -> bool:
     """Wire up ``_stream_disk_to_qcow2`` with stub kopia + qemu processes."""
-    from libvirt_backup_system import kopia_snapshots
+    from libvirt_backup_system import kopia_snapshots, restore_io
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_stdout", lambda **_: kopia)
-    monkeypatch.setattr(restore_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(restore_io.subprocess, "Popen", popen)
     return restore_module._stream_disk_to_qcow2(
         make_config(tmp_path), make_row(tmp_path), "s", "vda.raw", tmp_path / "vda.qcow2"
     )

@@ -215,9 +215,7 @@ def _stream_all_disks(
     return ok, consistency
 
 
-def _stream_single_disk(
-    config: Config, vm: VM, run_id: str, target: str, base: Path, snapper: VmSnapshotter
-) -> bool:
+def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: Path, snapper: VmSnapshotter) -> bool:
     try:
         with snapper.stream_disk(base) as upstream:
             # The protocol pins ``stream_disk`` to ``AbstractContextManager[object]``

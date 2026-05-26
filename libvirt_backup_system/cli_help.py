@@ -51,7 +51,7 @@ RESTORE_DESCRIPTION = """\
 Restore a single backup run identified by its (VM_UUID, TIMESTAMP) pair.
 
 How to pick the arguments:
-  Copy the first two whitespace-separated columns of any line printed by
+  Copy the ``vm-uuid`` and ``timestamp`` columns of any line printed by
   ``list-restore-points`` straight into this command. There is no rounding,
   no closest-match: TIMESTAMP is the exact per-run target.
 
@@ -113,7 +113,8 @@ the env file to activate it.
 For a one-shot first install with BACKUP_PATH and a kopia password:
 
   sudo BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
-       --kopia-password-file=/root/kopia.pw
+       --kopia-password-file=/root/kopia.pw \\
+       --acknowledge-password-loss
 
 The same shared kopia password must be used on every participating host so
 each peer can read every peer's repo. If the config file already exists the

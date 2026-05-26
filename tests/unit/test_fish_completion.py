@@ -68,7 +68,7 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
     ("command", "expected_options"),
     [
         (None, {"config", "prefix"}),
-        ("install", {"kopia-password", "kopia-password-file", "kopia-password-env"}),
+        ("install", {"kopia-password", "kopia-password-file", "kopia-password-env", "acknowledge-password-loss"}),
         (
             "change-password",
             {"new-kopia-password", "new-kopia-password-file", "new-kopia-password-env"},
@@ -79,9 +79,7 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
         ("restore", {"verbose"}),
     ],
 )
-def test_completion_mentions_operator_visible_argparse_options(
-    command: str | None, expected_options: set[str]
-) -> None:
+def test_completion_mentions_operator_visible_argparse_options(command: str | None, expected_options: set[str]) -> None:
     text = _completion_text()
     assert expected_options <= _parser_options(command)
     for option in expected_options:

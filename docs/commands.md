@@ -13,7 +13,13 @@ sudo libvirt-backup-system install --kopia-password=<value>
 sudo libvirt-backup-system install --kopia-password-file=/path/to/file
 echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=-
 sudo KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW
+sudo libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
 ```
+
+On first install, `--acknowledge-password-loss` is required before a newly
+supplied password is written. Without it, the command prints the resolved
+password and exits nonzero so the operator can store that exact value in a
+secrets vault before rerunning.
 
 The same install command runs on every host. There is no bootstrap host.
 Idempotent if the supplied password matches the existing file; hard-fails if

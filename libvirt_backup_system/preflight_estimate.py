@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 
+from . import kopia_repo
 from .config import Config, float_value, int_value
 from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
@@ -47,6 +48,8 @@ def vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
 
 
 def estimate_required_kb(config: Config, vms: list[VM]) -> int:
+    if kopia_repo.local_repo_exists(config):
+        return 0
     try:
         fallback_per_vm_gb = float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM")
         multiplier = float_value(config.values, "BACKUP_INCREMENTAL_MULTIPLIER")

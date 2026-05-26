@@ -7,12 +7,14 @@ a single command.
 
 ## One-command install
 
-From a checkout on the KVM host, pick a shared password (use the same value on
-every host) and install:
+From a checkout on the KVM host, pick a shared password once, store it in your
+secrets vault, and use the same value on every host:
 
 ```sh
+export KOPIA_PW='<shared-password-from-vault>'
 sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install \
-     --kopia-password "$(openssl rand -base64 32)"
+     --kopia-password-env KOPIA_PW \
+     --acknowledge-password-loss
 ```
 
 Then verify the install, activate the timer, and run a health check:

@@ -46,8 +46,7 @@ from .shell import CommandError, run
 # Source: https://github.com/kopia/kopia/releases/tag/v0.17.0
 KOPIA_VERSION = "0.17.0"
 KOPIA_URL = (
-    f"https://github.com/kopia/kopia/releases/download/v{KOPIA_VERSION}/"
-    f"kopia-{KOPIA_VERSION}-linux-x64.tar.gz"
+    f"https://github.com/kopia/kopia/releases/download/v{KOPIA_VERSION}/" f"kopia-{KOPIA_VERSION}-linux-x64.tar.gz"
 )
 # sha256 pulled from the upstream checksums.txt for v0.17.0
 # (https://github.com/kopia/kopia/releases/download/v0.17.0/checksums.txt).
@@ -61,19 +60,13 @@ KOPIA_TAR_ROOT = f"kopia-{KOPIA_VERSION}-linux-x64"
 # (https://packages.debian.org/bookworm/libnbd-bin); refresh the version
 # AND both digests below in the same commit when bumping.
 LIBNBD_VERSION = "1.14.2-1"
-LIBNBD_BIN_DEB_URL = (
-    f"http://deb.debian.org/debian/pool/main/libn/libnbd/"
-    f"libnbd-bin_{LIBNBD_VERSION}_amd64.deb"
-)
+LIBNBD_BIN_DEB_URL = f"http://deb.debian.org/debian/pool/main/libn/libnbd/" f"libnbd-bin_{LIBNBD_VERSION}_amd64.deb"
 LIBNBD_BIN_SHA256 = "5ff45a2dd463cab00ac91c7e2747e2373ce8031f90d6f50e0e95edae470453dc"
 
 # libnbd0 is libnbd-bin's required transitive dep; pinning it here lets the
 # installer install both .debs in one dpkg pass and avoid an apt-get
 # round-trip on hosts that do not already have libnbd0.
-LIBNBD0_DEB_URL = (
-    f"http://deb.debian.org/debian/pool/main/libn/libnbd/"
-    f"libnbd0_{LIBNBD_VERSION}_amd64.deb"
-)
+LIBNBD0_DEB_URL = f"http://deb.debian.org/debian/pool/main/libn/libnbd/" f"libnbd0_{LIBNBD_VERSION}_amd64.deb"
 LIBNBD0_SHA256 = "775d8a88ac1d3daf9cea723fb0faca07e6167a4bcd606af37e73eb8ec5eba009"
 
 
@@ -110,8 +103,7 @@ def _verify_sha256(data: bytes, expected: str, *, source: str) -> None:
     actual = hashlib.sha256(data).hexdigest()
     if actual != expected:
         raise BinaryInstallError(
-            f"sha256 mismatch for {source}: expected {expected}, got {actual}; "
-            "refusing to install untrusted bytes"
+            f"sha256 mismatch for {source}: expected {expected}, got {actual}; " "refusing to install untrusted bytes"
         )
 
 
@@ -236,8 +228,7 @@ def _install_debs(deb_paths: list[Path]) -> None:
             run(["apt-get", "install", "-f", "-y"], check=True, timeout=600)
         except CommandError as apt_exc:
             raise BinaryInstallError(
-                "apt-get install -f failed to repair libnbd-bin dependencies: "
-                f"{apt_exc.result.stderr.strip()}"
+                "apt-get install -f failed to repair libnbd-bin dependencies: " f"{apt_exc.result.stderr.strip()}"
             ) from apt_exc
 
 

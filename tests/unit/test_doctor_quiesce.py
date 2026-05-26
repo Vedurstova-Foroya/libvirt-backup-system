@@ -44,9 +44,7 @@ def _stub_journalctl(monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode
     return calls
 
 
-def test_quiesce_check_skipped_when_systemctl_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_quiesce_check_skipped_when_systemctl_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor, "systemctl_available", lambda _root: False)
     assert doctor._check_recent_quiesce_fallbacks(tmp_path) == []
 
@@ -128,9 +126,7 @@ def test_quiesce_check_handles_unknown_vm_field(monkeypatch: pytest.MonkeyPatch)
     record = json.dumps({"level": "warning", "message": doctor.QUIESCE_FALLBACK_MESSAGE, "ts": ""})
     _stub_journalctl(monkeypatch, stdout=record)
     findings = doctor._check_recent_quiesce_fallbacks(Path("/"))
-    assert findings == [
-        "recent QGA quiesce fallback for <unknown-vm>; install qemu-guest-agent inside the VM"
-    ]
+    assert findings == ["recent QGA quiesce fallback for <unknown-vm>; install qemu-guest-agent inside the VM"]
 
 
 def test_quiesce_check_skips_substring_match_in_message(monkeypatch: pytest.MonkeyPatch) -> None:

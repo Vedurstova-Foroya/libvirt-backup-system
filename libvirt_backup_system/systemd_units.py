@@ -8,11 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import systemd_render
 from .config import bool_value, prefixed, root_prefix
 from .logging_json import event
 from .shell import run
 from .systemd_run_gate import manual_run_ready
-from .systemd_templates import UNIT_INTERVAL_TIMER, UNIT_KOPIA_SERVICE, UNIT_SERVICE, UNIT_TIMER
 
 RUN_UNIT_NAME = "libvirt-backup-system.service"
 CHECK_UNIT_NAME = "libvirt-backup-system-check.service"
@@ -34,21 +34,13 @@ STATUS_UNITS = (
     VERIFY_TIMER_NAME,
     VERIFY_UNIT_NAME,
 )
-UNIT_DESCRIPTIONS = {"run": "Libvirt VM backup orchestrator", "check": "Libvirt VM backup preflight check"}
-KOPIA_UNIT_DESCRIPTIONS = {
-    "maintenance": "Libvirt VM backup kopia maintenance",
-    "maintenance-full": "Libvirt VM backup kopia full maintenance",
-    "verify": "Libvirt VM backup kopia snapshot verify",
-}
+UNIT_DESCRIPTIONS = systemd_render.UNIT_DESCRIPTIONS
+KOPIA_UNIT_DESCRIPTIONS = systemd_render.KOPIA_UNIT_DESCRIPTIONS
 # Quick maintenance runs on the configured daily-ish cadence; full
 # maintenance is scheduled separately weekly for GC. Verify performs a 1%
 # files probe weekly.
-KOPIA_UNIT_ARGS = {
-    "maintenance": "maintenance run --safety=full",
-    "maintenance-full": "maintenance run --safety=full --full",
-    "verify": "snapshot verify --max-failures=0 --verify-files-percent=1",
-}
-KOPIA_FULL_MAINTENANCE_INTERVAL = "7d"
+KOPIA_UNIT_ARGS = systemd_render.KOPIA_UNIT_ARGS
+KOPIA_FULL_MAINTENANCE_INTERVAL = systemd_render.KOPIA_FULL_MAINTENANCE_INTERVAL
 DISPATCH_OPT_OUT_ENV = "LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH"
 
 
@@ -118,77 +110,28 @@ def run_systemctl(root: Path, commands: list[list[str]]) -> bool:
     return all_ok
 
 
-_SYSTEMD_PATH_FORBIDDEN_CHARS = frozenset("`'\"\\")
-
-
 def validate_systemd_path(value: str | Path, label: str) -> str:
-    path = str(value)
-    if not Path(path).is_absolute():
-        raise ValueError(f"{label} must be an absolute path for systemd units: {path}")
-    if any(ord(char) < 32 or ord(char) == 127 for char in path):
-        raise ValueError(f"{label} must not contain control characters for systemd units")
-    # Reject characters that change the shape of ExecStart= rendering even
-    # under _quote_systemd_path: backticks (no shell expansion at exec time,
-    # but operator scripts and logging pipelines often re-render the line
-    # through a shell), backslashes (continuation/escape), and the quote
-    # characters we use to wrap the value. ``$`` and ``%`` are still handled
-    # by _quote_systemd_path's $$/%% escapes because we own that escape path;
-    # the chars listed here are ones we refuse outright at install time so a
-    # quoting bug can never silently expand them.
-    bad = sorted({char for char in path if char in _SYSTEMD_PATH_FORBIDDEN_CHARS})
-    if bad:
-        raise ValueError(f"{label} must not contain {''.join(bad)!r} for systemd units")
-    return path
+    return systemd_render.validate_systemd_path(value, label)
 
 
 def _quote_systemd_path(path: str) -> str:
-    # For ExecStart= (the only command-line directive we render), systemd parses
-    # with quote handling, so wrap the value in double quotes and escape %
-    # (specifier expansion) and $ (env-var expansion when EnvironmentFile= is
-    # loaded).
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
-    return f'"{escaped}"'
+    return systemd_render.quote_systemd_path(path)
 
 
 def _escape_systemd_path(path: str) -> str:
-    # For path-typed directives (EnvironmentFile=, RequiresMountsFor=), systemd
-    # does not strip surrounding quotes — a quoted value is rejected as
-    # "path is not absolute". Emit unquoted, backslash-escape whitespace, and
-    # double % to dodge specifier expansion.
-    return path.replace("\\", "\\\\").replace("%", "%%").replace("\t", "\\\t").replace(" ", "\\ ")
+    return systemd_render.escape_systemd_path(path)
 
 
 def _requires_mounts_for(backup_path: str) -> str:
-    backup_path = backup_path.strip()
-    if not backup_path:
-        return ""
-    validate_systemd_path(backup_path, "BACKUP_PATH")
-    return f"RequiresMountsFor={_escape_systemd_path(backup_path)}\n"
+    return systemd_render.requires_mounts_for(backup_path)
 
 
 def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run") -> str:
-    if subcommand not in UNIT_DESCRIPTIONS:
-        raise ValueError(f"unknown unit subcommand: {subcommand}")
-    backup_path = backup_path.strip()
-    config = validate_systemd_path(config_path, "config_path")
-    binary = validate_systemd_path(bin_path, "bin_path")
-    # TimeoutStartSec is fixed at infinity because a single run backs up every
-    # selected VM sequentially. shell.run/run_streamed enforces
-    # COMMAND_TIMEOUT_SECONDS per child process, which is the meaningful safety
-    # net; a static systemd timeout would either kill legitimate multi-VM runs
-    # or be so large it adds no value.
-    return UNIT_SERVICE.format(
-        description=UNIT_DESCRIPTIONS[subcommand],
-        requires_mounts_for=_requires_mounts_for(backup_path),
-        bin_path=_quote_systemd_path(binary),
-        environment_file=_escape_systemd_path(config),
-        config_arg=_quote_systemd_path(config),
-        subcommand=subcommand,
-    )
+    return systemd_render.render_unit_service(backup_path, bin_path, config_path, subcommand=subcommand)
 
 
 def _has_control_char(value: str) -> bool:
-    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+    return systemd_render.has_control_char(value)
 
 
 def _systemd_analyze_available(root: Path) -> bool:
@@ -196,62 +139,20 @@ def _systemd_analyze_available(root: Path) -> bool:
 
 
 def render_unit_timer(root: Path, calendar: str) -> str | None:
-    if _has_control_char(calendar):
-        event("error", "invalid systemd calendar", error="SYSTEMD_ON_CALENDAR must not contain control characters")
-        return None
-    calendar = calendar.strip()
-    if not calendar:
-        event("error", "invalid systemd calendar", error="SYSTEMD_ON_CALENDAR must not be empty")
-        return None
-    if calendar.startswith("-"):
-        # ``systemd-analyze calendar --help`` exits 0, so a typo'd ``--help``
-        # would pass the rc check and render a unit file that systemctl
-        # daemon-reload then refuses. Catch the obvious flag-shaped value here.
-        event("error", "invalid systemd calendar", error="SYSTEMD_ON_CALENDAR must not start with '-'")
-        return None
-    if _systemd_analyze_available(root):
-        result = run(["systemd-analyze", "calendar", calendar], check=False)
-        if result.returncode != 0:
-            event(
-                "error",
-                "invalid systemd calendar",
-                calendar=calendar,
-                returncode=result.returncode,
-                stderr=result.stderr.strip(),
-            )
-            return None
-    return UNIT_TIMER.format(calendar=calendar)
-
-
-def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str, backup_path: str = "") -> str:
-    if kind not in KOPIA_UNIT_DESCRIPTIONS:
-        raise ValueError(f"unknown kopia unit kind: {kind}")
-    config = validate_systemd_path(config_path, "config_path")
-    binary = validate_systemd_path(bin_path, "bin_path")
-    return UNIT_KOPIA_SERVICE.format(
-        description=KOPIA_UNIT_DESCRIPTIONS[kind],
-        requires_mounts_for=_requires_mounts_for(backup_path),
-        bin_path=_quote_systemd_path(binary),
-        environment_file=_escape_systemd_path(config),
-        config_arg=_quote_systemd_path(config),
-        kopia_args=KOPIA_UNIT_ARGS[kind],
+    return systemd_render.render_unit_timer(
+        root,
+        calendar,
+        analyze_available=_systemd_analyze_available,
+        run_command=run,
     )
 
 
+def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str, backup_path: str = "") -> str:
+    return systemd_render.render_unit_kopia_service(bin_path, config_path, kind=kind, backup_path=backup_path)
+
+
 def render_unit_interval_timer(*, description: str, interval: str) -> str | None:
-    interval = interval.strip()
-    if not interval:
-        event("error", "invalid systemd interval", error="timer interval must not be empty")
-        return None
-    if _has_control_char(interval):
-        event("error", "invalid systemd interval", error="timer interval must not contain control characters")
-        return None
-    if interval.startswith("-"):
-        # ``-foo`` would render as a systemd flag-shaped value; reject up front
-        # so daemon-reload never has to parse it.
-        event("error", "invalid systemd interval", error="timer interval must not start with '-'")
-        return None
-    return UNIT_INTERVAL_TIMER.format(description=description, interval=interval)
+    return systemd_render.render_unit_interval_timer(description=description, interval=interval)
 
 
 def unit_name_for(subcommand: str) -> str:

@@ -64,24 +64,28 @@ proceeds straight to the password + repo + systemd-unit setup.
 
 ## Install
 
-Pick a shared password once and use it on every host. The exact same install
-command runs everywhere:
+Pick a shared password once, store it in your secrets vault, and use it on
+every host. The exact same install command runs everywhere:
 
 ```sh
+export KOPIA_PW='<shared-password-from-vault>'
 sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install \
-     --kopia-password "$(openssl rand -base64 32)"
+     --kopia-password-env KOPIA_PW \
+     --acknowledge-password-loss
 ```
 
 For operators who do not want the password in `ps`/journald, pipe it in:
 
 ```sh
-echo -n "$PW" | sudo python3 -m libvirt_backup_system install --kopia-password-file=-
+echo -n "$PW" | sudo python3 -m libvirt_backup_system install --kopia-password-file=- \
+  --acknowledge-password-loss
 ```
 
 Or use an env var:
 
 ```sh
-sudo KOPIA_PW="$PW" python3 -m libvirt_backup_system install --kopia-password-env=KOPIA_PW
+sudo KOPIA_PW="$PW" python3 -m libvirt_backup_system install --kopia-password-env=KOPIA_PW \
+  --acknowledge-password-loss
 ```
 
 Behavior:
@@ -89,7 +93,10 @@ Behavior:
 - First install: writes the password to
   `/etc/libvirt-backup-system/kopia.pw` mode 600 root-owned, creates the
   local repo at `BACKUP_PATH/<host-id>/kopia-repo/`, applies the global
-  retention/compression policy, registers systemd units.
+  retention/compression policy, registers systemd units. It refuses to write
+  a new password unless `--acknowledge-password-loss` is present; on refusal
+  it prints the resolved password so the operator can store exactly that
+  value before rerunning.
 - Re-running with the same password: idempotent.
 - Re-running with a different password: hard fail. Use
   `libvirt-backup-system change-password` to rotate.

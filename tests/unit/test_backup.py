@@ -148,6 +148,7 @@ def _install_stubs(
         "domain_xml": [],
         "mount_checks": [],
     }
+
     def fake_virtual_size(path: str) -> int:
         captured["virtual_size"].append(path)
         if isinstance(virtual_size, BaseException):

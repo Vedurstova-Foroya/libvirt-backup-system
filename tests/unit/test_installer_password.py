@@ -31,9 +31,20 @@ def _password_path(cfg: Config) -> Path:
 
 def test_install_password_writes_file_when_flag_supplied_and_no_existing(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
-    spec = kopia_password.PasswordSpec(literal="install-pw")
+    spec = kopia_password.PasswordSpec(literal="install-pw", acknowledge_loss=True)
     assert installer_password.install_password(cfg, spec) == 0
     assert kopia_password.read_password_file(cfg) == "install-pw"
+
+
+def test_install_password_first_install_requires_acknowledgement(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _make_config(tmp_path)
+    assert installer_password.install_password(cfg, kopia_password.PasswordSpec(literal="install-pw")) == 1
+    err = capsys.readouterr().err
+    assert "--acknowledge-password-loss" in err
+    assert "install-pw" in err
+    assert not _password_path(cfg).exists()
 
 
 def test_install_password_no_flag_no_file_emits_usage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -119,7 +130,7 @@ def test_install_password_reports_write_failure(
         raise OSError(13, "permission denied")
 
     monkeypatch.setattr(installer_password.kopia_password, "write_password_file", boom_write)
-    spec = kopia_password.PasswordSpec(literal="install-pw")
+    spec = kopia_password.PasswordSpec(literal="install-pw", acknowledge_loss=True)
     assert installer_password.install_password(cfg, spec) == 1
     err = capsys.readouterr().err
     assert "kopia password file write failed" in err

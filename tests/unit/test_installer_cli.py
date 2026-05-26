@@ -11,6 +11,7 @@ from libvirt_backup_system import __version__
 from libvirt_backup_system.cli import build_parser, main
 from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import UNIT_SERVICE, UNIT_TIMER
+from libvirt_backup_system.kopia_password import PasswordSpec
 from libvirt_backup_system.vms import VM
 from tests.unit.conftest import ALPHA_UUID
 
@@ -181,6 +182,13 @@ def test_cli_install_and_uninstall_forward_config_path(tmp_path: Path, monkeypat
     captured_install = captured["install"]
     assert isinstance(captured_install, tuple)
     assert captured_install[:2] == (str(tmp_path), custom)
+    spec = captured_install[2]
+    assert isinstance(spec, PasswordSpec)
+    assert spec.acknowledge_loss is False
+    assert main(["--config", custom, "--prefix", str(tmp_path), "install", "--acknowledge-password-loss"]) == 0
+    spec = captured["install"][2]  # type: ignore[index]
+    assert isinstance(spec, PasswordSpec)
+    assert spec.acknowledge_loss is True
     assert main(["--config", custom, "--prefix", str(tmp_path), "uninstall", "--purge-logs"]) == 0
     prefix, kwargs = captured["uninstall"]  # type: ignore[misc]
     assert prefix == str(tmp_path)

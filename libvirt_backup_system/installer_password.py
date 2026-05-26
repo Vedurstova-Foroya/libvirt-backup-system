@@ -53,6 +53,15 @@ def install_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
         return 1
     if has_existing:
         return 0
+    if not spec.acknowledge_loss:
+        event(
+            "error",
+            "kopia password loss acknowledgement required before first install",
+            password=resolved,
+            flag="--acknowledge-password-loss",
+            recovery="store this exact password in a secrets vault; losing it on every host makes backups unreadable",
+        )
+        return 1
     try:
         kopia_password.write_password_file(cfg, resolved)
     except OSError as exc:

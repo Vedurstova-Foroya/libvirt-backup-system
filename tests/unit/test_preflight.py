@@ -75,6 +75,25 @@ def test_required_present_allows_empty_kopia_repo_path(tmp_path: Path) -> None:
     assert "KOPIA_REPO_PATH must not be empty" not in failures
 
 
+def test_validate_local_kopia_repo_delegates_to_repo_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    called: list[bool] = []
+
+    def fake_ensure(_cfg: object, *, apply_global_policy: bool = True) -> int:
+        called.append(apply_global_policy)
+        return 0
+
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_repo", fake_ensure)
+    assert preflight._validate_local_kopia_repo(cfg) == []
+    assert called == [False]
+
+
+def test_validate_local_kopia_repo_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_repo", lambda *_a, **_k: 1)
+    assert "local kopia repo" in preflight._validate_local_kopia_repo(cfg)[0]
+
+
 def test_validate_vm_blacklist_flags_invalid_uuids(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.values["VM_BLACKLIST"] = "not-a-uuid, aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

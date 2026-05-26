@@ -75,6 +75,7 @@ appears in `ps` or journald.
 --kopia-password-file=/path         # path on disk
 --kopia-password-file=-             # stdin (preferred for config-management)
 --kopia-password-env=VARNAME        # named env var
+--acknowledge-password-loss         # required when writing the password first time
 ```
 
 Atomic write + chmod 600 + chown root. Idempotent if the file already
@@ -127,7 +128,7 @@ When migrating an existing fleet from the previous (non-kopia) install:
    leaving them in place only wastes space on the backup share.
 4. On every host (identical command line):
    ```sh
-   sudo libvirt-backup-system install --kopia-password=<value>
+   sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
    ```
    Creates the local repo at `BACKUP_PATH/$HOST_ID/kopia-repo/`, applies
    global policy, registers timers.

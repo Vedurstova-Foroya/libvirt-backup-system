@@ -39,6 +39,7 @@ complete -c libvirt-backup-system -s h -l help -d "Show help and exit"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password -r -d "Shared kopia repo password"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-file -r -F -d "Path to a file holding the kopia password; '-' reads stdin"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-env -r -d "Environment variable name holding the kopia password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l acknowledge-password-loss -d "Acknowledge that losing the shared password makes backups unrecoverable"
 
 # change-password flags.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password -r -d "New shared kopia repo password"

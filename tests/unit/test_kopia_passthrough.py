@@ -129,9 +129,7 @@ def test_kopia_passthrough_propagates_exit_code(tmp_path: Path, monkeypatch: pyt
     assert rc == 42
 
 
-def test_kopia_passthrough_routes_host_id_to_peer_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_kopia_passthrough_routes_host_id_to_peer_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     peer_cfg_file = tmp_path / "peer.config"
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda config, host_id: peer_cfg_file)
@@ -147,9 +145,7 @@ def test_kopia_passthrough_routes_host_id_to_peer_config(
     assert cmd[2:] == ["snapshot", "list", "--tags=kind:meta"]
 
 
-def test_kopia_passthrough_rejects_empty_tail(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_kopia_passthrough_rejects_empty_tail(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _make_config(tmp_path)
     args = build_parser().parse_args(["kopia-passthrough"])
     rc = _kopia_passthrough_command(args, cfg)
@@ -157,9 +153,7 @@ def test_kopia_passthrough_rejects_empty_tail(
     assert "kopia-passthrough requires at least one kopia argument" in capsys.readouterr().err
 
 
-def test_kopia_passthrough_rejects_bare_separator(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_kopia_passthrough_rejects_bare_separator(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # ``-- `` with no following argv is the same shape as "no tail at all".
     cfg = _make_config(tmp_path)
     args = build_parser().parse_args(["kopia-passthrough", "--"])
@@ -168,9 +162,7 @@ def test_kopia_passthrough_rejects_bare_separator(
     assert "kopia-passthrough requires at least one kopia argument" in capsys.readouterr().err
 
 
-def test_kopia_passthrough_returns_one_when_peer_unreachable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_kopia_passthrough_returns_one_when_peer_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda config, host_id: None)
     args = build_parser().parse_args(["kopia-passthrough", "--host-id", "ghost", "--", "snapshot", "list"])
@@ -191,9 +183,7 @@ def test_kopia_passthrough_returns_one_when_password_file_missing(
     assert "kopia-passthrough password unreadable" in capsys.readouterr().err
 
 
-def test_main_dispatches_to_kopia_passthrough(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_dispatches_to_kopia_passthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(cli.Config, "load", lambda config_path=None, prefix=None: cfg)
     runner = _CapturedRun(returncode=7)

@@ -115,8 +115,18 @@ def test_estimate_required_kb_zero_when_no_vms(tmp_path: Path) -> None:
     assert preflight_estimate.estimate_required_kb(cfg, []) == 0
 
 
+def test_estimate_required_kb_zero_when_local_repo_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
+    assert (
+        preflight_estimate.estimate_required_kb(cfg, [VM("a", "running", "a" * 8 + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa")])
+        == 0
+    )
+
+
 def test_estimate_required_kb_scales_with_vms(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: False)
     monkeypatch.setattr(preflight_estimate, "vm_estimated_bytes", lambda uri, vm, fb: 1024 * 1024 * 1024)
     out = preflight_estimate.estimate_required_kb(cfg, [VM("a", "running", "a" * 8 + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa")])
     # 1 GiB * 1.2 * 1.20 = 1.44 GiB → 1509949.44 KiB → int() = 1509949 + margin

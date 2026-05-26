@@ -103,9 +103,7 @@ def test_commit_pivots_all_disks_and_unlinks_overlays(monkeypatch: pytest.Monkey
     assert not overlay.exists()
 
 
-def test_commit_removes_empty_runtime_dir_after_pivot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_commit_removes_empty_runtime_dir_after_pivot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Gap C: a clean run leaves no staging dir behind.
 
     ``freeze`` creates ``domain-libvirt-backup-<vm>/`` to hold each overlay
@@ -133,9 +131,7 @@ def test_commit_removes_empty_runtime_dir_after_pivot(
     assert not runtime.exists()
 
 
-def test_commit_leaves_runtime_dir_alone_when_not_empty(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_commit_leaves_runtime_dir_alone_when_not_empty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Gap C edge case: a non-empty staging dir is never wiped.
 
     If a blockcommit on disk A failed and left ``vda.overlay`` in place but

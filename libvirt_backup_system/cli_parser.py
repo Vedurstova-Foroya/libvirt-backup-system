@@ -48,6 +48,7 @@ def password_spec_from_args(args: argparse.Namespace, *, prefix: str) -> Passwor
         literal=getattr(args, f"{prefix}kopia_password", None),
         file=getattr(args, f"{prefix}kopia_password_file", None),
         env_var=getattr(args, f"{prefix}kopia_password_env", None),
+        acknowledge_loss=getattr(args, "acknowledge_password_loss", False),
     )
 
 
@@ -87,6 +88,14 @@ def build_parser() -> argparse.ArgumentParser:
         sub, "install", help_text=cli_help.INSTALL_HELP, description=cli_help.INSTALL_DESCRIPTION
     )
     _add_password_flags(install_parser, prefix="")
+    install_parser.add_argument(
+        "--acknowledge-password-loss",
+        action="store_true",
+        help=(
+            "Required on first install: confirms this password has been stored outside "
+            "libvirt-backup-system and that losing it makes all backups unrecoverable."
+        ),
+    )
 
     change_password_parser = _add_subparser(
         sub,
@@ -153,14 +162,14 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument(
         "vm_uuid",
         metavar="VM_UUID",
-        help="VM libvirt UUID copied verbatim from the first column of list-restore-points output.",
+        help="VM libvirt UUID copied verbatim from the vm-uuid column of list-restore-points output.",
     )
     restore_parser.add_argument(
         "timestamp",
         metavar="TIMESTAMP",
         help=(
-            "Per-run timestamp (YYYYMMDDTHHMMSS) copied verbatim from the second column of "
-            "list-restore-points output. Exact match against the meta snapshot's start-time tag."
+            "Per-run timestamp (YYYYMMDDTHHMMSS) copied verbatim from the timestamp column of "
+            "list-restore-points output. Exact match against the meta snapshot's timestamp tag."
         ),
     )
 

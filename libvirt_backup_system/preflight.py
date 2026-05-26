@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 import os
 import shutil
-import stat
 from pathlib import Path
 
-from .config import CONFIG_KEYS, Config, float_value, int_value, prefixed, split_words
+from . import kopia_repo, preflight_host_id, preflight_kopia_password_file
+from .config import CONFIG_KEYS, Config, float_value, int_value, split_words
+from .config import prefixed as _prefixed
 from .logging_json import event
 from .paths import backup_root
 from .preflight_estimate import df_available_kb as _df_available_kb
@@ -27,7 +28,8 @@ ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+ssh:// qemu+tcp:// qemu+tls:
 # fmt: on
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
-HOST_ID_STATE_FILE = "host-id"
+HOST_ID_STATE_FILE = preflight_host_id.HOST_ID_STATE_FILE
+prefixed = _prefixed
 
 
 def validate_libvirt_uri(uri: str) -> bool:
@@ -144,27 +146,14 @@ def _validate_kopia_repo_path(config: Config) -> list[str]:
 
 
 def _validate_kopia_password_file(config: Config) -> list[str]:
-    """Confirm the kopia password file exists and is root-owned mode 600."""
-    raw = config.get("KOPIA_PASSWORD_FILE").strip()
-    if not raw:
-        return ["KOPIA_PASSWORD_FILE must not be empty"]
-    path = prefixed(raw, config.prefix)
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return [f"KOPIA_PASSWORD_FILE missing: {path}; run ``libvirt-backup-system install`` with --kopia-password"]
-    except OSError as exc:
-        return [f"KOPIA_PASSWORD_FILE stat failed: {path}: {exc}"]
-    if not stat.S_ISREG(info.st_mode):
-        return [f"KOPIA_PASSWORD_FILE is not a regular file: {path}"]
-    if (info.st_mode & 0o777) != 0o600:
-        return [f"KOPIA_PASSWORD_FILE must be mode 600 (is {oct(info.st_mode & 0o777)}): {path}"]
-    if hasattr(os, "geteuid") and os.geteuid() == 0 and info.st_uid != 0:
-        # The install step always runs as root and lays the file down 600 root:root.
-        # A non-root invocation (test run, developer probe) is a different context
-        # where we cannot meaningfully enforce ownership — skip the root-owned check
-        # rather than reject every non-root run on a correctly-installed host.
-        return [f"KOPIA_PASSWORD_FILE must be owned by root (is uid {info.st_uid}): {path}"]
+    return preflight_kopia_password_file.validate_kopia_password_file(config)
+
+
+def _validate_local_kopia_repo(config: Config) -> list[str]:
+    if not config.get("BACKUP_PATH").strip():
+        return []
+    if kopia_repo.ensure_local_repo(config, apply_global_policy=False) != 0:
+        return ["local kopia repo could not be created or connected with the shared password"]
     return []
 
 
@@ -176,39 +165,15 @@ def _backup_path_is_mount(backup_path: Path) -> tuple[bool, str | None]:
 
 
 def _host_id_state_path(config: Config) -> Path:
-    return prefixed("/var/lib/libvirt-backup-system", config.prefix) / HOST_ID_STATE_FILE
+    return preflight_host_id.host_id_state_path(config)
 
 
 def stamp_host_id_on_first_run(config: Config) -> list[str]:
-    path = _host_id_state_path(config)
-    host_id = config.get("HOST_ID")
-    try:
-        if path.exists():
-            stamped = path.read_text(encoding="utf-8").strip()
-            if stamped and stamped != host_id:
-                return [f"HOST_ID drift detected: state has {stamped!r}, config has {host_id!r}"]
-            if not stamped:
-                path.write_text(host_id + "\n", encoding="utf-8")
-            return []
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(host_id + "\n", encoding="utf-8")
-        event("info", "stamped HOST_ID state", path=str(path), host_id=host_id)
-    except OSError as exc:
-        return [f"HOST_ID state check failed: {exc}"]
-    return []
+    return preflight_host_id.stamp_host_id_on_first_run(config)
 
 
 def host_id_drift_failures(config: Config) -> list[str]:
-    path = _host_id_state_path(config)
-    try:
-        if not path.exists():
-            return []
-        stamped = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        return [f"HOST_ID state check failed: {exc}"]
-    if stamped and stamped != config.get("HOST_ID"):
-        return [f"HOST_ID drift detected: state has {stamped!r}, config has {config.get('HOST_ID')!r}"]
-    return []
+    return preflight_host_id.host_id_drift_failures(config)
 
 
 def _validate_backup_path_readonly(config: Config) -> list[str]:
@@ -294,6 +259,7 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     failures.extend(f"missing binary: {binary}" for binary in REQUIRED_BINARIES if not shutil.which(binary))
     failures.extend(_validate_scratch_dir())
     failures.extend(_validate_kopia_password_file(config))
+    failures.extend(_validate_local_kopia_repo(config))
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
     try:

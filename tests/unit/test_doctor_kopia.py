@@ -237,9 +237,7 @@ def test_check_local_kopia_verify_dry_run_passes(tmp_path: Path, monkeypatch: py
     assert captured[0]["dry_run"] is True
 
 
-def test_check_local_kopia_verify_dry_run_surfaces_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_check_local_kopia_verify_dry_run_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     cfg_file = tmp_path / "kopia.config"
     cfg_file.write_text("{}", encoding="utf-8")

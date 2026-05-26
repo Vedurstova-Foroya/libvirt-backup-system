@@ -180,9 +180,7 @@ def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: py
     assert list_restore_points._local_rows(cfg) == []
 
 
-def test_local_rows_allows_older_snapshots_without_vm_name_tag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_local_rows_allows_older_snapshots_without_vm_name_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(vm_name="")]})

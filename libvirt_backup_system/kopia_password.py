@@ -30,6 +30,7 @@ class PasswordSpec:
     literal: str | None = None
     file: str | None = None
     env_var: str | None = None
+    acknowledge_loss: bool = False
 
 
 def resolve_password(spec: PasswordSpec, *, stdin: Iterable[str] = sys.stdin) -> str | None:
