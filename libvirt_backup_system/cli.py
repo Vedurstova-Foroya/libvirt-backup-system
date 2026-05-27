@@ -202,8 +202,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 with acquire_run_lock(config):
                     include_hosts = (
-                        [item.strip() for item in args.include_hosts.split(",") if item.strip()]
-                        if args.include_hosts
+                        [item.strip() for item in args.include_hosts.split(",")]
+                        if args.include_hosts is not None
                         else None
                     )
                     return verify(config, include_hosts=include_hosts)

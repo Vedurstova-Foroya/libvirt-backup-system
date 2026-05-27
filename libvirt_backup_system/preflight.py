@@ -56,13 +56,9 @@ def _validate_required_present(config: Config) -> list[str]:
     optional_keys = {"KOPIA_REPO_PATH", "VM_BLACKLIST"}
     failures = [f"{k} must not be empty" for k in sorted(CONFIG_KEYS - optional_keys) if not config.get(k).strip()]
     host_id = config.get("HOST_ID")
-    if host_id.strip():
-        if host_id in {".", ".."} or "/" in host_id or "\\" in host_id:
-            failures.append("HOST_ID must not contain path separators or be '.'/'..'")
-        elif any(ord(c) < 32 or ord(c) == 127 for c in host_id):
-            failures.append("HOST_ID must not contain control characters or NUL")
-        elif host_id != host_id.strip():
-            failures.append("HOST_ID must not have leading or trailing whitespace")
+    host_failure = preflight_host_id.validation_failure(host_id, allow_empty=True)
+    if host_failure is not None:
+        failures.append(host_failure)
     return failures
 
 

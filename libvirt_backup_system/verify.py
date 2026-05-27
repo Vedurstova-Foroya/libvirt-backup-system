@@ -34,11 +34,19 @@ def _verify_repo(config: Config, *, host_id: str, config_file_path: object) -> b
 
 
 def verify(config: Config, *, include_hosts: Iterable[str] | None = None) -> int:
-    ok = _verify_repo(config, host_id=config.get("HOST_ID"), config_file_path=kopia_repo.local_config_file(config))
+    local_config_file = kopia_repo.ensure_local_connected(config)
+    ok = local_config_file is not None and _verify_repo(
+        config, host_id=config.get("HOST_ID"), config_file_path=local_config_file
+    )
     if include_hosts is None:
         return 0 if ok else 1
 
     for host_id in dict.fromkeys(include_hosts):
+        host_failure = kopia_repo.peer_host_id_failure(host_id)
+        if host_failure is not None:
+            event("error", "requested peer host_id rejected", host_id=host_id, reason=host_failure)
+            ok = False
+            continue
         peer_config_file = kopia_repo.ensure_peer_connected(config, host_id)
         if peer_config_file is None:
             event("error", "requested peer repo unavailable", host_id=host_id)

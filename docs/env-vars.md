@@ -49,7 +49,7 @@ SYSTEMD_ON_CALENDAR=*-*-* 02:30:00
 ```
 
 systemd `OnCalendar` value used when the backup timer is installed. Run
-`start` after changing this so the timer is refreshed and reloaded.
+`start` after changing this so the backup timer is refreshed and reloaded.
 
 ```
 BACKUP_REQUIRE_NFS_MOUNT=true

@@ -27,6 +27,7 @@ def _write_password(config: Config) -> Path:
     path = kopia_repo.password_file_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("swordfish\n", encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -291,7 +292,6 @@ def test_iter_connected_peers_returns_empty_with_no_peers(tmp_path: Path) -> Non
 def test_discover_peer_repos_skips_non_directory_entries(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     backup = tmp_path / "backup"
-    # Drop a regular file alongside the host directories — discover must skip it.
     (backup / "stray-file").write_text("not a host", encoding="utf-8")
     repo = backup / "host-a" / "kopia-repo"
     repo.mkdir(parents=True)

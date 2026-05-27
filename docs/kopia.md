@@ -150,7 +150,8 @@ The wrapper drops a per-repo config file for every connection. Reuse the
 local one for ad-hoc inspection:
 
 ```sh
-CFG=/var/lib/libvirt-backup-system/kopia-configs/$(hostname).config
+HOST_ID=$(cat /etc/machine-id)
+CFG=/var/lib/libvirt-backup-system/kopia-configs/${HOST_ID}.config
 PW=/etc/libvirt-backup-system/kopia.pw
 export KOPIA_PASSWORD="$(sudo cat "$PW")"
 
@@ -159,8 +160,8 @@ sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot li
 sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" policy show --global
 ```
 
-(Substitute the file under `kopia-configs/` matching your `HOST_ID` if it
-differs from `hostname`.)
+(Substitute the file under `kopia-configs/` matching your configured
+`HOST_ID` if you changed it from the default machine-id value.)
 
 For a peer host's repo:
 
@@ -182,8 +183,8 @@ coordination. Daily quick maintenance, weekly full maintenance.
 Manual run:
 
 ```sh
-sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run
-sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --safety=full
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full --safety=full
 ```
 
 Quick maintenance compacts indexes and runs short-running cleanups; full
@@ -263,7 +264,7 @@ snapshots) is separate and happens automatically per the global policy.
 To force a GC pass after a manual retention adjustment:
 
 ```sh
-sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full --safety=full
 ```
 
 The local maintenance units run against this host's own repo. Setup does not

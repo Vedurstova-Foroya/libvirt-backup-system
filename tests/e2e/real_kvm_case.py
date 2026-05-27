@@ -165,10 +165,10 @@ def _repo_size_bytes(repo_path: Path) -> int:
 
 def _pick_restore_point(bin_path: Path, vm_uuid: str) -> str:
     proc = _run([str(bin_path), "list-restore-points"])
-    for line in proc.stdout.splitlines():
+    for line in proc.stdout.splitlines()[1:]:
         parts = line.split()
-        if len(parts) >= 2 and parts[0] == vm_uuid:
-            return parts[1]
+        if len(parts) >= 4 and parts[1] == vm_uuid:
+            return parts[3]
     raise AssertionError(f"no restore point listed for {vm_uuid} in:\n{proc.stdout}")
 
 

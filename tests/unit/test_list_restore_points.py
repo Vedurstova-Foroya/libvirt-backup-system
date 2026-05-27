@@ -81,6 +81,7 @@ def _stub_repo_helpers(
     if local_config_present:
         local_cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: local_cfg)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: local_cfg if local_config_present else None)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: cfg.prefix / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
     monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: peers or [])
@@ -118,21 +119,19 @@ def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatc
     assert rows == []
 
 
-def test_local_rows_reconnects_when_repo_exists_but_config_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_local_rows_reconnects_before_listing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg, local_config_present=False)
-    monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
+    calls: list[Config] = []
 
-    def fake_ensure(_cfg: Config, *, apply_global_policy: bool = True) -> int:
-        assert apply_global_policy is False
-        local_cfg.write_text("{}", encoding="utf-8")
-        return 0
+    def fake_ensure(_cfg: Config) -> Path:
+        calls.append(_cfg)
+        return local_cfg
 
-    monkeypatch.setattr(kopia_repo, "ensure_local_repo", fake_ensure)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", fake_ensure)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot()]})
     assert list_restore_points._local_rows(cfg)[0].snapshot_id == "snap-1"
+    assert calls == [cfg]
 
 
 def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,6 +218,7 @@ def test_enumerate_backups_combines_local_and_peer_rows(tmp_path: Path, monkeypa
     peer_cfg = cfg.prefix / "kopia-peer.config"
     peer_cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: local_cfg)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: local_cfg)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: cfg.prefix / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
     monkeypatch.setattr(

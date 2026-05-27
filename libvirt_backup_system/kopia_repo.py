@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import kopia_client
+from . import kopia_client, preflight_host_id
 from .config import Config, prefixed
 from .logging_json import event
 from .shell import CommandError
@@ -75,6 +75,10 @@ def local_config_file(config: Config) -> Path:
 
 def peer_config_file(config: Config, host_id: str) -> Path:
     return kopia_config_root(config) / f"{host_id}.config"
+
+
+def peer_host_id_failure(host_id: str) -> str | None:
+    return preflight_host_id.validation_failure(host_id, label="peer HOST_ID")
 
 
 def _ensure_config_dir(config: Config) -> Path:
@@ -142,6 +146,37 @@ def ensure_local_repo(config: Config, *, apply_global_policy: bool = True) -> in
     return 0
 
 
+def ensure_local_connected(config: Config) -> Path | None:
+    """Reconnect the local kopia config to this host's configured repo."""
+    _ensure_config_dir(config)
+    password = password_file_path(config)
+    if not password.is_file():
+        event("error", "kopia password file missing", path=str(password))
+        return None
+    try:
+        repo_path = local_repo_path(config)
+    except ValueError as exc:
+        event("error", "kopia repo path rejected", error=str(exc))
+        return None
+    if not (repo_path / "kopia.repository.f").is_file():
+        event("error", "local kopia repo missing", path=str(repo_path))
+        return None
+    config_file = local_config_file(config)
+    cache = cache_dir(config)
+    cache.mkdir(parents=True, exist_ok=True)
+    try:
+        kopia_client.repository_connect_filesystem(
+            config_file=config_file,
+            repo_path=repo_path,
+            password_file=password,
+            cache_dir=cache,
+        )
+    except CommandError as exc:
+        event("error", "kopia local repo connect failed", stderr=exc.result.stderr.strip())
+        return None
+    return config_file
+
+
 def _int_or_none(value: str) -> int | None:
     if not value.strip():
         return None
@@ -181,9 +216,16 @@ def ensure_peer_connected(config: Config, host_id: str) -> Path | None:
     Returns ``None`` on connect failure; callers log the failure with context
     they already have.
     """
+    host_failure = peer_host_id_failure(host_id)
+    if host_failure is not None:
+        event("error", "kopia peer host_id rejected", host_id=host_id, reason=host_failure)
+        return None
     _ensure_config_dir(config)
     backup_path = config.path_value("BACKUP_PATH")
     peer_repo = backup_path / host_id / REPO_DIR_NAME
+    if not subpath_is_safe(backup_path, peer_repo):
+        event("error", "kopia peer repo path rejected", host_id=host_id, path=str(peer_repo))
+        return None
     if not (peer_repo / "kopia.repository.f").is_file():
         return None
     config_file = peer_config_file(config, host_id)

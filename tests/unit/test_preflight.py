@@ -57,6 +57,12 @@ def test_required_present_rejects_leading_or_trailing_whitespace(tmp_path: Path)
     assert any("leading or trailing whitespace" in failure for failure in failures)
 
 
+def test_required_present_rejects_internal_whitespace(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path, host_id="bad host")
+    failures = preflight._validate_required_present(cfg)
+    assert any("must not contain whitespace" in failure for failure in failures)
+
+
 def test_required_present_flags_empty_required_keys(tmp_path: Path) -> None:
     # Any required key going empty should surface a clean "must not be empty"
     # failure. We use SYSTEMD_ON_CALENDAR as a stand-in for the

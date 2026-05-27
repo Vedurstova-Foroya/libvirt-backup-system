@@ -105,7 +105,7 @@ Behavior:
   the existing file (useful for refreshing systemd units without re-typing).
 
 Or install first, edit the environment file, validate it, and then start the
-timer:
+schedules:
 
 ```sh
 sudo python3 -m libvirt_backup_system install --kopia-password=<value> \
@@ -119,7 +119,7 @@ sudo libvirt-backup-system doctor
 The first install leaves `BACKUP_PATH` blank unless it is supplied in the
 environment. When `BACKUP_PATH` is blank, systemd unit installation is
 skipped. Run `start` after setting it so the service gets the matching
-`RequiresMountsFor=` dependency and the timer is activated.
+`RequiresMountsFor=` dependency and the timers are activated.
 
 Only `BACKUP_PATH` is honored from the process environment during a first
 install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`,
@@ -180,14 +180,14 @@ mode `0600 root:root` that fallback produces no rows, and the operator
 either re-runs `sudo true` to refresh the token or copy-pastes from a
 `sudo libvirt-backup-system list-restore-points` run instead.
 
-The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
+The default backup timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
 `install` writes the units when `BACKUP_PATH` is already configured, but
-does not enable the timer. `start` re-renders the units from the current
+does not enable the timers. `start` re-renders the units from the current
 environment file, reloads systemd, and enables/starts
 `libvirt-backup-system.timer`, `libvirt-backup-system-maintenance.timer`,
 `libvirt-backup-system-maintenance-full.timer`, and
 `libvirt-backup-system-verify.timer` after `check` has passed. Activating
-the backup timer does not run a backup immediately;
+the timers does not run a backup immediately;
 the next backup waits for the configured schedule unless you run
 `sudo libvirt-backup-system run`.
 
@@ -199,7 +199,7 @@ in the exact environment the scheduled timer uses — same `EnvironmentFile=`,
 output is replayed to the operator's terminal by filtering the journal on the
 run's `InvocationID`.
 
-For `run`, the timer must already be loaded, enabled, and active. If a
+For `run`, the backup timer must already be loaded, enabled, and active. If a
 systemd host has not successfully run `start`, manual `run` exits nonzero
 with a "backup service is not running" error instead of starting an
 unregistered ad-hoc backup.

@@ -8,6 +8,20 @@ from .logging_json import event
 HOST_ID_STATE_FILE = "host-id"
 
 
+def validation_failure(host_id: str, *, label: str = "HOST_ID", allow_empty: bool = False) -> str | None:
+    if not host_id.strip():
+        return None if allow_empty else f"{label} must not be empty"
+    if host_id in {".", ".."} or "/" in host_id or "\\" in host_id:
+        return f"{label} must not contain path separators or be '.'/'..'"
+    if any(ord(c) < 32 or ord(c) == 127 for c in host_id):
+        return f"{label} must not contain control characters or NUL"
+    if host_id != host_id.strip():
+        return f"{label} must not have leading or trailing whitespace"
+    if any(c.isspace() for c in host_id):
+        return f"{label} must not contain whitespace"
+    return None
+
+
 def host_id_state_path(config: Config) -> Path:
     return prefixed("/var/lib/libvirt-backup-system", config.prefix) / HOST_ID_STATE_FILE
 

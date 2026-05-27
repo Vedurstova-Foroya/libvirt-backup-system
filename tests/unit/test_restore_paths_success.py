@@ -209,3 +209,32 @@ def test_restore_turnkey_different_host(
     assert source is not None
     assert source.get("file") == str(streamed[0])
     assert "/var/lib/libvirt/images" not in (source.get("file") or "")
+
+
+def test_restore_turnkey_same_host_when_local_uuid_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path, host_id="host-a")
+    row = make_row(tmp_path, host_id="host-a")
+    manifest, _ = _manifest_with_local_disks(tmp_path)
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    _install_meta_writer(monkeypatch, manifest)
+    _install_disk_snapshot(monkeypatch)
+    streamed = _record_stream_dests(monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        calls.append(args)
+        return CommandResult(args, 1, "", "no domain")
+
+    monkeypatch.setattr(restore, "run", fake_run)
+    captured: dict[str, Any] = {}
+
+    def fake_define(_cfg: Config, path: Path, _vm_uuid: str, name: str | None) -> bool:
+        captured["name"] = name
+        captured["path"] = path
+        return True
+
+    monkeypatch.setattr(restore, "define_restored_domain", fake_define)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP, verbose=False) == 0
+    assert captured["name"] == "myvm"
+    assert streamed == [captured["path"].parent / "vda.qcow2"]
+    assert "destroy" not in {token for args in calls for token in args}

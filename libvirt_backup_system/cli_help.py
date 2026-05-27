@@ -26,7 +26,7 @@ with ``sudoedit`` and then run ``start`` to refresh the systemd units."""
 PROGRAM_EPILOG = """\
 Common workflows:
 
-  First install and activate the timer:
+  First install and activate the schedules:
     sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
          --kopia-password-file=/root/kopia.pw \\
          --acknowledge-password-loss
@@ -107,9 +107,9 @@ Install libvirt-backup-system: copy the package to /opt/libvirt-backup-system,
 write the /usr/local/bin/libvirt-backup-system wrapper, drop the default
 /etc/libvirt-backup-system/libvirt-backup.env (preserving an existing one),
 render the systemd unit files, lay down the shared kopia password file at
-KOPIA_PASSWORD_FILE, and install the fish completion script. The timer is
+KOPIA_PASSWORD_FILE, and install the fish completion script. The timers are
 NOT enabled automatically -- run ``check`` and then ``start`` after editing
-the env file to activate it.
+the env file to activate them.
 
 For a one-shot first install with BACKUP_PATH and a kopia password:
 
@@ -153,7 +153,8 @@ DOCTOR_DESCRIPTION = """\
 Superset of ``check``: runs the full preflight layer and then validates that
 the wrapper, opt directory, and config file are in place; the systemd unit
 files match what a fresh install would render (catches drift after editing
-the env file without re-running install); the timer is enabled and active;
+the env file without re-running install); all schedule timers are enabled and
+active;
 the local kopia repo is connected and accessible; local kopia maintenance
 and verify dry-runs pass; peer repos are reachable read-only with the shared
 password; and the most recent libvirt-backup-system.service run completed
@@ -174,7 +175,7 @@ streamed disk-by-disk into the local kopia repo via
 ``kind:meta`` snapshot carries the manifest with the domain XML and disk
 listing so restore can reconstruct the VM without re-asking libvirt.
 
-Manual runs require the systemd timer to have been activated first with
+Manual runs require the systemd schedule to have been activated first with
 ``start`` -- on a systemd host, ``run`` exits non-zero with
 ``backup service is not running`` instead of starting an ad-hoc backup if
 the unit has not been installed and activated.
@@ -185,17 +186,19 @@ time and refreshed on ``start``; old snapshots are reaped by the periodic
 ``kopia maintenance`` units rather than at the tail of ``run``."""
 
 
-START_HELP = "Install/refresh systemd units from the env file and activate the timer."
+START_HELP = "Install/refresh systemd units from the env file and activate timers."
 START_DESCRIPTION = """\
 Render the systemd unit files from the current env file, reload systemd, and
-enable + start libvirt-backup-system.timer (and the kopia maintenance and
-verify timers). This activates the schedule only -- it does not run a backup
-immediately. Use ``start`` after ``install`` and after every edit to
-/etc/libvirt-backup-system/libvirt-backup.env that changes BACKUP_PATH or
-SYSTEMD_ON_CALENDAR. Use ``run`` for a manual backup."""
+enable + start libvirt-backup-system.timer,
+libvirt-backup-system-maintenance.timer,
+libvirt-backup-system-maintenance-full.timer, and
+libvirt-backup-system-verify.timer. This activates the schedules only -- it
+does not run a backup immediately. Use ``start`` after ``install`` and after
+every edit to /etc/libvirt-backup-system/libvirt-backup.env that changes
+BACKUP_PATH or timer settings. Use ``run`` for a manual backup."""
 
 
-STATUS_HELP = "Print systemctl status for the installed timer and service."
+STATUS_HELP = "Print systemctl status for the installed timers and services."
 
 
 LIST_VMS_HELP = "List selected VMs after VM_BLACKLIST is applied."

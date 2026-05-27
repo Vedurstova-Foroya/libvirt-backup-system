@@ -14,6 +14,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 def _write_password(path: Path, value: str = "swordfish") -> Path:
     path.write_text(value, encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -55,6 +56,14 @@ def test_password_unreadable_raises_command_error(tmp_path: Path) -> None:
     with pytest.raises(CommandError) as info:
         kopia_client.repository_status(config_file=tmp_path / "c", password_file=tmp_path / "missing")
     assert "kopia password unreadable" in info.value.result.stderr
+
+
+def test_password_insecure_mode_raises_command_error(tmp_path: Path) -> None:
+    password = _write_password(tmp_path / "pw")
+    password.chmod(0o644)
+    with pytest.raises(CommandError) as info:
+        kopia_client.repository_status(config_file=tmp_path / "c", password_file=password)
+    assert "must be mode 600" in info.value.result.stderr
 
 
 def test_repository_create_filesystem_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -84,7 +84,8 @@ surface that `check` covers. Specifically, `doctor` is a superset of
 - All systemd unit and timer files exist on disk with content matching what a
   fresh `install` would render (catches drift after editing the env file
   without re-running install).
-- Backup timer is enabled and active.
+- Backup, maintenance, full-maintenance, and verify timers are enabled and
+  active.
 - Last `libvirt-backup-system.service` run completed cleanly.
 - Local kopia repo connects with the shared password and
   `kopia repository status` is clean.

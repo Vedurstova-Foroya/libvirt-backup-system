@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from libvirt_backup_system import preflight
+from libvirt_backup_system import kopia_password, preflight
 from tests.unit._preflight_helpers import make_config, write_password_file
 
 
@@ -78,7 +78,7 @@ def test_validate_kopia_password_file_root_owner_check_skipped_when_non_root(
     """
     cfg = make_config(tmp_path)
     write_password_file(cfg)
-    monkeypatch.setattr(preflight.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 1000)
     failures = preflight._validate_kopia_password_file(cfg)
     assert failures == []
 
@@ -103,7 +103,7 @@ def test_validate_kopia_password_file_root_owner_enforced_when_root(
     def fake_lstat(self: Path) -> Any:
         return FakeStat(real_lstat(self))
 
-    monkeypatch.setattr(preflight.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 0)
     monkeypatch.setattr(Path, "lstat", fake_lstat)
     failures = preflight._validate_kopia_password_file(cfg)
     assert any("must be owned by root" in failure for failure in failures)

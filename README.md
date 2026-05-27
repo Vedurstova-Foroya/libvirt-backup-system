@@ -18,7 +18,7 @@ sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
      --acknowledge-password-loss
 ```
 
-Then verify the install, activate the timer, and run a health check:
+Then verify the install, activate the schedules, and run a health check:
 
 ```sh
 sudo libvirt-backup-system check
@@ -29,7 +29,8 @@ sudo libvirt-backup-system doctor
 `install` writes the password to `/etc/libvirt-backup-system/kopia.pw` mode 600
 and creates this host's repo at `BACKUP_PATH/<host-id>/kopia-repo/`. `start`
 installs or refreshes the systemd units from the environment file and activates
-the timer. The default schedule is `*-*-* 02:30:00`.
+the backup, maintenance, full-maintenance, and verify schedules. The default
+backup schedule is `*-*-* 02:30:00`.
 
 The shared password is the only thing protecting your backups. Lose it on
 every host and the data is unrecoverable. Store a copy in your secrets vault.

@@ -17,7 +17,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import kopia_client, kopia_repo
 from .config import Config
 from .logging_json import event
 from .shell import CommandError
@@ -80,15 +79,51 @@ def read_password_file(config: Config) -> str:
     Raises ``CommandError`` on mode/owner mismatch so the caller can
     surface a single uniform "fix the password file" message.
     """
+    from . import kopia_repo
+
     path = kopia_repo.password_file_path(config)
-    info = path.lstat()
-    if (info.st_mode & 0o777) != 0o600:
-        raise PermissionError(f"{path} must be mode 600")
-    return path.read_text(encoding="utf-8").rstrip("\n")
+    return read_secure_password_file(path)
+
+
+def password_file_security_failure(path: Path, *, label: str = "kopia password file") -> str | None:
+    """Return a human-readable security failure for ``path``, or ``None``."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return f"{label} missing: {path}; run ``libvirt-backup-system install`` with --kopia-password"
+    except OSError as exc:
+        return f"{label} stat failed: {path}: {exc}"
+    if not stat.S_ISREG(info.st_mode):
+        return f"{label} is not a regular file: {path}"
+    mode = info.st_mode & 0o777
+    if mode != 0o600:
+        return f"{label} must be mode 600 (is {oct(mode)}): {path}"
+    if hasattr(os, "geteuid") and os.geteuid() == 0 and info.st_uid != 0:
+        return f"{label} must be owned by root (is uid {info.st_uid}): {path}"
+    return None
+
+
+def read_secure_password_file(path: Path) -> str:
+    """Read ``path`` only after enforcing the shared password-file contract."""
+    missing = False
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        missing = True
+    except OSError:
+        pass
+    failure = password_file_security_failure(path)
+    if failure is not None:
+        if missing:
+            raise FileNotFoundError(failure)
+        raise PermissionError(failure)
+    return _validate_value(path.read_text(encoding="utf-8").rstrip("\n"))
 
 
 def write_password_file(config: Config, value: str) -> None:
     """Atomically write the password file mode 600, root-owned."""
+    from . import kopia_repo
+
     if not value:
         raise ValueError("kopia password must not be empty")
     path = kopia_repo.password_file_path(config)
@@ -129,6 +164,8 @@ def change_local_password(config: Config, new_value: str) -> int:
     recovery message naming both values rather than silently losing the
     new password mid-rotation.
     """
+    from . import kopia_client, kopia_repo
+
     old_value = read_password_file(config)
     if old_value == new_value:
         event("info", "kopia password unchanged; no rotation needed")
@@ -169,12 +206,4 @@ def change_local_password(config: Config, new_value: str) -> int:
 
 def password_file_is_secure(path: Path) -> bool:
     """Return True iff path exists and is mode 600 (root-owned when we're root)."""
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return False
-    if not stat.S_ISREG(info.st_mode):
-        return False
-    if (info.st_mode & 0o777) != 0o600:
-        return False
-    return not (hasattr(os, "geteuid") and os.geteuid() == 0 and info.st_uid != 0)
+    return password_file_security_failure(path) is None

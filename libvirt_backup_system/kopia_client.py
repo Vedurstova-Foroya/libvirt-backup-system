@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from . import kopia_password
 from .logging_json import event
 from .shell import CommandError, CommandResult, run, run_streamed
 
@@ -51,8 +52,8 @@ def build_kopia_env(password_file: Path, cache_dir: Path | None) -> dict[str, st
     # token; the env-only secret survives ``ps`` and stays out of journald.
     env = dict(os.environ)
     try:
-        env["KOPIA_PASSWORD"] = password_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
+        env["KOPIA_PASSWORD"] = kopia_password.read_secure_password_file(password_file)
+    except (OSError, ValueError) as exc:
         raise CommandError(
             CommandResult(args=[KOPIA_BINARY], returncode=1, stdout="", stderr=f"kopia password unreadable: {exc}")
         ) from exc

@@ -19,8 +19,11 @@ from .logging_json import event
 from .preflight import collect_check_failures, host_id_drift_failures
 from .shell import run
 from .systemd_units import (
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_TIMER_NAME,
     RUN_UNIT_NAME,
     TIMER_UNIT_NAME,
+    VERIFY_TIMER_NAME,
     render_unit_interval_timer,
     render_unit_kopia_service,
     render_unit_service,
@@ -35,6 +38,12 @@ HEALTHY_RUN_RESULTS = frozenset({"", "success"})
 NEVER_FIRED_PROPERTY_VALUES = frozenset({"", "0"})
 DOCTOR_UNIT_NAMES = doctor_units.DOCTOR_UNIT_NAMES
 QUIESCE_FALLBACK_MESSAGE = doctor_quiesce.QUIESCE_FALLBACK_MESSAGE
+SCHEDULE_TIMER_NAMES = (
+    TIMER_UNIT_NAME,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_FULL_TIMER_NAME,
+    VERIFY_TIMER_NAME,
+)
 
 
 def _check_wrapper(root: Path) -> list[str]:
@@ -75,12 +84,13 @@ def _check_runtime_state(root: Path) -> list[str]:
     if not systemctl_available(root):
         return []
     failures: list[str] = []
-    enabled = _systemctl_value(TIMER_UNIT_NAME, "UnitFileState")
-    if enabled != "enabled":
-        failures.append(f"timer not enabled: {TIMER_UNIT_NAME} UnitFileState={enabled or 'unknown'}; run start")
-    active = _systemctl_value(TIMER_UNIT_NAME, "ActiveState")
-    if active != "active":
-        failures.append(f"timer not active: {TIMER_UNIT_NAME} ActiveState={active or 'unknown'}")
+    for timer in SCHEDULE_TIMER_NAMES:
+        enabled = _systemctl_value(timer, "UnitFileState")
+        if enabled != "enabled":
+            failures.append(f"timer not enabled: {timer} UnitFileState={enabled or 'unknown'}; run start")
+        active = _systemctl_value(timer, "ActiveState")
+        if active != "active":
+            failures.append(f"timer not active: {timer} ActiveState={active or 'unknown'}")
     if _systemctl_value(RUN_UNIT_NAME, "NeedDaemonReload") == "yes":
         failures.append(f"systemd needs daemon-reload: {RUN_UNIT_NAME} cached unit is stale; run start")
     last_result = _systemctl_value(RUN_UNIT_NAME, "Result")

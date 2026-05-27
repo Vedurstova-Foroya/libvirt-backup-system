@@ -116,6 +116,33 @@ def test_read_password_file_rejects_wrong_mode(tmp_path: Path) -> None:
         kopia_password.read_password_file(cfg)
 
 
+def test_read_password_file_rejects_non_root_owner_when_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _make_config(tmp_path)
+    _write_password(cfg)
+
+    real_lstat = Path.lstat
+
+    class FakeStat:
+        def __init__(self, real: os.stat_result) -> None:
+            self._real = real
+
+        def __getattr__(self, name: str) -> object:
+            if name == "st_uid":
+                return 1234
+            return getattr(self._real, name)
+
+    def fake_lstat(self: Path) -> object:
+        return FakeStat(real_lstat(self))
+
+    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    with pytest.raises(PermissionError, match="owned by root"):
+        kopia_password.read_password_file(cfg)
+
+
 def test_read_password_file_propagates_missing(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     with pytest.raises(FileNotFoundError):

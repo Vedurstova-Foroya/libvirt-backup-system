@@ -21,6 +21,8 @@ def _failing_verify(**_: Any) -> None:
 
 def test_verify_local_repo_returns_zero_on_success(backup_config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
+    local_cfg = kopia_repo.local_config_file(backup_config)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: local_cfg)
 
     def fake_verify(**kwargs: Any) -> None:
         calls.append(kwargs)
@@ -28,7 +30,7 @@ def test_verify_local_repo_returns_zero_on_success(backup_config: Config, monkey
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", fake_verify)
     assert verify_mod.verify(backup_config) == 0
     # The local-repo path resolves config_file via ``kopia_repo.local_config_file``.
-    assert calls[0]["config_file"] == kopia_repo.local_config_file(backup_config)
+    assert calls[0]["config_file"] == local_cfg
     assert calls[0]["password_file"] == kopia_repo.password_file_path(backup_config)
     assert calls[0]["cache_dir"] == kopia_repo.cache_dir(backup_config)
     assert calls[0]["verify_files_percent"] == 1.0
@@ -37,6 +39,7 @@ def test_verify_local_repo_returns_zero_on_success(backup_config: Config, monkey
 def test_verify_local_repo_returns_one_on_failure(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", _failing_verify)
     assert verify_mod.verify(backup_config) == 1
     err = capsys.readouterr().err
@@ -51,6 +54,8 @@ def test_verify_include_hosts_verifies_local_repo_and_selected_peers(
     peer_a_config = tmp_path / "a.cfg"
     peer_c_config = tmp_path / "c.cfg"
     peer_configs = {"host-a": peer_a_config, "host-c": peer_c_config}
+    local_cfg = kopia_repo.local_config_file(backup_config)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: local_cfg)
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, host_id: peer_configs.get(host_id))
     seen: list[Path] = []
 
@@ -59,7 +64,7 @@ def test_verify_include_hosts_verifies_local_repo_and_selected_peers(
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", fake_verify)
     assert verify_mod.verify(backup_config, include_hosts=["host-a", "host-c"]) == 0
-    assert seen == [kopia_repo.local_config_file(backup_config), peer_a_config, peer_c_config]
+    assert seen == [local_cfg, peer_a_config, peer_c_config]
 
 
 def test_verify_peers_returns_one_when_any_peer_fails(
@@ -68,6 +73,7 @@ def test_verify_peers_returns_one_when_any_peer_fails(
     peer_a_config = tmp_path / "a.cfg"
     peer_b_config = tmp_path / "b.cfg"
     peer_configs = {"host-a": peer_a_config, "host-b": peer_b_config}
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, host_id: peer_configs.get(host_id))
 
     def selective(**kwargs: Any) -> None:
@@ -82,6 +88,7 @@ def test_verify_include_hosts_returns_one_when_local_repo_fails(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     peer_config = tmp_path / "a.cfg"
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: peer_config)
 
     def selective(**kwargs: Any) -> None:
@@ -96,6 +103,7 @@ def test_verify_include_hosts_returns_one_when_requested_peer_unavailable(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     called: list[Any] = []
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: None)
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **kw: called.append(kw))
     assert verify_mod.verify(backup_config, include_hosts=["other-host"]) == 1
@@ -105,11 +113,26 @@ def test_verify_include_hosts_returns_one_when_requested_peer_unavailable(
     assert "other-host" in err
 
 
+@pytest.mark.parametrize("host_id", ["", "   ", "bad/host", "bad\\host", ".", "..", "bad host", "bad\x01host"])
+def test_verify_include_hosts_rejects_unsafe_host_ids(
+    backup_config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], host_id: str
+) -> None:
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
+    monkeypatch.setattr(
+        kopia_repo, "ensure_peer_connected", lambda *_a, **_kw: pytest.fail("unsafe peer must not connect")
+    )
+    monkeypatch.setattr(kopia_snapshots, "snapshot_verify", _ok_verify)
+
+    assert verify_mod.verify(backup_config, include_hosts=[host_id]) == 1
+    assert "requested peer host_id rejected" in capsys.readouterr().err
+
+
 def test_verify_peers_returns_zero_when_iter_returns_empty(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     called: list[Any] = []
 
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: None)
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **kw: called.append(kw))
     assert verify_mod.verify(backup_config, include_hosts=[]) == 0
@@ -119,6 +142,13 @@ def test_verify_peers_returns_zero_when_iter_returns_empty(
 def test_verify_success_emits_info_event(
     backup_config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: kopia_repo.local_config_file(backup_config))
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", _ok_verify)
     assert verify_mod.verify(backup_config) == 0
     assert "verify passed" in capsys.readouterr().out
+
+
+def test_verify_returns_one_when_local_reconnect_fails(backup_config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **_kw: pytest.fail("must not verify stale config"))
+    assert verify_mod.verify(backup_config) == 1

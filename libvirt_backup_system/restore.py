@@ -1,11 +1,4 @@
-"""Restore a backup run identified by ``(vm-uuid, timestamp)``.
-
-Kopia-engine restore: find the meta snapshot by tags, materialize the
-manifest, then for each disk in the manifest pull the kopia disk snapshot
-to a qcow2 file via ``qemu-img convert``. The ``overwrite`` path takes
-over an existing local VM with the same UUID; the ``turnkey`` path defines
-the VM fresh under ``RESTORE_STAGING_DIR``.
-"""
+"""Restore a backup run identified by ``(vm-uuid, timestamp)``."""
 
 from __future__ import annotations
 
@@ -26,6 +19,14 @@ from .restore_io import disk_snapshot_id as _disk_snapshot_id
 from .restore_io import manifest_matches_request as _manifest_matches_request
 from .restore_io import restore_manifest as _restore_manifest
 from .restore_io import stream_disk_to_qcow2 as _stream_disk_to_qcow2
+from .restore_overwrite import (
+    _cleanup_paths,
+    _overwrite_dest_map,
+    _overwrite_temp_dest_map,
+    _replace_overwrite_disks,  # noqa: F401 - re-exported for focused unit tests.
+    _replace_overwrite_disks_with_backups,
+    _rollback_overwrite_disks,
+)
 from .shell import CommandError, run
 from .storage import subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid
@@ -113,14 +114,29 @@ def _shutdown_and_undefine(config: Config, vm_name: str) -> bool:
     return True
 
 
-def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str, Path]) -> bool:
-    """Restore each disk in the manifest to the path ``dest_map[disk.target]``.
+def _inactive_domain_xml(config: Config, vm_name: str) -> str | None:
+    try:
+        return run(["virsh", "-c", config.get("LIBVIRT_URI"), "dumpxml", "--inactive", "--", vm_name]).stdout
+    except CommandError as exc:
+        event("error", "dumpxml failed before restore", vm=vm_name, stderr=exc.result.stderr.strip())
+    except OSError as exc:
+        event("error", "virsh dumpxml unavailable", vm=vm_name, error=str(exc))
+    return None
 
-    The caller chooses where each disk lands. For overwrite, that is the
-    disk's original ``source_path``; for turnkey, a path under the staging
-    dir. Any pre-existing file at ``dest`` is removed before
-    ``qemu-img convert`` writes the new qcow2.
-    """
+
+def _define_domain_xml(config: Config, xml_path: Path, *, log_context: str) -> bool:
+    try:
+        run(["virsh", "-c", config.get("LIBVIRT_URI"), "define", str(xml_path)])
+    except CommandError as exc:
+        event("error", f"{log_context} failed", stderr=exc.result.stderr.strip())
+        return False
+    except OSError as exc:
+        event("error", f"{log_context} unavailable", error=str(exc))
+        return False
+    return True
+
+
+def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str, Path]) -> bool:
     for disk in ctx.manifest.disks:
         dest = dest_map[disk.target]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -133,51 +149,6 @@ def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str,
             return False
         if ctx.verbose:
             event("info", "restored disk", target=disk.target, path=str(dest))
-    return True
-
-
-def _overwrite_dest_map(manifest: Manifest) -> dict[str, Path]:
-    return {disk.target: Path(disk.source_path) for disk in manifest.disks}
-
-
-def _overwrite_temp_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
-    return {target: dest.with_name(f".{dest.name}.{target}.restore.tmp") for target, dest in dest_map.items()}
-
-
-def _overwrite_backup_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
-    return {target: dest.with_name(f".{dest.name}.{target}.restore.old") for target, dest in dest_map.items()}
-
-
-def _cleanup_paths(paths: dict[str, Path]) -> None:
-    for path in paths.values():
-        with suppress(FileNotFoundError):
-            path.unlink()
-
-
-def _rollback_overwrite_disks(backup_map: dict[str, Path], dest_map: dict[str, Path]) -> None:
-    for target, backup in backup_map.items():
-        if not backup.exists():
-            continue
-        dest = dest_map[target]
-        with suppress(OSError):
-            backup.replace(dest)
-
-
-def _replace_overwrite_disks(temp_map: dict[str, Path], dest_map: dict[str, Path]) -> bool:
-    backup_map = _overwrite_backup_dest_map(dest_map)
-    _cleanup_paths(backup_map)
-    for target, temp in temp_map.items():
-        dest = dest_map[target]
-        backup = backup_map[target]
-        try:
-            if dest.exists():
-                dest.replace(backup)
-            temp.replace(dest)
-        except OSError as exc:
-            event("error", "restored disk replace failed", target=target, src=str(temp), dest=str(dest), error=str(exc))
-            _rollback_overwrite_disks(backup_map, dest_map)
-            return False
-    _cleanup_paths(backup_map)
     return True
 
 
@@ -221,24 +192,36 @@ def _write_restored_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
     return path
 
 
+def _write_original_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
+    path = ctx.staging / "libvirt-backup-system-original.xml"
+    path.write_text(domain_xml, encoding="utf-8")
+    return path
+
+
 def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> int:
     dest_map = _overwrite_dest_map(ctx.manifest)
     temp_map = _overwrite_temp_dest_map(dest_map)
     if not _materialize_disks(ctx, config, temp_map):
         _cleanup_paths(temp_map)
         return 1
+    original_xml = _inactive_domain_xml(config, vm_name)
+    if original_xml is None:
+        _cleanup_paths(temp_map)
+        return 1
+    original_xml_path = _write_original_xml(ctx, original_xml)
     if not _shutdown_and_undefine(config, vm_name):
         _cleanup_paths(temp_map)
         return 1
-    if not _replace_overwrite_disks(temp_map, dest_map):
+    backup_map = _replace_overwrite_disks_with_backups(temp_map, dest_map)
+    if backup_map is None:
         _cleanup_paths(temp_map)
         return 1
-    # The manifest XML already references these original paths, so no
-    # source-path rewrite is necessary; identity (name + uuid) is fixed up
-    # downstream by ``define_restored_domain``.
     xml_path = _write_restored_xml(ctx, ctx.manifest.domain_xml)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
+        _rollback_overwrite_disks(backup_map, dest_map)
+        _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
+    _cleanup_paths(backup_map)
     event("info", "restore overwrite completed", vm=vm_name, output=str(ctx.staging))
     return 0
 

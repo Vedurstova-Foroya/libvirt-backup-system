@@ -171,7 +171,13 @@ def test_disk_snapshot_id_returns_single_hit(tmp_path: Path, monkeypatch: pytest
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_list", fake_list)
     assert restore._disk_snapshot_id(make_config(tmp_path), make_row(tmp_path), "vda") == "snap-xyz"
-    assert captured["tags"] == {"kind": "disk", "vm-uuid": ALPHA_UUID, "run-id": "run-1", "disk": "vda"}
+    assert captured["tags"] == {
+        "kind": "disk",
+        "vm-uuid": ALPHA_UUID,
+        "run-id": "run-1",
+        "disk": "vda",
+        "host": "host-a",
+    }
 
 
 @pytest.mark.parametrize(
