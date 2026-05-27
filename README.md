@@ -12,7 +12,8 @@ secrets vault, and use the same value on every host:
 
 ```sh
 export KOPIA_PW='<shared-password-from-vault>'
-sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install \
+sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
+     python3 -m libvirt_backup_system install \
      --kopia-password-env KOPIA_PW \
      --acknowledge-password-loss
 ```

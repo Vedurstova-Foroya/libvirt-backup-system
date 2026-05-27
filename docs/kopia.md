@@ -87,7 +87,7 @@ matches; hard-fails on a mismatch.
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
 sudo libvirt-backup-system change-password --new-kopia-password-file=/path
 echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
-sudo NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
+sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Per host:
@@ -154,9 +154,9 @@ CFG=/var/lib/libvirt-backup-system/kopia-configs/$(hostname).config
 PW=/etc/libvirt-backup-system/kopia.pw
 export KOPIA_PASSWORD="$(sudo cat "$PW")"
 
-sudo -E kopia --config-file="$CFG" repository status
-sudo -E kopia --config-file="$CFG" snapshot list --all
-sudo -E kopia --config-file="$CFG" policy show --global
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" repository status
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot list --all
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" policy show --global
 ```
 
 (Substitute the file under `kopia-configs/` matching your `HOST_ID` if it
@@ -166,7 +166,7 @@ For a peer host's repo:
 
 ```sh
 CFG=/var/lib/libvirt-backup-system/kopia-configs/host-a.config
-sudo -E kopia --config-file="$CFG" snapshot list --all --tags=vm-uuid:<uuid>
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot list --all --tags=vm-uuid:<uuid>
 ```
 
 `doctor` lays these per-peer configs down as a side effect of its smoke
@@ -182,8 +182,8 @@ coordination. Daily quick maintenance, weekly full maintenance.
 Manual run:
 
 ```sh
-sudo -E kopia --config-file="$CFG" maintenance run
-sudo -E kopia --config-file="$CFG" maintenance run --full
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full
 ```
 
 Quick maintenance compacts indexes and runs short-running cleanups; full
@@ -206,7 +206,7 @@ sudo libvirt-backup-system verify --include-hosts=host-a,host-b
 Manual verify of a single snapshot:
 
 ```sh
-sudo -E kopia --config-file="$CFG" snapshot verify --max-failures=0 <snap-id>
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot verify --max-failures=0 <snap-id>
 ```
 
 ## Disaster recovery: lost host
@@ -238,13 +238,13 @@ replicating offsite sometimes pair the two.
 **Direct repo-to-repo sync.** On a host with both repos connected:
 
 ```sh
-sudo -E kopia --config-file="$CFG" snapshot sync-to filesystem --path /mnt/offsite/host-a/kopia-repo
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot sync-to filesystem --path /mnt/offsite/host-a/kopia-repo
 ```
 
 Or via rclone for cloud targets:
 
 ```sh
-sudo -E kopia --config-file="$CFG" repository sync-to rclone --remote-path s3:my-bucket/host-a-repo
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" repository sync-to rclone --remote-path s3:my-bucket/host-a-repo
 ```
 
 The sync runs while backups continue on the primary; kopia's filesystem
@@ -263,7 +263,7 @@ snapshots) is separate and happens automatically per the global policy.
 To force a GC pass after a manual retention adjustment:
 
 ```sh
-sudo -E kopia --config-file="$CFG" maintenance run --full
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" maintenance run --full
 ```
 
 The local maintenance units run against this host's own repo. Setup does not

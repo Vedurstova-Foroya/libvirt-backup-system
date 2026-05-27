@@ -69,7 +69,8 @@ every host. The exact same install command runs everywhere:
 
 ```sh
 export KOPIA_PW='<shared-password-from-vault>'
-sudo env BACKUP_PATH=/mnt/qnap-backups python3 -m libvirt_backup_system install \
+sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
+     python3 -m libvirt_backup_system install \
      --kopia-password-env KOPIA_PW \
      --acknowledge-password-loss
 ```
@@ -84,7 +85,7 @@ echo -n "$PW" | sudo python3 -m libvirt_backup_system install --kopia-password-f
 Or use an env var:
 
 ```sh
-sudo KOPIA_PW="$PW" python3 -m libvirt_backup_system install --kopia-password-env=KOPIA_PW \
+sudo env KOPIA_PW="$PW" python3 -m libvirt_backup_system install --kopia-password-env=KOPIA_PW \
   --acknowledge-password-loss
 ```
 
@@ -182,8 +183,11 @@ either re-runs `sudo true` to refresh the token or copy-pastes from a
 The default timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
 `install` writes the units when `BACKUP_PATH` is already configured, but
 does not enable the timer. `start` re-renders the units from the current
-environment file, reloads systemd, and enables/starts the timer after
-`check` has passed. Activating the timer does not run a backup immediately;
+environment file, reloads systemd, and enables/starts
+`libvirt-backup-system.timer`, `libvirt-backup-system-maintenance.timer`,
+`libvirt-backup-system-maintenance-full.timer`, and
+`libvirt-backup-system-verify.timer` after `check` has passed. Activating
+the backup timer does not run a backup immediately;
 the next backup waits for the configured schedule unless you run
 `sudo libvirt-backup-system run`.
 

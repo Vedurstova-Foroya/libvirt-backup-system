@@ -137,17 +137,14 @@ def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str,
 
 
 def _overwrite_dest_map(manifest: Manifest) -> dict[str, Path]:
-    """Per-disk destination paths for the overwrite branch: the original locations."""
     return {disk.target: Path(disk.source_path) for disk in manifest.disks}
 
 
 def _overwrite_temp_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
-    """Sibling temporary paths used before destructive overwrite starts."""
     return {target: dest.with_name(f".{dest.name}.{target}.restore.tmp") for target, dest in dest_map.items()}
 
 
 def _overwrite_backup_dest_map(dest_map: dict[str, Path]) -> dict[str, Path]:
-    """Sibling rollback paths for original disks during overwrite replace."""
     return {target: dest.with_name(f".{dest.name}.{target}.restore.old") for target, dest in dest_map.items()}
 
 
@@ -299,6 +296,4 @@ def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = Tru
     return _restore_turnkey(config, ctx)
 
 
-# Kept as a thin entry point so cli.py can call the restore module without
-# threading more state through.
 __all__ = ["RESTORE_STAGING_DIR", "restore"]

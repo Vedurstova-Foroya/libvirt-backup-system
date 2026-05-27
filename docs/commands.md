@@ -12,7 +12,7 @@ global retention/compression policy applied.
 sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
 sudo libvirt-backup-system install --kopia-password-file=/path/to/file --acknowledge-password-loss
 echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=- --acknowledge-password-loss
-sudo KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
+sudo env KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
 ```
 
 On first install, `--acknowledge-password-loss` is required before a newly
@@ -45,7 +45,7 @@ rewrap the master key, atomically replace the password file.
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
 sudo libvirt-backup-system change-password --new-kopia-password-file=/path
 echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
-sudo NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
+sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Run the same command on every host. Order does not matter; each host rotates
@@ -101,10 +101,13 @@ sudo libvirt-backup-system doctor
 
 Installs or refreshes the systemd unit files from the current environment
 file, reloads systemd, refreshes the kopia global retention/compression
-policy, and enables/starts `libvirt-backup-system.timer`. Activates the
-schedule only; does not run a backup immediately. Use after `install`,
-after editing `/etc/libvirt-backup-system/libvirt-backup.env`, and after
-`check` has passed.
+policy, and enables/starts `libvirt-backup-system.timer`,
+`libvirt-backup-system-maintenance.timer`,
+`libvirt-backup-system-maintenance-full.timer`, and
+`libvirt-backup-system-verify.timer`. Activates the schedules only; does
+not run a backup immediately. Use after `install`, after editing
+`/etc/libvirt-backup-system/libvirt-backup.env`, and after `check` has
+passed.
 
 ```sh
 sudo libvirt-backup-system start

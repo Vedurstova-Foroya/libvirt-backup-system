@@ -27,7 +27,7 @@ PROGRAM_EPILOG = """\
 Common workflows:
 
   First install and activate the timer:
-    sudo BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
+    sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
          --kopia-password-file=/root/kopia.pw \\
          --acknowledge-password-loss
     sudoedit /etc/libvirt-backup-system/libvirt-backup.env
@@ -113,7 +113,7 @@ the env file to activate it.
 
 For a one-shot first install with BACKUP_PATH and a kopia password:
 
-  sudo BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
+  sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
        --kopia-password-file=/root/kopia.pw \\
        --acknowledge-password-loss
 

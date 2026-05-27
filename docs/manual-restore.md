@@ -47,12 +47,13 @@ Pick the source host's repo on the NFS mount:
 ```sh
 SRC=/mnt/qnap-backups/host-a/kopia-repo
 PW=/etc/libvirt-backup-system/kopia.pw
+export KOPIA_PASSWORD="$(sudo cat "$PW")"
 ```
 
 Connect a local kopia config-file to the repo read-only:
 
 ```sh
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
      repository connect filesystem --path "$SRC" --readonly
 ```
@@ -60,7 +61,7 @@ sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
 List the meta snapshots for the VM you want to restore:
 
 ```sh
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
      snapshot list --all --json --tags=vm-uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa --tags=kind:meta
 ```
@@ -72,7 +73,7 @@ Pull the meta snapshot into a staging dir:
 
 ```sh
 sudo mkdir -p /var/tmp/lbs-restore/meta
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
      snapshot restore <meta-snap-id> /var/tmp/lbs-restore/meta
 cat /var/tmp/lbs-restore/meta/manifest.json
@@ -83,7 +84,7 @@ For each disk in the manifest, find its disk snapshot via the shared
 `run-id` tag:
 
 ```sh
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
      snapshot list --all --json \
        --tags=run-id:<run-id-from-manifest> \
@@ -96,9 +97,9 @@ sparse qcow2 on local storage:
 
 ```sh
 sudo mkdir -p /var/tmp/lbs-restore/disks
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
-     snapshot restore <disk-snap-id>/vda.raw - \
+     snapshot restore --shallow=0 <disk-snap-id>/vda.raw - \
    | sudo qemu-img convert -f raw -O qcow2 -S 4096 - /var/tmp/lbs-restore/disks/vda.qcow2
 ```
 
@@ -107,7 +108,7 @@ Repeat for each disk in the manifest.
 To verify a single snapshot before relying on it:
 
 ```sh
-sudo KOPIA_PASSWORD="$(cat "$PW")" kopia \
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
      snapshot verify --max-failures=0 <snap-id>
 ```
