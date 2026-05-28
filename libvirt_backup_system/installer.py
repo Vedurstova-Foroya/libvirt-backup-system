@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import kopia_password, kopia_repo
+from . import kopia_password, kopia_repo, preflight
 from .config import Config, default_config_path, prefixed, root_prefix
 from .fish_completion import install_fish_completion
 from .installer_binaries import BinaryInstallError, install_kopia, install_nbdcopy
@@ -38,13 +38,7 @@ from .systemd_units import (
     validate_systemd_path,
 )
 
-__all__ = [
-    "INSTALL_TIME_ENV_KEYS",
-    "UNIT_SERVICE",
-    "UNIT_TIMER",
-    "install",
-    "uninstall",
-]
+__all__ = ["INSTALL_TIME_ENV_KEYS", "UNIT_SERVICE", "UNIT_TIMER", "install", "uninstall"]
 
 
 def install(
@@ -102,13 +96,14 @@ def _install_pinned_binaries(root: Path) -> int:
 
 
 def _ensure_kopia_repo(cfg: Config) -> int:
-    """Create or connect the local kopia repo using the password file.
-
-    Skipped when BACKUP_PATH is empty (the env file still needs editing) —
-    the operator will run ``start`` later, which finishes the wiring.
-    """
+    """Create or connect the local kopia repo when BACKUP_PATH is configured."""
     if not cfg.get("BACKUP_PATH").strip():
         return 0
+    failures = preflight.repo_creation_failures(cfg)
+    for failure in failures:
+        event("error", "kopia repo preflight failed", reason=failure)
+    if failures:
+        return 1
     return kopia_repo.ensure_local_repo(cfg, apply_global_policy=True)
 
 

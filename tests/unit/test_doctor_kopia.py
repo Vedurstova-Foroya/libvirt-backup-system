@@ -16,6 +16,7 @@ from tests.unit._doctor_helpers import make_config
 def _stub_local_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cfg_file: Path) -> None:
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: cfg_file)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: cfg_file)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
 
@@ -44,12 +45,12 @@ def test_check_local_kopia_repo_rejects_invalid_repo_path(tmp_path: Path, monkey
     assert failures == ["local kopia repo path rejected: KOPIA_REPO_PATH must stay within BACKUP_PATH"]
 
 
-def test_check_local_kopia_repo_missing_config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_local_kopia_repo_reports_reconnect_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
-    monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: tmp_path / "absent.config")
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
     failures = doctor._check_local_kopia_repo(cfg)
-    assert any("local kopia config-file missing" in failure for failure in failures)
+    assert any("local kopia repo did not connect cleanly" in failure for failure in failures)
 
 
 def test_check_local_kopia_repo_status_command_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,6 +59,7 @@ def test_check_local_kopia_repo_status_command_error(tmp_path: Path, monkeypatch
     cfg_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: cfg_file)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: cfg_file)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
 
@@ -75,6 +77,7 @@ def test_check_local_kopia_repo_status_value_error(tmp_path: Path, monkeypatch: 
     cfg_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: cfg_file)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: cfg_file)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
 
@@ -92,6 +95,7 @@ def test_check_local_kopia_repo_status_ok(tmp_path: Path, monkeypatch: pytest.Mo
     cfg_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: cfg_file)
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: cfg_file)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
     monkeypatch.setattr(kopia_client, "repository_status", lambda **_: {"ok": True})
@@ -133,33 +137,35 @@ def test_check_peer_kopia_repos_returns_empty_when_no_peers(tmp_path: Path, monk
     assert doctor._check_peer_kopia_repos(cfg) == []
 
 
-def test_check_local_kopia_maintenance_dry_run_skipped_when_no_backup_path(tmp_path: Path) -> None:
+def test_check_local_kopia_maintenance_probe_skipped_when_no_backup_path(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, with_backup_path=False)
-    assert doctor._check_local_kopia_maintenance_dry_run(cfg) == []
+    assert doctor._check_local_kopia_maintenance_probe(cfg) == []
 
 
-def test_check_local_kopia_maintenance_dry_run_skipped_when_repo_missing(
+def test_check_local_kopia_maintenance_probe_skipped_when_repo_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Doctor already emits a clearer "local kopia repo missing" failure via
-    # _check_local_kopia_repo; the dry-run helper must stay quiet so the
+    # _check_local_kopia_repo; the maintenance helper must stay quiet so the
     # operator only sees one message for the same root cause.
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: False)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: tmp_path / "absent.config")
-    assert doctor._check_local_kopia_maintenance_dry_run(cfg) == []
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    assert doctor._check_local_kopia_maintenance_probe(cfg) == []
 
 
-def test_check_local_kopia_maintenance_dry_run_skipped_when_config_missing(
+def test_check_local_kopia_maintenance_probe_skipped_when_config_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: tmp_path / "absent.config")
-    assert doctor._check_local_kopia_maintenance_dry_run(cfg) == []
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    assert doctor._check_local_kopia_maintenance_probe(cfg) == []
 
 
-def test_check_local_kopia_maintenance_dry_run_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_local_kopia_maintenance_probe_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     cfg_file = tmp_path / "kopia.config"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -170,14 +176,12 @@ def test_check_local_kopia_maintenance_dry_run_passes(tmp_path: Path, monkeypatc
         captured.append(kwargs)
 
     monkeypatch.setattr(kopia_client, "maintenance_run", fake_maintenance_run)
-    assert doctor._check_local_kopia_maintenance_dry_run(cfg) == []
-    assert captured[0]["dry_run"] is True
+    assert doctor._check_local_kopia_maintenance_probe(cfg) == []
+    assert "dry_run" not in captured[0]
     assert captured[0]["safety"] == "none"
 
 
-def test_check_local_kopia_maintenance_dry_run_surfaces_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_check_local_kopia_maintenance_probe_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     cfg_file = tmp_path / "kopia.config"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -187,12 +191,12 @@ def test_check_local_kopia_maintenance_dry_run_surfaces_failure(
         raise CommandError(CommandResult(["kopia"], 2, "", "maintenance broken"))
 
     monkeypatch.setattr(kopia_client, "maintenance_run", boom)
-    failures = doctor._check_local_kopia_maintenance_dry_run(cfg)
-    assert any("maintenance dry-run failed" in failure for failure in failures)
+    failures = doctor._check_local_kopia_maintenance_probe(cfg)
+    assert any("maintenance probe failed" in failure for failure in failures)
     assert any("maintenance broken" in failure for failure in failures)
 
 
-def test_check_local_kopia_maintenance_dry_run_surfaces_returncode_when_stderr_empty(
+def test_check_local_kopia_maintenance_probe_surfaces_returncode_when_stderr_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # When kopia exits non-zero with no stderr (rare but possible — e.g.
@@ -207,34 +211,36 @@ def test_check_local_kopia_maintenance_dry_run_surfaces_returncode_when_stderr_e
         raise CommandError(CommandResult(["kopia"], 137, "", ""))
 
     monkeypatch.setattr(kopia_client, "maintenance_run", boom)
-    failures = doctor._check_local_kopia_maintenance_dry_run(cfg)
+    failures = doctor._check_local_kopia_maintenance_probe(cfg)
     assert any("137" in failure for failure in failures)
 
 
-def test_check_local_kopia_verify_dry_run_skipped_when_no_backup_path(tmp_path: Path) -> None:
+def test_check_local_kopia_verify_probe_skipped_when_no_backup_path(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, with_backup_path=False)
-    assert doctor._check_local_kopia_verify_dry_run(cfg) == []
+    assert doctor._check_local_kopia_verify_probe(cfg) == []
 
 
-def test_check_local_kopia_verify_dry_run_skipped_when_repo_missing(
+def test_check_local_kopia_verify_probe_skipped_when_repo_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: False)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: tmp_path / "absent.config")
-    assert doctor._check_local_kopia_verify_dry_run(cfg) == []
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    assert doctor._check_local_kopia_verify_probe(cfg) == []
 
 
-def test_check_local_kopia_verify_dry_run_skipped_when_config_missing(
+def test_check_local_kopia_verify_probe_skipped_when_config_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(kopia_repo, "local_config_file", lambda _cfg: tmp_path / "absent.config")
-    assert doctor._check_local_kopia_verify_dry_run(cfg) == []
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    assert doctor._check_local_kopia_verify_probe(cfg) == []
 
 
-def test_check_local_kopia_verify_dry_run_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_local_kopia_verify_probe_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     cfg_file = tmp_path / "kopia.config"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -245,11 +251,12 @@ def test_check_local_kopia_verify_dry_run_passes(tmp_path: Path, monkeypatch: py
         captured.append(kwargs)
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", fake_verify)
-    assert doctor._check_local_kopia_verify_dry_run(cfg) == []
-    assert captured[0]["dry_run"] is True
+    assert doctor._check_local_kopia_verify_probe(cfg) == []
+    assert "dry_run" not in captured[0]
+    assert captured[0]["verify_files_percent"] == 0.0
 
 
-def test_check_local_kopia_verify_dry_run_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_local_kopia_verify_probe_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     cfg_file = tmp_path / "kopia.config"
     cfg_file.write_text("{}", encoding="utf-8")
@@ -259,12 +266,12 @@ def test_check_local_kopia_verify_dry_run_surfaces_failure(tmp_path: Path, monke
         raise CommandError(CommandResult(["kopia"], 3, "", "verify broken"))
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", boom)
-    failures = doctor._check_local_kopia_verify_dry_run(cfg)
-    assert any("verify dry-run failed" in failure for failure in failures)
+    failures = doctor._check_local_kopia_verify_probe(cfg)
+    assert any("verify probe failed" in failure for failure in failures)
     assert any("verify broken" in failure for failure in failures)
 
 
-def test_check_local_kopia_verify_dry_run_surfaces_returncode_when_stderr_empty(
+def test_check_local_kopia_verify_probe_surfaces_returncode_when_stderr_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = make_config(tmp_path)
@@ -276,5 +283,5 @@ def test_check_local_kopia_verify_dry_run_surfaces_returncode_when_stderr_empty(
         raise CommandError(CommandResult(["kopia"], 9, "", ""))
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", boom)
-    failures = doctor._check_local_kopia_verify_dry_run(cfg)
+    failures = doctor._check_local_kopia_verify_probe(cfg)
     assert any("9" in failure for failure in failures)

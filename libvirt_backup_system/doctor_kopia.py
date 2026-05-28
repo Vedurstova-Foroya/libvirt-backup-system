@@ -15,9 +15,9 @@ def check_local_kopia_repo(config: Config) -> list[str]:
         return [f"local kopia repo path rejected: {exc}"]
     if not kopia_repo.local_repo_exists(config):
         return [f"local kopia repo missing at {repo_path}; run install"]
-    cfg = kopia_repo.local_config_file(config)
-    if not cfg.is_file():
-        return [f"local kopia config-file missing: {cfg}; run install"]
+    cfg = kopia_repo.ensure_local_connected(config)
+    if cfg is None:
+        return ["local kopia repo did not connect cleanly; run install"]
     try:
         kopia_client.repository_status(
             config_file=cfg,
@@ -40,12 +40,12 @@ def check_peer_kopia_repos(config: Config) -> list[str]:
     return failures
 
 
-def check_local_kopia_maintenance_dry_run(config: Config) -> list[str]:
-    """Confirm ``kopia maintenance run --dry-run`` would succeed."""
+def check_local_kopia_maintenance_probe(config: Config) -> list[str]:
+    """Confirm ``kopia maintenance run --safety=none`` succeeds."""
     if not config.get("BACKUP_PATH").strip():
         return []
-    cfg = kopia_repo.local_config_file(config)
-    if not kopia_repo.local_repo_exists(config) or not cfg.is_file():
+    cfg = kopia_repo.ensure_local_connected(config)
+    if cfg is None:
         return []
     try:
         kopia_client.maintenance_run(
@@ -53,27 +53,26 @@ def check_local_kopia_maintenance_dry_run(config: Config) -> list[str]:
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
             safety="none",
-            dry_run=True,
         )
     except CommandError as exc:
-        return [f"local kopia maintenance dry-run failed: {exc.result.stderr.strip() or exc.result.returncode}"]
+        return [f"local kopia maintenance probe failed: {exc.result.stderr.strip() or exc.result.returncode}"]
     return []
 
 
-def check_local_kopia_verify_dry_run(config: Config) -> list[str]:
-    """Confirm ``kopia snapshot verify --dry-run`` would succeed."""
+def check_local_kopia_verify_probe(config: Config) -> list[str]:
+    """Confirm a lightweight ``kopia snapshot verify`` succeeds."""
     if not config.get("BACKUP_PATH").strip():
         return []
-    cfg = kopia_repo.local_config_file(config)
-    if not kopia_repo.local_repo_exists(config) or not cfg.is_file():
+    cfg = kopia_repo.ensure_local_connected(config)
+    if cfg is None:
         return []
     try:
         kopia_snapshots.snapshot_verify(
             config_file=cfg,
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
-            dry_run=True,
+            verify_files_percent=0.0,
         )
     except CommandError as exc:
-        return [f"local kopia verify dry-run failed: {exc.result.stderr.strip() or exc.result.returncode}"]
+        return [f"local kopia verify probe failed: {exc.result.stderr.strip() or exc.result.returncode}"]
     return []

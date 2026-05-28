@@ -15,6 +15,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 def _write_password(path: Path, value: str = "swordfish") -> Path:
     path.write_text(value, encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -132,7 +133,7 @@ def test_snapshot_verify_includes_supplied_percentage_and_ids(tmp_path: Path, mo
         snapshot_ids=["abc"],
     )
     args, _ = captured[0]
-    assert "--max-failures=0" in args
+    assert "--max-errors=0" in args
     assert "--verify-files-percent=1.0" in args
     assert args[-1] == "abc"
 
@@ -146,21 +147,20 @@ def test_snapshot_verify_omits_unset_options(tmp_path: Path, monkeypatch: pytest
     assert "--dry-run" not in args
 
 
-def test_snapshot_verify_dry_run_appends_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_verify_places_snapshot_ids_after_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     password = _write_password(tmp_path / "pw")
     captured = _make_run_capture(monkeypatch)
     kopia_snapshots.snapshot_verify(
         config_file=tmp_path / "c",
         password_file=password,
-        dry_run=True,
+        verify_files_percent=0.0,
         snapshot_ids=["abc"],
     )
     args, _ = captured[0]
-    assert "--dry-run" in args
     # snapshot IDs are positional and trail every option so kopia does not
     # mistake the next flag for a snapshot id.
     assert args[-1] == "abc"
-    assert args.index("--dry-run") < args.index("abc")
+    assert args.index("--verify-files-percent=0.0") < args.index("abc")
 
 
 def test_snapshot_restore_to_path_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

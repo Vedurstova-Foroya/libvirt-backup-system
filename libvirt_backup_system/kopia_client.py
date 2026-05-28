@@ -99,10 +99,14 @@ def repository_create_filesystem(
     repo_path: Path,
     password_file: Path,
     cache_dir: Path | None = None,
+    object_splitter: str | None = None,
 ) -> None:
     repo_path.mkdir(parents=True, exist_ok=True)
+    args = [*build_config_args(config_file), "repository", "create", "filesystem", "--path", str(repo_path)]
+    if object_splitter is not None:
+        args.extend(["--object-splitter", object_splitter])
     run_kopia(
-        [*build_config_args(config_file), "repository", "create", "filesystem", "--path", str(repo_path)],
+        args,
         password_file=password_file,
         cache_dir=cache_dir,
     )
@@ -176,7 +180,6 @@ def policy_set_global(
     keep_monthly: int | None = None,
     keep_annual: int | None = None,
     compression: str | None = None,
-    splitter: str | None = None,
 ) -> None:
     args = [*build_config_args(config_file), "policy", "set", "--global"]
     baseline = len(args)
@@ -192,8 +195,6 @@ def policy_set_global(
             args.extend([flag, str(value)])
     if compression is not None:
         args.extend(["--compression", compression])
-    if splitter is not None:
-        args.extend(["--splitter", splitter])
     if len(args) <= baseline:
         return
     run_kopia(args, password_file=password_file, cache_dir=cache_dir)
@@ -218,18 +219,12 @@ def maintenance_run(
     cache_dir: Path | None = None,
     full: bool = False,
     safety: str | None = None,
-    dry_run: bool = False,
 ) -> None:
     args = [*build_config_args(config_file), "maintenance", "run"]
     if full:
         args.append("--full")
     if safety is not None:
         args.append(f"--safety={safety}")
-    if dry_run:
-        # ``maintenance run --dry-run`` reports what would be deleted/rewritten
-        # without touching the repo. doctor invokes this to surface scheduled
-        # maintenance issues without races against the live unit.
-        args.append("--dry-run")
     run_kopia_streamed(args, password_file=password_file, cache_dir=cache_dir)
 
 

@@ -9,7 +9,8 @@ per-run timestamp columns straight into ``restore``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import kopia_repo, kopia_snapshots
@@ -93,13 +94,13 @@ def enumerate_backups(config: Config, *, vm_uuid: str | None = None) -> list[Bac
     return rows
 
 
-_HEADERS = ("source-host-id", "vm-uuid", "vm-name", "timestamp", "run-id")
+_HEADERS = ("source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name")
 
 
 def format_rows(rows: list[BackupRow]) -> str:
     cells: list[tuple[str, ...]] = [_HEADERS]
     for row in rows:
-        cells.append((row.host_id, row.vm_uuid, row.vm_name, row.timestamp, row.run_id))
+        cells.append((row.host_id, row.vm_uuid, row.timestamp, row.run_id, row.vm_name))
     widths = [max(len(cell[i]) for cell in cells) for i in range(len(_HEADERS))]
     lines: list[str] = []
     for cell in cells:
@@ -108,12 +109,20 @@ def format_rows(rows: list[BackupRow]) -> str:
     return "\n".join(lines)
 
 
-def list_restore_points(config: Config) -> int:
+def format_json(rows: list[BackupRow]) -> str:
+    payload = [{key: str(value) for key, value in asdict(row).items()} for row in rows]
+    return json.dumps(payload, sort_keys=True)
+
+
+def list_restore_points(config: Config, *, json_output: bool = False) -> int:
     if not runtime_backup_path_ok(config):
         return 1
     rows = enumerate_backups(config)
     if not rows:
+        if json_output:
+            print("[]")
+            return 0
         event("info", "no backups found")
         return 0
-    print(format_rows(rows))
+    print(format_json(rows) if json_output else format_rows(rows))
     return 0

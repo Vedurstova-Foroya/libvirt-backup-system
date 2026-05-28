@@ -16,11 +16,9 @@ from .storage import subpath_is_safe
 from .vms import is_safe_vm_uuid, list_vms
 
 REQUIRED_BINARIES = ["virsh", "qemu-nbd", "nbdcopy", "qemu-img", "df", "kopia"]
-BOOLEAN_KEYS = frozenset(
-    ("BACKUP_REQUIRE_NFS_MOUNT", "REQUIRE_ROOT"),
-)
+BOOLEAN_KEYS = frozenset(("BACKUP_REQUIRE_NFS_MOUNT", "REQUIRE_ROOT"))
 INTEGER_KEYS = frozenset(
-    ("COMMAND_TIMEOUT_SECONDS", "SPACE_MARGIN_PERCENT", "KOPIA_PARALLELISM"),
+    "COMMAND_TIMEOUT_SECONDS KEEP_ANNUAL KEEP_DAILY KEEP_HOURLY KEEP_LATEST KEEP_MONTHLY KEEP_WEEKLY KOPIA_PARALLELISM SPACE_MARGIN_PERCENT".split()  # noqa: E501
 )
 FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
 # fmt: off
@@ -148,11 +146,15 @@ def _validate_kopia_password_file(config: Config) -> list[str]:
     return preflight_kopia_password_file.validate_kopia_password_file(config)
 
 
-def _validate_local_kopia_repo(config: Config) -> list[str]:
+def _validate_local_kopia_repo(config: Config, *, require_existing: bool = False) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
-    if kopia_repo.ensure_local_repo(config, apply_global_policy=False) != 0:
-        return ["local kopia repo could not be created or connected with the shared password"]
+    if not kopia_repo.local_repo_exists(config):
+        if require_existing:
+            return ["local kopia repo could not be connected with the shared password"]
+        return []
+    if kopia_repo.ensure_local_connected(config) is None:
+        return ["local kopia repo could not be connected with the shared password"]
     return []
 
 
@@ -249,6 +251,13 @@ def validate_config(config: Config) -> int:
     return 1 if failures else 0
 
 
+def repo_creation_failures(config: Config) -> list[str]:
+    failures = _validate_booleans(config)
+    failures.extend([] if failures else _validate_backup_path_writable(config))
+    failures.extend(_validate_kopia_repo_path(config))
+    return failures
+
+
 def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[list[str], int, int]:
     failures = _validate_env_values(config, require_writable=True)
     if lock_held and not failures:
@@ -258,7 +267,7 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     failures.extend(f"missing binary: {binary}" for binary in REQUIRED_BINARIES if not shutil.which(binary))
     failures.extend(_validate_scratch_dir())
     failures.extend(_validate_kopia_password_file(config))
-    failures.extend(_validate_local_kopia_repo(config))
+    failures.extend(_validate_local_kopia_repo(config, require_existing=lock_held))
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
     try:

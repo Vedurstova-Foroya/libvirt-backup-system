@@ -61,13 +61,13 @@ def make_manifest(
     )
 
 
-def make_row(tmp_path: Path, *, host_id: str = "host-a") -> BackupRow:
+def make_row(tmp_path: Path, *, host_id: str = "host-a", run_id: str = "run-1") -> BackupRow:
     return BackupRow(
         vm_uuid=ALPHA_UUID,
         timestamp=TIMESTAMP,
         host_id=host_id,
         vm_name="",
-        run_id="run-1",
+        run_id=run_id,
         snapshot_id="abc123",
         config_file=tmp_path / "kopia.config",
     )

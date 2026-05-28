@@ -75,8 +75,9 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
         ),
         ("uninstall", {"purge-config", "purge-state", "purge-logs"}),
         ("list-vms", {"json", "include-blacklisted"}),
+        ("list-restore-points", {"json"}),
         ("verify", {"include-hosts"}),
-        ("restore", {"verbose"}),
+        ("restore", {"verbose", "host-id", "run-id"}),
     ],
 )
 def test_completion_mentions_operator_visible_argparse_options(command: str | None, expected_options: set[str]) -> None:

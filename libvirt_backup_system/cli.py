@@ -17,9 +17,10 @@ from .doctor import doctor
 from .installer import install, uninstall
 from .installer_password import change_password as _change_password_impl
 from .kopia_client import KOPIA_BINARY, build_kopia_env
-from .list_restore_points import list_restore_points
+from .list_restore_points import enumerate_backups, format_json, list_restore_points
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
+from .paths import runtime_backup_path_ok
 from .preflight import check, validate_config
 from .restore import restore
 from .shell import configure_default_timeout
@@ -52,17 +53,34 @@ def _restore_command(config: Config, args: argparse.Namespace) -> int:
         return config_code
     try:
         with acquire_run_lock(config):
-            return restore(config, args.vm_uuid, args.timestamp, verbose=args.verbose)
+            return restore(
+                config,
+                args.vm_uuid,
+                args.timestamp,
+                host_id=args.host_id,
+                run_id=args.run_id,
+                verbose=args.verbose,
+            )
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
 
 
-def _list_restore_points_command(config: Config) -> int:
+def _list_restore_points_command(config: Config, *, json_output: bool = False) -> int:
+    if json_output:
+        with contextlib.redirect_stdout(sys.stderr):
+            config_code = validate_config(config)
+            if config_code != 0:
+                return config_code
+            if not runtime_backup_path_ok(config):
+                return 1
+            rows = enumerate_backups(config)
+        print(format_json(rows))
+        return 0
     config_code = validate_config(config)
     if config_code != 0:
         return config_code
-    return list_restore_points(config)
+    return list_restore_points(config, json_output=json_output)
 
 
 def _change_password_command(args: argparse.Namespace) -> int:
@@ -161,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             if dispatched is not None:
                 return dispatched
 
-        if args.command == "list-vms" and args.json:
+        if args.command in {"list-vms", "list-restore-points"} and args.json:
             with contextlib.redirect_stdout(sys.stderr):
                 config = Config.load(config_path=args.config, prefix=args.prefix)
         else:
@@ -213,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "restore":
             return _restore_command(config, args)
         if args.command == "list-restore-points":
-            return _list_restore_points_command(config)
+            return _list_restore_points_command(config, json_output=args.json)
         if args.command == "kopia-passthrough":
             return _kopia_passthrough_command(args, config)
     except KeyboardInterrupt:

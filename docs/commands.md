@@ -89,8 +89,8 @@ surface that `check` covers. Specifically, `doctor` is a superset of
 - Last `libvirt-backup-system.service` run completed cleanly.
 - Local kopia repo connects with the shared password and
   `kopia repository status` is clean.
-- Local `kopia maintenance run --dry-run` and `kopia snapshot verify
-  --dry-run` complete cleanly.
+- Local `kopia maintenance run --safety=none` and a lightweight
+  `kopia snapshot verify --verify-files-percent=0` complete cleanly.
 - Every peer repo under `BACKUP_PATH/*/kopia-repo/` is reachable read-only
   with the shared password (cross-host-restore smoke test).
 
@@ -138,9 +138,10 @@ sudo libvirt-backup-system run
 ## `status`
 
 Prints `systemctl status` for the backup timer/service, check service,
-maintenance timer/service, and verify timer/service units. Output is the raw
-human-readable systemctl output (not JSON), so the next-fire time, last-run
-result, and any recent journal lines are visible at a glance. Exit code is the
+maintenance timer/service, full-maintenance timer/service, and verify
+timer/service units. Output is the raw human-readable systemctl output (not
+JSON), so the next-fire time, last-run result, and any recent journal lines
+are visible at a glance. Exit code is the
 worst (highest) systemctl return code across those units, so unloaded units
 propagate as failure.
 
@@ -187,7 +188,7 @@ sudo libvirt-backup-system list-restore-points | less -S
 Output columns:
 
 ```
-source-host-id  vm-uuid  vm-name  timestamp  run-id
+source-host-id  vm-uuid  timestamp  run-id  vm-name
 ```
 
 `source-host-id` is where the backup was taken. `run-id` joins the meta
@@ -211,12 +212,13 @@ sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 sudo libvirt-backup-system restore aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 20260507T101112
 ```
 
-The only restore flag is `-v`/`--verbose`; there is still no
-`--source-host`. The timestamp is the exact per-run target (no rounding, no
-closest-match). For same-host restores where a local domain with the same
-UUID exists, disks are restored to temporary sibling files first, then the
-VM is shut down, undefined, and the temporary files replace the original
-per-disk source paths. Cross-host or fresh restores write qcow2s under
+Pass `--host-id <source-host-id>` or `--run-id <run-id>` only when duplicate
+rows share the same `(vm-uuid, timestamp)`. The timestamp is the exact
+per-run target (no rounding, no closest-match). For same-host restores where
+a local domain with the same UUID exists, disks are restored to temporary
+sibling files first, then the VM is shut down, undefined, and the temporary
+files replace the original per-disk source paths. Cross-host or fresh
+restores write qcow2s under
 `/var/lib/libvirt-backup-system/restore/<uuid>-<timestamp>/` and rewrite the
 restored domain XML to those staged paths.
 
@@ -235,8 +237,9 @@ the snapshot from whichever host's repo contains a matching `(uuid,
 timestamp)`. When that host does not match the local one (or no local VM
 with that UUID exists), the turnkey define path runs.
 
-There is no `--source-host` flag. The shared password decrypts every host's
-repo, so cross-host restore is the same command as same-host restore.
+The shared password decrypts every host's repo, so cross-host restore is the
+same command as same-host restore unless duplicate restore points require a
+`--host-id` or `--run-id` disambiguator.
 
 ### How snapshots are tagged
 

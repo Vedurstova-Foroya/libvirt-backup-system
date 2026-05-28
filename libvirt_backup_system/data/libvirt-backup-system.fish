@@ -55,11 +55,16 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from uninstall" -l 
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-vms" -l json -d "Emit a JSON array instead of tab-separated rows"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-vms" -l include-blacklisted -d "Also list VMs filtered out by VM_BLACKLIST"
 
+# list-restore-points flag.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-restore-points" -l json -d "Emit a JSON array instead of table rows"
+
 # verify flag.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from verify" -l include-hosts -r -d "Comma-separated peer host_ids to verify in addition to the local repo"
 
 # restore flag.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -s v -l verbose -d "Stream full restore output"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -l host-id -r -f -d "Disambiguate duplicate restore points by source host"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -l run-id -r -f -d "Disambiguate duplicate restore points by run ID"
 
 # --- Dynamic restore completion ---------------------------------------------
 #
@@ -83,6 +88,14 @@ end
 function __lbs_restore_is_option
     set -l token "$argv[1]"
     test "$token" = -v; or test "$token" = --verbose
+    or test "$token" = --host-id; or test "$token" = --run-id
+    or string match -q -- '--host-id=*' "$token"
+    or string match -q -- '--run-id=*' "$token"
+end
+
+function __lbs_restore_option_takes_value
+    set -l token "$argv[1]"
+    test "$token" = --host-id; or test "$token" = --run-id
 end
 
 # Number of positional args already typed after the `restore` subcommand.
@@ -95,10 +108,17 @@ function __lbs_restore_positional_count
     set -l tokens (commandline -opc)
     set -l found 0
     set -l count 0
+    set -l skip_next 0
     for token in $tokens
         if test $found = 1
+            if test $skip_next = 1
+                set skip_next 0
+                continue
+            end
             if not __lbs_restore_is_option "$token"
                 set count (math $count + 1)
+            else if __lbs_restore_option_takes_value "$token"
+                set skip_next 1
             end
         end
         if test "$token" = restore
@@ -115,7 +135,7 @@ end
 function __lbs_restore_uuids
     # Deduplicate by UUID so a VM with many restore points appears once in the
     # menu. The Kopia-era list-restore-points table is:
-    # source-host-id vm-uuid vm-name timestamp run-id. The description shows
+    # source-host-id vm-uuid timestamp run-id vm-name. The description shows
     # the first host seen plus the count of restore points for that UUID.
     __lbs_query_restore_points | awk 'NR > 1 { c[$2]++; if (!s[$2]++) h[$2] = $1 } END { for (u in c) printf "%s\t%s (%d restore points)\n", u, h[u], c[u] }' | sort
 end
@@ -124,11 +144,18 @@ function __lbs_restore_timestamps_for_uuid
     set -l tokens (commandline -opc)
     set -l found 0
     set -l uuid ""
+    set -l skip_next 0
     for token in $tokens
         if test $found = 1
+            if test $skip_next = 1
+                set skip_next 0
+                continue
+            end
             if not __lbs_restore_is_option "$token"
                 set uuid $token
                 break
+            else if __lbs_restore_option_takes_value "$token"
+                set skip_next 1
             end
         end
         if test "$token" = restore
@@ -142,7 +169,7 @@ function __lbs_restore_timestamps_for_uuid
     # the operator's typical "restore to the latest point" intent lands a
     # single arrow-down away. The description shows source host and RUN_ID for
     # diagnostics without requiring the operator to keep the table visible.
-    __lbs_query_restore_points | awk -v u="$uuid" 'NR > 1 && $2 == u {print $(NF-1)"\t"$1" "$NF}' | sort -r
+    __lbs_query_restore_points | awk -v u="$uuid" 'NR > 1 && $2 == u {print $3"\t"$1" "$4}' | sort -r
 end
 
 complete -c libvirt-backup-system \

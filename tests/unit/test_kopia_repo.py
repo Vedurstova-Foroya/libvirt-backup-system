@@ -260,14 +260,12 @@ def test_apply_global_policy_skips_empty_int_values(tmp_path: Path, monkeypatch:
     cfg = _make_config(tmp_path)
     _write_password(cfg)
     cfg.values["KEEP_LATEST"] = ""
-    cfg.values["KEEP_HOURLY"] = "not-an-int"
     recorder = _RunRecorder()
     monkeypatch.setattr(kopia_client, "run", recorder)
     monkeypatch.setattr(kopia_client, "run_streamed", recorder)
     assert kopia_repo.ensure_local_repo(cfg) == 0
     policy_args = next(args for args in recorder.calls if "policy" in args)
     assert "--keep-latest" not in policy_args
-    assert "--keep-hourly" not in policy_args
 
 
 def test_discover_peer_repos_logs_when_iterdir_fails(

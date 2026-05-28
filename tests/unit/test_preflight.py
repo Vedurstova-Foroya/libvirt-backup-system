@@ -83,20 +83,22 @@ def test_required_present_allows_empty_kopia_repo_path(tmp_path: Path) -> None:
 
 def test_validate_local_kopia_repo_delegates_to_repo_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
-    called: list[bool] = []
+    called: list[object] = []
 
-    def fake_ensure(_cfg: object, *, apply_global_policy: bool = True) -> int:
-        called.append(apply_global_policy)
-        return 0
+    def fake_connect(_cfg: object) -> Path:
+        called.append(_cfg)
+        return tmp_path / "kopia.config"
 
-    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_repo", fake_ensure)
+    monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: True)
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", fake_connect)
     assert preflight._validate_local_kopia_repo(cfg) == []
-    assert called == [False]
+    assert called == [cfg]
 
 
 def test_validate_local_kopia_repo_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
-    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_repo", lambda *_a, **_k: 1)
+    monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: True)
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", lambda _cfg: None)
     assert "local kopia repo" in preflight._validate_local_kopia_repo(cfg)[0]
 
 

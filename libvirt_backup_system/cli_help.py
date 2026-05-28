@@ -61,7 +61,9 @@ How the snapshot is located:
   ``BACKUP_PATH/<host>/kopia-repo/`` (not just the current HOST_ID) so a
   recovery host that mounted the backup tree can restore VMs that were
   taken on a different KVM host. The per-run ``kind:meta`` snapshot is
-  matched by its ``vm-uuid`` and ``timestamp`` tags.
+  matched by its ``vm-uuid`` and ``timestamp`` tags. If duplicate rows share
+  that pair, pass ``--host-id`` or ``--run-id`` from ``list-restore-points``
+  to select the intended run.
 
 What action is chosen:
   OVERWRITE  Same host AND a local libvirt domain with VM_UUID exists.
@@ -125,7 +127,7 @@ overwrites operator edits."""
 
 UNINSTALL_HELP = "Remove installed files. Config/state/logs/backups are kept unless --purge-* is passed."
 UNINSTALL_DESCRIPTION = """\
-Disable the timer, stop the service, and remove the installed wrapper, opt
+Disable timers, stop services, and remove the installed wrapper, opt
 directory, systemd unit files, and fish completion script. Config, state,
 logs, and on-disk backups are preserved by default so an accidental uninstall
 does not destroy data; use the --purge-* flags to remove them explicitly.
@@ -156,7 +158,7 @@ files match what a fresh install would render (catches drift after editing
 the env file without re-running install); all schedule timers are enabled and
 active;
 the local kopia repo is connected and accessible; local kopia maintenance
-and verify dry-runs pass; peer repos are reachable read-only with the shared
+and lightweight verify probes pass; peer repos are reachable read-only with the shared
 password; and the most recent libvirt-backup-system.service run completed
 cleanly.
 
@@ -213,7 +215,7 @@ VMs that are present in libvirt but currently filtered out by VM_BLACKLIST."""
 VERIFY_HELP = "Run ``kopia snapshot verify`` against discovered kopia repos."
 VERIFY_DESCRIPTION = """\
 Replay every snapshot in this host's local kopia repo through
-``kopia snapshot verify --max-failures=0 --verify-files-percent=...`` to
+``kopia snapshot verify --max-errors=0 --verify-files-percent=...`` to
 confirm the repo is internally consistent. Pass
 ``--include-hosts=HOST_ID[,HOST_ID...]`` to additionally verify the named
 peer repos discovered under ``BACKUP_PATH/<host>/kopia-repo/``; without the

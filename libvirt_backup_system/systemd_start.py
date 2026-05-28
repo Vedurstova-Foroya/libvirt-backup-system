@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import kopia_repo
+from . import kopia_repo, preflight
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
 from .shell import configure_default_timeout
@@ -161,7 +161,10 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
         config_path=str(rendered.resolved_config),
         systemd_dir=str(systemd_dir),
     )
-    if kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
+    failures = preflight.repo_creation_failures(rendered.config)
+    for failure in failures:
+        event("error", "kopia repo preflight failed", reason=failure)
+    if failures or kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
         return 1
     commands: list[list[str]] = [["systemctl", "daemon-reload"]]
     for timer in (TIMER_UNIT_NAME, MAINTENANCE_TIMER_NAME, MAINTENANCE_FULL_TIMER_NAME, VERIFY_TIMER_NAME):

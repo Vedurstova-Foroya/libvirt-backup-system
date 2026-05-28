@@ -42,8 +42,14 @@ class _RestoreContext:
     verbose: bool
 
 
-def _match_row(config: Config, vm_uuid: str, timestamp: str) -> BackupRow | None:
+def _match_row(
+    config: Config, vm_uuid: str, timestamp: str, host_id: str | None = None, run_id: str | None = None
+) -> BackupRow | None:
     matches = [row for row in enumerate_backups(config, vm_uuid=vm_uuid) if row.timestamp == timestamp]
+    if host_id is not None:
+        matches = [row for row in matches if row.host_id == host_id]
+    if run_id is not None:
+        matches = [row for row in matches if row.run_id == run_id]
     if len(matches) == 1:
         return matches[0]
     if not matches:
@@ -215,6 +221,7 @@ def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> in
     backup_map = _replace_overwrite_disks_with_backups(temp_map, dest_map)
     if backup_map is None:
         _cleanup_paths(temp_map)
+        _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
     xml_path = _write_restored_xml(ctx, ctx.manifest.domain_xml)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
@@ -244,7 +251,15 @@ def _restore_turnkey(config: Config, ctx: _RestoreContext) -> int:
     return 0
 
 
-def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = True) -> int:
+def restore(
+    config: Config,
+    vm_uuid: str,
+    timestamp: str,
+    *,
+    host_id: str | None = None,
+    run_id: str | None = None,
+    verbose: bool = True,
+) -> int:
     if not is_safe_vm_uuid(vm_uuid):
         event("error", "restore vm_uuid is not a valid UUID", vm_uuid=vm_uuid)
         return 1
@@ -253,7 +268,7 @@ def restore(config: Config, vm_uuid: str, timestamp: str, *, verbose: bool = Tru
         return 1
     if not runtime_backup_path_ok(config):
         return 1
-    row = _match_row(config, vm_uuid, timestamp)
+    row = _match_row(config, vm_uuid, timestamp, host_id, run_id)
     if row is None:
         event("error", "restore found no backup matching uuid and timestamp", vm_uuid=vm_uuid, timestamp=timestamp)
         return 1

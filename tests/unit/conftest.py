@@ -47,6 +47,7 @@ def stub_ensure_kopia_repo(monkeypatch: pytest.MonkeyPatch, *, return_code: int 
         return return_code
 
     monkeypatch.setattr("libvirt_backup_system.installer.kopia_repo.ensure_local_repo", fake_ensure)
+    monkeypatch.setattr("libvirt_backup_system.installer.preflight.repo_creation_failures", lambda _cfg: [])
     return calls
 
 

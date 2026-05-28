@@ -29,9 +29,11 @@ def _cleanup_paths(paths: dict[str, Path]) -> None:
 
 def _rollback_overwrite_disks(backup_map: dict[str, Path], dest_map: dict[str, Path]) -> None:
     for target, backup in backup_map.items():
-        if not backup.exists():
-            continue
         dest = dest_map[target]
+        if not backup.exists():
+            with suppress(OSError):
+                dest.unlink()
+            continue
         with suppress(OSError):
             backup.replace(dest)
 

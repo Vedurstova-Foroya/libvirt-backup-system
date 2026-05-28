@@ -131,6 +131,7 @@ def ensure_local_repo(config: Config, *, apply_global_policy: bool = True) -> in
                 repo_path=repo_path,
                 password_file=password,
                 cache_dir=cache,
+                object_splitter=config.get("KOPIA_SPLITTER") or None,
             )
     except CommandError as exc:
         event(
@@ -180,10 +181,7 @@ def ensure_local_connected(config: Config) -> Path | None:
 def _int_or_none(value: str) -> int | None:
     if not value.strip():
         return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
+    return int(value)
 
 
 def _apply_global_policy(config: Config) -> int:
@@ -202,8 +200,10 @@ def _apply_global_policy(config: Config) -> int:
             keep_monthly=_int_or_none(config.get("KEEP_MONTHLY")),
             keep_annual=_int_or_none(config.get("KEEP_ANNUAL")),
             compression=config.get("KOPIA_COMPRESSION") or None,
-            splitter=config.get("KOPIA_SPLITTER") or None,
         )
+    except ValueError as exc:
+        event("error", "kopia policy value invalid", error=str(exc))
+        return 1
     except CommandError as exc:
         event("error", "kopia policy set failed", stderr=exc.result.stderr.strip())
         return 1

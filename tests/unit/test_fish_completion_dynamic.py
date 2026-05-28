@@ -20,13 +20,13 @@ import libvirt_backup_system
 
 COMPLETION_FILE = Path(libvirt_backup_system.__file__).resolve().parent / "data" / "libvirt-backup-system.fish"
 FIXTURE_OUTPUT = (
-    "source-host-id  vm-uuid                              vm-name   timestamp        run-id\n"
-    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  alpha vm  20260101T000000  "
-    "11111111-1111-1111-1111-111111111111\n"
-    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  alpha vm  20260102T030000  "
-    "22222222-2222-2222-2222-222222222222\n"
-    "host2           bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  beta      20260105T000000  "
-    "33333333-3333-3333-3333-333333333333\n"
+    "source-host-id  vm-uuid  timestamp  run-id  vm-name\n"
+    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260101T000000  "
+    "11111111-1111-1111-1111-111111111111  alpha vm\n"
+    "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260102T030000  "
+    "22222222-2222-2222-2222-222222222222  alpha vm\n"
+    "host2           bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  20260105T000000  "
+    "33333333-3333-3333-3333-333333333333  beta\n"
 )
 
 
@@ -59,7 +59,7 @@ def _seed_fakes(tmp_path: Path) -> Path:
     return bindir
 
 
-def _run_fish(fish: str, bindir: Path, completion_line: str) -> str:
+def _run_fish(fish: str, bindir: Path, completion_line: str, *, cwd: Path | None = None) -> str:
     # ``--no-config`` keeps fish from auto-loading any older copy of the
     # completion file from /usr/share/fish/vendor_completions.d/ — the test
     # must always read the in-tree script, not whatever the last ``install``
@@ -75,7 +75,7 @@ def _run_fish(fish: str, bindir: Path, completion_line: str) -> str:
         f"source {COMPLETION_FILE}\n"
         f"complete -C '{completion_line}'\n"
     )
-    result = subprocess.run([fish, "--no-config"], input=script, capture_output=True, text=True, check=True)
+    result = subprocess.run([fish, "--no-config"], input=script, capture_output=True, text=True, check=True, cwd=cwd)
     return result.stdout
 
 
@@ -103,6 +103,17 @@ def test_uuid_completion_ignores_verbose_flag_before_uuid(tmp_path: Path) -> Non
     values = [line.split("\t", 1)[0] for line in out.splitlines()]
     assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in values
     assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" in values
+
+
+@pytest.mark.parametrize("option", ["--host-id", "--run-id"])
+def test_restore_disambiguation_options_do_not_complete_cwd_files(tmp_path: Path, option: str) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    (tmp_path / "cwd-file-should-not-complete").write_text("", encoding="utf-8")
+
+    out = _run_fish(fish, bindir, f"libvirt-backup-system restore {option} ", cwd=tmp_path)
+
+    assert "cwd-file-should-not-complete" not in out
 
 
 def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:

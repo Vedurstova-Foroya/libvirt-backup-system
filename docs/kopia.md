@@ -136,11 +136,12 @@ When migrating an existing fleet from the previous (non-kopia) install:
    ```
    Creates the local repo at `BACKUP_PATH/$HOST_ID/kopia-repo/`, applies
    global policy, registers timers.
-5. On every host: `sudo libvirt-backup-system doctor` must pass clean. The
+5. On every host: `sudo libvirt-backup-system check` must pass clean.
+6. On every host: `sudo libvirt-backup-system start` enables timers.
+7. On every host: `sudo libvirt-backup-system doctor` must pass clean. The
    peer-repo connect smoke test confirms the shared password reaches every
    host's repo.
-6. On every host: `sudo libvirt-backup-system start` enables timers.
-7. The first scheduled run on each host is a full backup into its own
+8. The first scheduled run on each host is a full backup into its own
    fresh repo. Subsequent runs are deduplicated against the existing
    chunks.
 
@@ -207,7 +208,7 @@ sudo libvirt-backup-system verify --include-hosts=host-a,host-b
 Manual verify of a single snapshot:
 
 ```sh
-sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot verify --max-failures=0 <snap-id>
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot verify --max-errors=0 <snap-id>
 ```
 
 ## Disaster recovery: lost host
@@ -230,7 +231,7 @@ manage this; configure it directly with kopia. Two common patterns:
 
 **Server-side `kopia server` + remote pull.** Run `kopia server` on the
 NFS host; the offsite worker connects with `kopia repository connect
-server` and uses standard `kopia snapshot sync-to <remote>`.
+server` and uses standard `kopia repository sync-to <provider>`.
 libvirt-backup-system does not run, supervise, or configure `kopia server`
 — it is an external piece of infrastructure the operator owns separately
 (systemd unit, TLS, auth). Mentioned here only because operators
@@ -239,7 +240,7 @@ replicating offsite sometimes pair the two.
 **Direct repo-to-repo sync.** On a host with both repos connected:
 
 ```sh
-sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot sync-to filesystem --path /mnt/offsite/host-a/kopia-repo
+sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" repository sync-to filesystem --path /mnt/offsite/host-a/kopia-repo --must-exist
 ```
 
 Or via rclone for cloud targets:

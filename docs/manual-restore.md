@@ -110,7 +110,7 @@ To verify a single snapshot before relying on it:
 ```sh
 sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
-     snapshot verify --max-failures=0 <snap-id>
+     snapshot verify --max-errors=0 <snap-id>
 ```
 
 After the disks are on local storage, move them to the intended libvirt

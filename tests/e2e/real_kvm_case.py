@@ -164,11 +164,10 @@ def _repo_size_bytes(repo_path: Path) -> int:
 
 
 def _pick_restore_point(bin_path: Path, vm_uuid: str) -> str:
-    proc = _run([str(bin_path), "list-restore-points"])
-    for line in proc.stdout.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) >= 4 and parts[1] == vm_uuid:
-            return parts[3]
+    proc = _run([str(bin_path), "list-restore-points", "--json"])
+    for row in json.loads(proc.stdout or "[]"):
+        if row.get("vm_uuid") == vm_uuid:
+            return row["timestamp"]
     raise AssertionError(f"no restore point listed for {vm_uuid} in:\n{proc.stdout}")
 
 
@@ -182,7 +181,10 @@ def _assert_counts(ctx: _KopiaCtx, vm_uuid: str, *, meta: int, disk: int) -> Non
 
 def _install(prefix: Path) -> tuple[Path, _KopiaCtx]:
     args = [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix)]
-    _run([*args, "install", f"--kopia-password={KOPIA_PASSWORD}"], env=_install_env(prefix))
+    _run(
+        [*args, "install", f"--kopia-password={KOPIA_PASSWORD}", "--acknowledge-password-loss"],
+        env=_install_env(prefix),
+    )
     bin_path = prefix / "usr/local/bin/libvirt-backup-system"
     password_file = prefix / "etc/libvirt-backup-system/kopia.pw"
     config_file = prefix / "var/lib/libvirt-backup-system/kopia-configs" / f"{HOST_ID}.config"

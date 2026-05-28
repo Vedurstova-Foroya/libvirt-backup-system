@@ -234,18 +234,12 @@ def snapshot_verify(
     password_file: Path,
     cache_dir: Path | None = None,
     verify_files_percent: float | None = None,
-    max_failures: int = 0,
+    max_errors: int = 0,
     snapshot_ids: Iterable[str] | None = None,
-    dry_run: bool = False,
 ) -> None:
-    args = [*build_config_args(config_file), "snapshot", "verify", f"--max-failures={max_failures}"]
+    args = [*build_config_args(config_file), "snapshot", "verify", f"--max-errors={max_errors}"]
     if verify_files_percent is not None:
         args.append(f"--verify-files-percent={verify_files_percent}")
-    if dry_run:
-        # ``snapshot verify --dry-run`` walks the index without reading object
-        # bytes — fast enough for doctor and safe to run alongside the verify
-        # timer.
-        args.append("--dry-run")
     if snapshot_ids:
         args.extend(snapshot_ids)
     run_kopia_streamed(args, password_file=password_file, cache_dir=cache_dir)

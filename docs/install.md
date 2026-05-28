@@ -59,7 +59,8 @@ sudo apt install -y libnbd-bin
 nbdcopy --version
 ```
 
-With both binaries present and runnable, `sudo libvirt-backup-system install`
+With both binaries present and runnable, `sudo libvirt-backup-system install
+--kopia-password-file=/path/to/kopia.pw --acknowledge-password-loss`
 proceeds straight to the password + repo + systemd-unit setup.
 
 ## Install

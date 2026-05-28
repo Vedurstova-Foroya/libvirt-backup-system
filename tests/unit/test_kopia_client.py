@@ -88,6 +88,20 @@ def test_repository_create_filesystem_invocation(tmp_path: Path, monkeypatch: py
     ]
 
 
+def test_repository_create_filesystem_passes_object_splitter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured = _make_run_capture(monkeypatch)
+    kopia_client.repository_create_filesystem(
+        config_file=tmp_path / "host.config",
+        repo_path=tmp_path / "repo",
+        password_file=password,
+        object_splitter="FIXED-4M",
+    )
+    args, _env = captured[0]
+    assert "--object-splitter" in args
+    assert "FIXED-4M" in args
+
+
 def test_repository_connect_filesystem_readonly_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     password = _write_password(tmp_path / "pw")
     captured = _make_run_capture(monkeypatch)
@@ -123,13 +137,12 @@ def test_policy_set_global_emits_only_supplied_flags(tmp_path: Path, monkeypatch
         keep_latest=8,
         keep_daily=30,
         compression="zstd-fastest",
-        splitter="FIXED-4M",
     )
     args, _ = captured[0]
     assert "--keep-latest" in args and "8" in args
     assert "--keep-daily" in args and "30" in args
     assert "--compression" in args and "zstd-fastest" in args
-    assert "--splitter" in args and "FIXED-4M" in args
+    assert "--splitter" not in args
     assert "--keep-hourly" not in args
 
 
@@ -177,17 +190,7 @@ def test_maintenance_run_omits_full_and_safety_by_default(tmp_path: Path, monkey
     args, _ = captured[0]
     assert "--full" not in args
     assert all("--safety=" not in arg for arg in args)
-    # ``--dry-run`` is opt-in so the production maintenance timer keeps acting
-    # on the repo while doctor's smoke test stays read-only.
     assert "--dry-run" not in args
-
-
-def test_maintenance_run_dry_run_appends_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    password = _write_password(tmp_path / "pw")
-    captured = _make_run_capture(monkeypatch)
-    kopia_client.maintenance_run(config_file=tmp_path / "c", password_file=password, dry_run=True)
-    args, _ = captured[0]
-    assert "--dry-run" in args
 
 
 def test_maintenance_set_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

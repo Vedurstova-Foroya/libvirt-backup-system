@@ -2,9 +2,10 @@
 
 Kopia migration: in addition to the preflight surface, doctor confirms that
 the local kopia repo connects with the configured password, that
-``kopia maintenance run --dry-run`` is clean, that ``kopia snapshot verify
---dry-run`` is clean, that no recent QGA quiesce fallback events show up in
-the journal, and that every peer repo discoverable under
+``kopia maintenance run --safety=none`` is clean, that a lightweight
+``kopia snapshot verify --verify-files-percent=0`` is clean, that no recent
+QGA quiesce fallback events show up in the journal, and that every peer repo
+discoverable under
 ``BACKUP_PATH/*/kopia-repo/`` is reachable read-only with the shared
 password (the "can I cross-host restore" smoke test).
 """
@@ -114,12 +115,12 @@ def _check_peer_kopia_repos(config: Config) -> list[str]:
     return doctor_kopia.check_peer_kopia_repos(config)
 
 
-def _check_local_kopia_maintenance_dry_run(config: Config) -> list[str]:
-    return doctor_kopia.check_local_kopia_maintenance_dry_run(config)
+def _check_local_kopia_maintenance_probe(config: Config) -> list[str]:
+    return doctor_kopia.check_local_kopia_maintenance_probe(config)
 
 
-def _check_local_kopia_verify_dry_run(config: Config) -> list[str]:
-    return doctor_kopia.check_local_kopia_verify_dry_run(config)
+def _check_local_kopia_verify_probe(config: Config) -> list[str]:
+    return doctor_kopia.check_local_kopia_verify_probe(config)
 
 
 def _check_recent_quiesce_fallbacks(root: Path) -> list[str]:
@@ -147,8 +148,8 @@ def doctor(config: Config) -> int:
     failures.extend(_check_runtime_state(config.prefix))
     failures.extend(host_id_drift_failures(config))
     failures.extend(_check_local_kopia_repo(config))
-    failures.extend(_check_local_kopia_maintenance_dry_run(config))
-    failures.extend(_check_local_kopia_verify_dry_run(config))
+    failures.extend(_check_local_kopia_maintenance_probe(config))
+    failures.extend(_check_local_kopia_verify_probe(config))
     failures.extend(_check_peer_kopia_repos(config))
     advisories = _check_recent_quiesce_fallbacks(config.prefix)
     if failures:

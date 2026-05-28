@@ -192,6 +192,53 @@ def test_restore_overwrite_define_failure(tmp_path: Path, monkeypatch: pytest.Mo
     assert not (src_dir / ".myvm-vda.qcow2.vda.restore.old").exists()
 
 
+def test_restore_overwrite_replace_failure_redefines_original_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_config(tmp_path)
+    row = make_row(tmp_path)
+    manifest, src_dir = _manifest_with_local_disks(tmp_path)
+    original_disk = src_dir / "myvm-vda.qcow2"
+    original_disk.write_bytes(b"old-disk")
+    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    _install_meta_writer(monkeypatch, manifest)
+    _install_disk_snapshot(monkeypatch)
+
+    def fake_stream(_cfg: Any, _row: Any, _snap: str, _file: str, dest: Path) -> bool:
+        dest.write_bytes(b"new-disk")
+        return True
+
+    monkeypatch.setattr(restore, "_stream_disk_to_qcow2", fake_stream)
+    original_xml = "<domain><name>myvm</name><uuid>old</uuid></domain>"
+    defined_paths: list[Path] = []
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        if "domname" in args:
+            return CommandResult(args, 0, "myvm\n", "")
+        if "dumpxml" in args:
+            return CommandResult(args, 0, original_xml, "")
+        if "domstate" in args:
+            return CommandResult(args, 0, "shut off\n", "")
+        if "define" in args:
+            defined_paths.append(Path(args[-1]))
+            return CommandResult(args, 0, "", "")
+        return CommandResult(args, 0, "", "")
+
+    original_replace = Path.replace
+
+    def fail_temp_replace(self: Path, target: Path) -> Path:
+        if self.name.endswith(".restore.tmp") and target == original_disk:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(restore, "run", fake_run)
+    monkeypatch.setattr(Path, "replace", fail_temp_replace)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    assert original_disk.read_bytes() == b"old-disk"
+    assert len(defined_paths) == 1
+    assert defined_paths[0].read_text(encoding="utf-8") == original_xml
+
+
 def test_restore_overwrite_disk_materialize_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)

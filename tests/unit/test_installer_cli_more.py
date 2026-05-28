@@ -29,8 +29,30 @@ def test_cli_list_restore_points_runs_command(tmp_path: Path, monkeypatch) -> No
     cfg = _fake_config(tmp_path)
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.list_restore_points", lambda config: 0)
+    seen: dict[str, bool] = {}
+
+    def fake_list_restore_points(config, *, json_output=False):
+        seen["json_output"] = json_output
+        return 0
+
+    monkeypatch.setattr("libvirt_backup_system.cli.list_restore_points", fake_list_restore_points)
     assert main(["list-restore-points"]) == 0
+    assert seen["json_output"] is False
+
+
+def test_cli_list_restore_points_json_keeps_logs_off_stdout(tmp_path: Path, monkeypatch, capsys) -> None:
+    cfg = _fake_config(tmp_path)
+    backup_path = tmp_path / "backups"
+    backup_path.mkdir()
+    cfg.values["BACKUP_PATH"] = str(backup_path)
+    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: print("config log") or 0)
+    monkeypatch.setattr("libvirt_backup_system.cli.enumerate_backups", lambda config: [])
+    assert main(["list-restore-points", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "[]\n"
+    assert "config log" in captured.err
 
 
 def test_cli_change_password_delegates_to_installer_password(tmp_path: Path, monkeypatch) -> None:

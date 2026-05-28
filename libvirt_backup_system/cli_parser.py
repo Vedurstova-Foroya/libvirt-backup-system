@@ -143,12 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated peer host_ids whose repos to verify in addition to the local repo.",
     )
 
-    _add_subparser(
+    restore_points_parser = _add_subparser(
         sub,
         "list-restore-points",
         help_text=cli_help.LIST_RESTORE_POINTS_HELP,
         description=cli_help.LIST_RESTORE_POINTS_DESCRIPTION,
     )
+    restore_points_parser.add_argument("--json", action="store_true", help="Emit JSON array instead of table rows.")
 
     restore_parser = _add_subparser(
         sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION
@@ -158,6 +159,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Stream full restore output instead of only summary success/error events.",
+    )
+    restore_parser.add_argument(
+        "--host-id",
+        metavar="HOST_ID",
+        help="Disambiguate duplicate VM UUID/timestamp matches by source-host-id.",
+    )
+    restore_parser.add_argument(
+        "--run-id",
+        metavar="RUN_ID",
+        help="Disambiguate duplicate VM UUID/timestamp matches by run-id.",
     )
     restore_parser.add_argument(
         "vm_uuid",
@@ -195,5 +206,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="-- KOPIA_ARGS...",
         help="Arguments forwarded verbatim to the kopia binary.",
     )
+    sub._choices_actions = [action for action in sub._choices_actions if action.dest != "kopia-passthrough"]  # noqa: SLF001
 
     return parser

@@ -19,6 +19,10 @@ from libvirt_backup_system.systemd_units import (
 )
 
 
+def _config_text(backup_dir: Path, *extra: str) -> str:
+    return f"BACKUP_PATH={backup_dir}\nBACKUP_REQUIRE_NFS_MOUNT=false\nHOST_ID=host-a\n" + "".join(extra)
+
+
 def test_start_returns_one_when_systemctl_unavailable(tmp_path: Path, capsys) -> None:
     assert start(str(tmp_path)) == 1
     assert "systemctl unavailable" in capsys.readouterr().err
@@ -97,7 +101,7 @@ def test_start_rejects_invalid_kopia_service_path_via_render_failure(tmp_path: P
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir), encoding="utf-8")
 
     def boom(*_args: object, **_kwargs: object) -> str:
         raise ValueError("boom rendering kopia service")
@@ -119,10 +123,7 @@ def test_start_rejects_invalid_maintenance_interval(tmp_path: Path, monkeypatch,
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(
-        f"BACKUP_PATH={backup_dir}\nKOPIA_MAINTENANCE_INTERVAL= \n",
-        encoding="utf-8",
-    )
+    config.write_text(_config_text(backup_dir, "KOPIA_MAINTENANCE_INTERVAL= \n"), encoding="utf-8")
 
     assert start(str(tmp_path)) == 1
 
@@ -136,10 +137,7 @@ def test_start_rejects_invalid_verify_interval(tmp_path: Path, monkeypatch, caps
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(
-        f"BACKUP_PATH={backup_dir}\nKOPIA_VERIFY_INTERVAL=--bad\n",
-        encoding="utf-8",
-    )
+    config.write_text(_config_text(backup_dir, "KOPIA_VERIFY_INTERVAL=--bad\n"), encoding="utf-8")
 
     assert start(str(tmp_path)) == 1
 
@@ -164,7 +162,7 @@ def test_start_rejects_invalid_timer_calendar(tmp_path: Path, monkeypatch, capsy
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\nSYSTEMD_ON_CALENDAR=--help\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir, "SYSTEMD_ON_CALENDAR=--help\n"), encoding="utf-8")
 
     assert start(str(tmp_path)) == 1
 
@@ -179,7 +177,7 @@ def test_start_installs_units_enables_and_starts_timer_schedule(tmp_path: Path, 
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir), encoding="utf-8")
     calls: list[list[str]] = []
     order: list[str] = []
 
@@ -241,7 +239,7 @@ def test_start_configures_timeout_before_calendar_validation(tmp_path: Path, mon
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\nCOMMAND_TIMEOUT_SECONDS=7\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir, "COMMAND_TIMEOUT_SECONDS=7\n"), encoding="utf-8")
     configured: list[str] = []
 
     def fake_configure(value: str) -> None:
@@ -265,7 +263,7 @@ def test_start_rejects_invalid_command_timeout(tmp_path: Path, monkeypatch, caps
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\nCOMMAND_TIMEOUT_SECONDS=0\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir, "COMMAND_TIMEOUT_SECONDS=0\n"), encoding="utf-8")
 
     assert start(str(tmp_path)) == 1
     assert "command timeout must be greater than 0" in capsys.readouterr().err
@@ -278,7 +276,7 @@ def test_start_returns_one_when_systemctl_fails(tmp_path: Path, monkeypatch, cap
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     config.parent.mkdir(parents=True)
-    config.write_text(f"BACKUP_PATH={backup_dir}\n", encoding="utf-8")
+    config.write_text(_config_text(backup_dir), encoding="utf-8")
 
     def fake_run(args: list[str], *, check: bool = True, env: object = None) -> CommandResult:
         return CommandResult(args, 1, "", "boom")

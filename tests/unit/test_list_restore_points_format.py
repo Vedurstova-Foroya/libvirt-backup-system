@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ def test_format_rows_renders_aligned_table(tmp_path: Path) -> None:
     out = list_restore_points.format_rows([_row(tmp_path)])
     lines = out.splitlines()
     assert lines[0].startswith("source-host-id")
-    assert lines[0].split() == ["source-host-id", "vm-uuid", "vm-name", "timestamp", "run-id"]
+    assert lines[0].split() == ["source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name"]
     assert ALPHA_UUID in lines[1]
     assert "alpha" in lines[1]
     assert "snap-1" not in out
@@ -50,6 +51,22 @@ def test_format_rows_renders_aligned_table(tmp_path: Path) -> None:
 
 def test_format_rows_renders_header_only_for_empty_rows() -> None:
     assert list_restore_points.format_rows([]).startswith("source-host-id")
+
+
+def test_format_json_preserves_spaced_vm_names(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    row = list_restore_points.BackupRow(
+        vm_uuid=row.vm_uuid,
+        timestamp=row.timestamp,
+        host_id=row.host_id,
+        vm_name="alpha with spaces",
+        run_id=row.run_id,
+        snapshot_id=row.snapshot_id,
+        config_file=row.config_file,
+    )
+    payload = json.loads(list_restore_points.format_json([row]))
+    assert payload[0]["vm_name"] == "alpha with spaces"
+    assert payload[0]["timestamp"] == "20260521T023001"
 
 
 def test_list_restore_points_returns_one_when_backup_path_missing(
@@ -70,6 +87,16 @@ def test_list_restore_points_logs_and_returns_zero_when_no_rows(
     assert "no backups found" in capsys.readouterr().out
 
 
+def test_list_restore_points_prints_empty_json_when_no_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _make_config(tmp_path)
+    monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
+    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [])
+    assert list_restore_points.list_restore_points(cfg, json_output=True) == 0
+    assert capsys.readouterr().out == "[]\n"
+
+
 def test_list_restore_points_prints_table_and_returns_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -80,3 +107,13 @@ def test_list_restore_points_prints_table_and_returns_zero(
     out = capsys.readouterr().out
     assert "snap-1" not in out
     assert "source-host-id" in out
+
+
+def test_list_restore_points_prints_json_and_returns_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _make_config(tmp_path)
+    monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
+    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [_row(tmp_path)])
+    assert list_restore_points.list_restore_points(cfg, json_output=True) == 0
+    assert json.loads(capsys.readouterr().out)[0]["snapshot_id"] == "snap-1"
