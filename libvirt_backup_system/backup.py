@@ -1,17 +1,8 @@
 """Kopia-engine backup orchestration.
 
-Phase 3 cutover. The chain/run-records/fingerprint machinery is gone; a
-backup run is now a sequence of kopia snapshots tagged with a per-VM
-``run-id``. For each running VM, sequentially:
-
-  1. ``vm_snapshot.freeze`` — external snapshots created on all disks.
-  2. For each disk: ``stream_disk`` pipes the read-only base into
-     ``kopia snapshot create --stdin-file=<target>.raw`` with disk tags.
-  3. Write a per-run ``manifest.json`` and snapshot it as ``kind:meta``.
-  4. ``vm_snapshot.commit`` — overlays folded back, original chain restored.
-
-The orchestrator does NOT run kopia maintenance — that's a separate
-systemd timer (see Phase 6) so a slow GC pass cannot block backups.
+A run is one set of disk snapshots plus one manifest snapshot, tied together
+with a per-VM ``run-id``. Kopia maintenance stays on its own systemd timer so
+slow GC cannot block backups.
 """
 
 from __future__ import annotations
@@ -26,28 +17,20 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
-from . import kopia_repo, kopia_snapshots
+from . import backup_cleanup, kopia_repo, kopia_snapshots
 from .config import Config
 from .logging_json import event
 from .manifest import Manifest, ManifestDisk, snapshot_filename_for_target, utc_timestamp
 from .paths import backup_root, runtime_backup_path_ok
-from .preflight_estimate import disk_virtual_size_bytes
+from .preflight_estimate import disk_image_info
 from .shell import CommandError
 from .vm_snapshot import DiskTarget, LibvirtSnapshotter, VmSnapshotter
 from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
-__all__ = [
-    "backup_root",
-    "backup_vm",
-    "current_month",
-    "run_backups",
-    "runtime_backup_path_ok",
-    "timestamp",
-]
+__all__ = ["backup_root", "backup_vm", "current_month", "run_backups", "runtime_backup_path_ok", "timestamp"]
 
 
 def current_month(now: dt.datetime | None = None) -> str:
-    """Calendar bucket (``YYYY-MM``). Retained for log-line continuity."""
     now = now or dt.datetime.now(dt.timezone.utc)
     return f"{now.year:04d}-{now.month:02d}"
 
@@ -56,21 +39,13 @@ def timestamp(now: dt.datetime | None = None) -> str:
     return utc_timestamp(now)
 
 
-def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list[DiskTarget]) -> Manifest:
+def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list[DiskTarget]) -> Manifest | None:
     libvirt_uri = config.get("LIBVIRT_URI")
     manifest_disks: list[ManifestDisk] = []
     for disk in disks:
-        try:
-            virtual = disk_virtual_size_bytes(str(disk.source))
-        except (CommandError, OSError, ValueError) as exc:
-            event(
-                "warning",
-                "could not read virtual disk size; defaulting to 0",
-                vm=vm.name,
-                disk=str(disk.source),
-                error=str(exc),
-            )
-            virtual = 0
+        virtual = _validated_virtual_size(vm, disk)
+        if virtual is None:
+            return None
         manifest_disks.append(
             ManifestDisk(
                 target=disk.target,
@@ -92,12 +67,40 @@ def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list
     )
 
 
-def _read_domain_xml(libvirt_uri: str, vm_name: str) -> str:
-    """Persistent ``virsh dumpxml`` for the manifest body.
+def _validated_virtual_size(vm: VM, disk: DiskTarget) -> int | None:
+    fields = {"vm": vm.name, "target": disk.target, "disk": str(disk.source)}
+    if disk.source_type != "file" or str(disk.source) in {"", "-"}:
+        event(
+            "error",
+            "unsupported backup disk",
+            **fields,
+            source_type=disk.source_type,
+            reason="only file-backed qcow2 disks are supported",
+        )
+        return None
+    try:
+        info = disk_image_info(str(disk.source))
+    except (CommandError, OSError, ValueError) as exc:
+        stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
+        event("error", "unsupported backup disk", **fields, error=str(exc), stderr=stderr)
+        return None
+    if info.get("format") != "qcow2":
+        event(
+            "error",
+            "unsupported backup disk",
+            **fields,
+            disk_format=str(info.get("format")),
+            reason="only qcow2 disks are supported",
+        )
+        return None
+    virtual = info.get("virtual-size")
+    if isinstance(virtual, bool) or not isinstance(virtual, int):
+        event("error", "unsupported backup disk", **fields, reason="missing virtual size")
+        return None
+    return virtual
 
-    Kept lazy so unit tests can monkeypatch the helper without dragging the
-    real virsh into every backup test.
-    """
+
+def _read_domain_xml(libvirt_uri: str, vm_name: str) -> str:
     from .shell import run as shell_run  # local to keep top of file lean
 
     result = shell_run(["virsh", "-c", libvirt_uri, "dumpxml", "--inactive", "--", vm_name])
@@ -155,12 +158,20 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
         raise ValueError(f"refusing unsafe VM uuid for {vm.name!r}: {vm.uuid!r}")
     if not runtime_backup_path_ok(config):
         return False
-    snapper_obj: VmSnapshotter = snapper or LibvirtSnapshotter(libvirt_uri=config.get("LIBVIRT_URI"))
+    snapper_obj: VmSnapshotter = snapper or LibvirtSnapshotter(
+        config.get("LIBVIRT_URI"), command_timeout_seconds=int(config.get("COMMAND_TIMEOUT_SECONDS"))
+    )
     run_id = str(uuid.uuid4())
     stamp = utc_timestamp()
     event("info", "backup started", vm=vm.name, run_id=run_id, timestamp=stamp)
-    snapper_disks = snapper_obj.list_disks(vm.name)
+    try:
+        snapper_disks = snapper_obj.list_disks(vm.name)
+    except ValueError as exc:
+        event("error", "unsupported backup disk", vm=vm.name, error=str(exc))
+        return False
     manifest = _build_manifest(config, vm, run_id, stamp, snapper_disks)
+    if manifest is None:
+        return False
     success, consistency = _stream_all_disks(config, vm, manifest, run_id, snapper_obj, snapper_disks)
     if not success:
         return False
@@ -181,18 +192,11 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
 def _stream_all_disks(
     config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter, snapper_disks: list[DiskTarget]
 ) -> tuple[bool, str]:
-    """Drive freeze → stream each disk → commit, all through the same snapper.
-
-    Returns ``(ok, consistency)`` where ``consistency`` is ``"quiesced"`` when
-    QGA flushed the guest filesystems and ``"crash"`` when the freeze fell back
-    to a crash-consistent snapshot. The flag is sourced from
-    ``FrozenSnapshot.quiesced`` so operators can grep run logs to tell which
-    VMs ran without QGA. ``commit`` is always invoked in the ``finally`` block
-    so an overlay is never left wedged on the running domain even if a stream
-    raises mid-flight.
-    """
+    """Drive freeze → stream each disk → commit, all through the same snapper."""
     frozen = snapper.freeze(vm.name, snapper_disks)
     consistency = "quiesced" if frozen.quiesced else "crash"
+    created_disk_snapshot_ids: list[str] = []
+    meta_written = False
     ok = True
     try:
         for disk in manifest.disks:
@@ -201,12 +205,17 @@ def _stream_all_disks(
                 event("error", "missing snapshot base for disk", vm=vm.name, target=disk.target)
                 ok = False
                 break
-            if not _stream_single_disk(config, vm, run_id, disk.target, base, snapper):
+            snapshot_id = _stream_single_disk(config, vm, run_id, disk.target, base, snapper)
+            if snapshot_id is None:
                 ok = False
                 break
-        if ok and not _write_meta_snapshot(config, vm, manifest, run_id):
-            ok = False
+            created_disk_snapshot_ids.append(snapshot_id)
+        if ok:
+            meta_written = _write_meta_snapshot(config, vm, manifest, run_id)
+            ok = meta_written
     finally:
+        if not meta_written and created_disk_snapshot_ids:
+            backup_cleanup.cleanup_created_disk_snapshots(config, vm, run_id, created_disk_snapshot_ids)
         try:
             snapper.commit(frozen)
         except CommandError as exc:
@@ -215,7 +224,9 @@ def _stream_all_disks(
     return ok, consistency
 
 
-def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: Path, snapper: VmSnapshotter) -> bool:
+def _stream_single_disk(
+    config: Config, vm: VM, run_id: str, target: str, base: Path, snapper: VmSnapshotter
+) -> str | None:
     try:
         with snapper.stream_disk(base) as upstream:
             # The protocol pins ``stream_disk`` to ``AbstractContextManager[object]``
@@ -223,7 +234,7 @@ def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: 
             # the kopia stdin shim still wants the concrete type, so we narrow
             # at the boundary. Any snapper that yields something else has to
             # adapt to the same interface ``snapshot_create_stdin`` expects.
-            kopia_snapshots.snapshot_create_stdin(
+            return kopia_snapshots.snapshot_create_stdin(
                 config_file=kopia_repo.local_config_file(config),
                 password_file=kopia_repo.password_file_path(config),
                 cache_dir=kopia_repo.cache_dir(config),
@@ -232,17 +243,21 @@ def _stream_single_disk(config: Config, vm: VM, run_id: str, target: str, base: 
                 source_stream=cast("subprocess.Popen[bytes] | None", upstream),
                 override_source=_override_source(config, vm.uuid, target),
                 parallelism=_parallelism(config),
+                timeout=int(config.get("COMMAND_TIMEOUT_SECONDS")),
             )
-    except CommandError as exc:
+    except (CommandError, ValueError) as exc:
+        if isinstance(exc, kopia_snapshots.SnapshotCreateError) and exc.snapshot_id is not None:
+            backup_cleanup.cleanup_created_disk_snapshots(config, vm, run_id, [exc.snapshot_id])
+        stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
         event(
             "error",
             "disk snapshot failed",
             vm=vm.name,
             target=target,
-            stderr=exc.result.stderr.strip(),
+            stderr=stderr,
+            error=str(exc),
         )
-        return False
-    return True
+        return None
 
 
 def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str) -> bool:

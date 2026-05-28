@@ -99,7 +99,7 @@ sparse qcow2 on local storage:
 sudo mkdir -p /var/tmp/lbs-restore/disks
 sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia \
      --config-file=/tmp/lbs-manual.config \
-     snapshot restore --shallow=0 <disk-snap-id>/vda.raw - \
+     snapshot restore <disk-snap-id>/vda.raw - \
    | sudo qemu-img convert -f raw -O qcow2 -S 4096 - /var/tmp/lbs-restore/disks/vda.qcow2
 ```
 

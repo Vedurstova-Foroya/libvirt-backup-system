@@ -25,6 +25,7 @@ from typing import Protocol
 
 from .logging_json import event
 from .shell import CommandError, CommandResult, run
+from .stream_process import terminate_process
 
 # Per-domain runtime root libvirt creates for each running VM.
 LIBVIRT_QEMU_RUNTIME_ROOT = Path("/var/lib/libvirt/qemu")
@@ -36,6 +37,7 @@ class DiskTarget:
 
     target: str
     source: Path
+    source_type: str = "file"
 
 
 @dataclass(frozen=True)
@@ -72,14 +74,15 @@ class LibvirtSnapshotter:
     qemu_nbd_path: str = "qemu-nbd"
     nbdcopy_path: str = "nbdcopy"
     socket_root: Path = LIBVIRT_QEMU_RUNTIME_ROOT
+    command_timeout_seconds: float = 86400.0
 
     def list_disks(self, vm_name: str) -> list[DiskTarget]:
         """Return ``(target, source)`` pairs via ``virsh domblklist --details``.
 
         ``--details`` adds the ``Type Device Target Source`` header; we filter
         to ``device == 'disk'`` entries so CD-ROMs and floppies do not get
-        backed up. Pure-network disks (no source path) are skipped — the
-        kopia chunker cannot reach them from this host.
+        backed up. Non-file and source-less disks are rejected because the
+        backup/restore path only models file-backed qcow2 images.
         """
         result = run(["virsh", "-c", self.libvirt_uri, "domblklist", "--details", "--", vm_name])
         disks: list[DiskTarget] = []
@@ -87,10 +90,14 @@ class LibvirtSnapshotter:
             parts = raw_line.split(None, 3)
             if len(parts) != 4 or parts[0] == "Type":
                 continue
-            _type, device, target, source = parts
-            if device != "disk" or not source or source == "-":
+            source_type, device, target, source = parts
+            if device != "disk":
                 continue
-            disks.append(DiskTarget(target=target, source=Path(source)))
+            if source_type != "file" or not source or source == "-":
+                raise ValueError(
+                    f"unsupported disk source for {vm_name}:{target}: type={source_type!r}, source={source!r}"
+                )
+            disks.append(DiskTarget(target=target, source=Path(source), source_type=source_type))
         return disks
 
     def freeze(self, vm_name: str, disks: list[DiskTarget]) -> FrozenSnapshot:
@@ -174,12 +181,14 @@ class LibvirtSnapshotter:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                start_new_session=True,
             )
             self._await_socket(socket, qemu_nbd)
             nbdcopy = subprocess.Popen(
                 [self.nbdcopy_path, f"nbd+unix://?socket={socket}", "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                start_new_session=True,
             )
             yield nbdcopy
         finally:
@@ -189,7 +198,7 @@ class LibvirtSnapshotter:
                 socket.unlink(missing_ok=True)
 
     def _await_socket(self, socket: Path, proc: subprocess.Popen[bytes]) -> None:
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + min(5.0, self.command_timeout_seconds)
         while time.monotonic() < deadline:
             if socket.exists():
                 return
@@ -198,22 +207,12 @@ class LibvirtSnapshotter:
                     self._command_result(proc, [self.qemu_nbd_path], "qemu-nbd exited before socket appeared")
                 )
             time.sleep(0.05)
+        terminate_process(proc)
         raise CommandError(self._command_result(proc, [self.qemu_nbd_path], "qemu-nbd socket did not appear"))
 
     @staticmethod
     def _terminate(proc: subprocess.Popen[bytes] | None) -> None:
-        if proc is None:
-            return
-        if proc.poll() is None:
-            with suppress(OSError):
-                proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                with suppress(OSError):
-                    proc.kill()
-                with suppress(subprocess.TimeoutExpired, OSError):
-                    proc.wait(timeout=5)
+        terminate_process(proc)
 
     @staticmethod
     def _command_result(proc: subprocess.Popen[bytes], args: list[str], msg: str) -> CommandResult:

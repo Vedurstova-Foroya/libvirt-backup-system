@@ -13,7 +13,8 @@ import os
 import secrets
 import stat
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,8 +99,9 @@ def password_file_security_failure(path: Path, *, label: str = "kopia password f
     mode = info.st_mode & 0o777
     if mode != 0o600:
         return f"{label} must be mode 600 (is {oct(mode)}): {path}"
-    if hasattr(os, "geteuid") and os.geteuid() == 0 and info.st_uid != 0:
-        return f"{label} must be owned by root (is uid {info.st_uid}): {path}"
+    uid = getattr(info, "st_uid", None)
+    if uid is not None and uid != 0:
+        return f"{label} must be owned by root (is uid {uid}): {path}"
     return None
 
 
@@ -143,7 +145,45 @@ def write_password_file(config: Config, value: str) -> None:
         except OSError as exc:
             tmp.unlink(missing_ok=True)
             raise OSError(f"chown root:root failed for {tmp}: {exc}") from exc
+    failure = password_file_security_failure(tmp, label="temporary kopia password file")
+    if failure is not None:
+        tmp.unlink(missing_ok=True)
+        raise PermissionError(failure)
     os.replace(tmp, path)
+
+
+@contextmanager
+def temporary_password_file(config: Config, value: str) -> Iterator[Path]:
+    """Yield a short-lived secure password file for install-time validation."""
+    from . import kopia_repo
+
+    if not value:
+        raise ValueError("kopia password must not be empty")
+    final_path = kopia_repo.password_file_path(config)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = final_path.parent / f".{final_path.name}.verify.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        os.write(fd, value.encode("utf-8"))
+        os.write(fd, b"\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        try:
+            os.chown(tmp, 0, 0)
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise OSError(f"chown root:root failed for {tmp}: {exc}") from exc
+    failure = password_file_security_failure(tmp, label="temporary kopia password file")
+    if failure is not None:
+        tmp.unlink(missing_ok=True)
+        raise PermissionError(failure)
+    try:
+        yield tmp
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def existing_password_matches(config: Config, value: str) -> bool:
@@ -170,7 +210,10 @@ def change_local_password(config: Config, new_value: str) -> int:
     if old_value == new_value:
         event("info", "kopia password unchanged; no rotation needed")
         return 0
-    config_file = kopia_repo.local_config_file(config)
+    config_file = kopia_repo.ensure_local_connected(config)
+    if config_file is None:
+        event("error", "kopia local repo did not connect with current password")
+        return 1
     cache = kopia_repo.cache_dir(config)
     try:
         kopia_client.repository_status(

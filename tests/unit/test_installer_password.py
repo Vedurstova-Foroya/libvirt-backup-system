@@ -13,6 +13,7 @@ import pytest
 
 from libvirt_backup_system import installer_password, kopia_password, kopia_repo
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.shell import CommandError, CommandResult
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -24,6 +25,13 @@ def _make_config(tmp_path: Path) -> Config:
 
 def _password_path(cfg: Config) -> Path:
     return kopia_repo.password_file_path(cfg)
+
+
+def _create_local_repo_sentinel(cfg: Config) -> Path:
+    repo_path = kopia_repo.local_repo_path(cfg)
+    repo_path.mkdir(parents=True)
+    (repo_path / "kopia.repository.f").write_text("repo\n", encoding="utf-8")
+    return repo_path
 
 
 # --- install_password -----------------------------------------------------
@@ -67,6 +75,21 @@ def test_install_password_no_flag_existing_file_keeps_file(tmp_path: Path) -> No
     assert pw_path.read_text(encoding="utf-8") == "kept-across-runs\n"
 
 
+def test_install_password_no_flag_existing_insecure_file_reports_security_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    pw_path = _password_path(cfg)
+    pw_path.parent.mkdir(parents=True, exist_ok=True)
+    pw_path.write_text("loose\n", encoding="utf-8")
+    pw_path.chmod(0o644)
+    assert installer_password.install_password(cfg, kopia_password.PasswordSpec()) == 1
+    err = capsys.readouterr().err
+    assert "kopia password file security failure" in err
+    assert "must be mode 600" in err
+
+
 def test_install_password_idempotent_when_flag_matches_existing(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     pw_path = _password_path(cfg)
@@ -92,6 +115,79 @@ def test_install_password_fails_on_mismatch(tmp_path: Path, capsys: pytest.Captu
     assert "change-password" in err
     # File must remain untouched.
     assert pw_path.read_text(encoding="utf-8") == "existing\n"
+
+
+def test_install_password_existing_repo_rejects_bad_supplied_password_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    repo_path = _create_local_repo_sentinel(cfg)
+
+    def fail_connect(**kwargs: object) -> None:
+        assert kwargs["repo_path"] == repo_path
+        password_file = kwargs["password_file"]
+        assert isinstance(password_file, Path)
+        assert password_file != _password_path(cfg)
+        assert password_file.read_text(encoding="utf-8") == "bad-pw\n"
+        raise CommandError(CommandResult(["kopia"], 1, "", "invalid password"))
+
+    monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fail_connect)
+
+    spec = kopia_password.PasswordSpec(literal="bad-pw")
+    assert installer_password.install_password(cfg, spec) == 1
+    assert not _password_path(cfg).exists()
+    assert not list(_password_path(cfg).parent.glob(".kopia.pw.verify.*.tmp"))
+    err = capsys.readouterr().err
+    assert "supplied kopia password did not connect to existing repo" in err
+    assert "invalid password" in err
+
+
+def test_install_password_existing_repo_restores_missing_file_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _make_config(tmp_path)
+    _create_local_repo_sentinel(cfg)
+    seen: list[Path] = []
+
+    def fake_connect(**kwargs: object) -> None:
+        password_file = kwargs["password_file"]
+        assert isinstance(password_file, Path)
+        seen.append(password_file)
+        assert password_file.read_text(encoding="utf-8") == "correct-pw\n"
+
+    monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fake_connect)
+
+    spec = kopia_password.PasswordSpec(literal="correct-pw")
+    assert installer_password.install_password(cfg, spec) == 0
+    assert seen and seen[0] != _password_path(cfg)
+    assert _password_path(cfg).read_text(encoding="utf-8") == "correct-pw\n"
+
+
+def test_install_password_existing_repo_repairs_wrong_file_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _make_config(tmp_path)
+    _create_local_repo_sentinel(cfg)
+    pw_path = _password_path(cfg)
+    pw_path.parent.mkdir(parents=True)
+    pw_path.write_text("stale-pw\n", encoding="utf-8")
+    pw_path.chmod(0o600)
+
+    def fake_connect(**kwargs: object) -> None:
+        password_file = kwargs["password_file"]
+        assert isinstance(password_file, Path)
+        assert password_file != pw_path
+        assert password_file.read_text(encoding="utf-8") == "correct-pw\n"
+
+    monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fake_connect)
+
+    spec = kopia_password.PasswordSpec(literal="correct-pw")
+    assert installer_password.install_password(cfg, spec) == 0
+    assert pw_path.read_text(encoding="utf-8") == "correct-pw\n"
 
 
 def test_install_password_reports_resolution_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

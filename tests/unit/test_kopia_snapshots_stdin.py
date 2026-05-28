@@ -18,7 +18,13 @@ from libvirt_backup_system.shell import CommandError
 
 def _write_password(path: Path, value: str = "swordfish") -> Path:
     path.write_text(value, encoding="utf-8")
+    path.chmod(0o600)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _fake_kopia_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kopia_snapshots, "build_kopia_env", lambda *_a, **_kw: {})
 
 
 class _KopiaSuccess:
@@ -26,8 +32,9 @@ class _KopiaSuccess:
         self.args = args
         self.returncode = 0
 
-    def communicate(self, _input: str | None = None) -> tuple[str, str]:
-        return ("", "")
+    def communicate(self, _input: str | None = None, timeout: float | None = None) -> tuple[str, str]:
+        _ = timeout
+        return ('{"id":"snap-stdin"}', "")
 
 
 class _KopiaFailure:
@@ -35,14 +42,15 @@ class _KopiaFailure:
         self.args = args
         self.returncode = 5
 
-    def communicate(self, _input: str | None = None) -> tuple[str, str]:
+    def communicate(self, _input: str | None = None, timeout: float | None = None) -> tuple[str, str]:
+        _ = timeout
         return ("", "fail")
 
 
 def test_snapshot_create_stdin_handles_none_source_stream(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     password = _write_password(tmp_path / "pw")
     monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", _KopiaSuccess)
-    kopia_snapshots.snapshot_create_stdin(
+    snapshot_id = kopia_snapshots.snapshot_create_stdin(
         config_file=tmp_path / "c",
         password_file=password,
         stdin_file="vda.raw",
@@ -50,6 +58,7 @@ def test_snapshot_create_stdin_handles_none_source_stream(monkeypatch: pytest.Mo
         source_stream=None,
         override_source="h:libvirt-backup:uuid/vda",
     )
+    assert snapshot_id == "snap-stdin"
 
 
 def test_snapshot_create_stdin_closes_upstream_stdout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -67,8 +76,8 @@ def test_snapshot_create_stdin_closes_upstream_stdout(monkeypatch: pytest.Monkey
             self.stdout: FakeStdout | None = FakeStdout()
             self.returncode = 0
 
-        def wait(self) -> None:
-            return None
+        def wait(self, timeout: float | None = None) -> None:
+            _ = timeout
 
     monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", _KopiaSuccess)
     kopia_snapshots.snapshot_create_stdin(
@@ -82,6 +91,27 @@ def test_snapshot_create_stdin_closes_upstream_stdout(monkeypatch: pytest.Monkey
     assert closed == [True]
 
 
+def test_snapshot_create_stdin_requests_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured: list[list[str]] = []
+
+    class Proc(_KopiaSuccess):
+        def __init__(self, args: list[str], **kwargs: Any) -> None:
+            captured.append(args)
+            super().__init__(args, **kwargs)
+
+    monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", Proc)
+    kopia_snapshots.snapshot_create_stdin(
+        config_file=tmp_path / "c",
+        password_file=password,
+        stdin_file="vda.raw",
+        tags={},
+        source_stream=None,
+        override_source="h:libvirt-backup:uuid/vda",
+    )
+    assert "--json" in captured[0]
+
+
 def test_snapshot_create_stdin_handles_non_list_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     password = _write_password(tmp_path / "pw")
 
@@ -92,8 +122,8 @@ def test_snapshot_create_stdin_handles_non_list_args(monkeypatch: pytest.MonkeyP
             self.stdout: object = None
             self.returncode = 11
 
-        def wait(self) -> None:
-            return None
+        def wait(self, timeout: float | None = None) -> None:
+            _ = timeout
 
     monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", _KopiaSuccess)
     with pytest.raises(CommandError) as info:
@@ -119,11 +149,11 @@ def test_snapshot_create_stdin_propagates_upstream_failure(monkeypatch: pytest.M
             self.stdout: object = None
             self.returncode = 9
 
-        def wait(self) -> None:
-            return None
+        def wait(self, timeout: float | None = None) -> None:
+            _ = timeout
 
     monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", _KopiaSuccess)
-    with pytest.raises(CommandError) as info:
+    with pytest.raises(kopia_snapshots.SnapshotCreateError) as info:
         kopia_snapshots.snapshot_create_stdin(
             config_file=tmp_path / "c",
             password_file=password,
@@ -133,6 +163,7 @@ def test_snapshot_create_stdin_propagates_upstream_failure(monkeypatch: pytest.M
             override_source="h:libvirt-backup:uuid/vda",
         )
     assert info.value.result.returncode == 9
+    assert info.value.snapshot_id == "snap-stdin"
 
 
 def test_snapshot_create_stdin_propagates_kopia_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -170,10 +201,6 @@ def test_snapshot_restore_to_stdout_spawns_process(monkeypatch: pytest.MonkeyPat
     args = captured[0]
     assert args[-1] == "-"
     assert "abc/vda.raw" in args
-    # ``--shallow=0`` is required by the plan's documented restore command
-    # so kopia materializes the file end-to-end instead of writing a
-    # placeholder on disk.
-    assert "--shallow=0" in args
-    shallow_idx = args.index("--shallow=0")
     spec_idx = args.index("abc/vda.raw")
-    assert shallow_idx < spec_idx
+    assert "--shallow=0" not in args
+    assert spec_idx < args.index("-")

@@ -1,5 +1,3 @@
-"""Disk destination, materialization, and XML rewrite tests for restore."""
-
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
@@ -15,12 +13,6 @@ from .restore_helpers import make_config, make_manifest, make_row
 
 
 def test_overwrite_dest_map_uses_original_source_paths() -> None:
-    """Overwrite map must reuse each disk's recorded ``source_path`` verbatim.
-
-    Two disks in different parent directories - the legitimate
-    multi-pool layout that used to collapse to None in the old
-    ``_existing_disk_dir`` heuristic - round-trip without losing identity.
-    """
     disks = (
         ManifestDisk(
             target="vda",
@@ -51,6 +43,17 @@ def test_turnkey_dest_map_lands_under_staging(tmp_path: Path) -> None:
     )
     dest_map = restore._turnkey_dest_map(make_manifest(disks=disks), staging)
     assert dest_map == {"vda": staging / "vda.qcow2", "vdb": staging / "vdb.qcow2"}
+
+
+@pytest.mark.parametrize("target", ["vda/../../escape", "../escape", "/escape", "/var/lib/disk", ".."])
+def test_turnkey_dest_map_sanitizes_malformed_targets(tmp_path: Path, target: str) -> None:
+    staging = tmp_path / "stage"
+    disk = ManifestDisk(target=target, source_path="/pool/x.qcow2", virtual_size_bytes=1, snapshot_filename="x.raw")
+    dest = restore._turnkey_dest_map(make_manifest(disks=(disk,)), staging)[target]
+    relative = dest.relative_to(staging)
+    assert dest.parent == staging
+    assert ".." not in relative.parts
+    assert dest.name.endswith(".qcow2")
 
 
 def test_overwrite_temp_dest_map_uses_sibling_hidden_paths(tmp_path: Path) -> None:
@@ -166,7 +169,6 @@ def test_materialize_disks_unlinks_existing_file(tmp_path: Path, monkeypatch: py
 
 
 def test_materialize_disks_returns_false_on_missing_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """First-disk lookup failure short-circuits the whole loop."""
     monkeypatch.setattr(restore, "_disk_snapshot_id", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         restore, "_stream_disk_to_qcow2", lambda *_a, **_kw: pytest.fail("stream must not run after lookup miss")
@@ -177,7 +179,6 @@ def test_materialize_disks_returns_false_on_missing_snapshot(tmp_path: Path, mon
 
 
 def test_materialize_disks_returns_false_on_stream_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failing stream propagates as False so the caller can bail out cleanly."""
     monkeypatch.setattr(restore, "_disk_snapshot_id", lambda *_a, **_kw: "snap-id")
     monkeypatch.setattr(restore, "_stream_disk_to_qcow2", lambda *_a, **_kw: False)
     manifest = make_manifest()
@@ -186,7 +187,6 @@ def test_materialize_disks_returns_false_on_stream_failure(tmp_path: Path, monke
 
 
 def test_rewrite_domain_disk_sources_rewrites_file_attr() -> None:
-    """The dominant case: ``<source file=...>`` gets pointed at the restored qcow2."""
     xml = (
         "<domain type='kvm'>"
         "  <devices>"
@@ -205,7 +205,6 @@ def test_rewrite_domain_disk_sources_rewrites_file_attr() -> None:
 
 
 def test_rewrite_domain_disk_sources_rewrites_dev_attr() -> None:
-    """``<source dev=...>`` (block-backed) gets pointed at the restored file."""
     xml = (
         "<domain type='kvm'><devices>"
         "<disk type='block' device='disk'>"

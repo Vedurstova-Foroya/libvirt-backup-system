@@ -13,7 +13,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 from .kopia_client import (
     KOPIA_BINARY,
@@ -25,7 +25,14 @@ from .kopia_client import (
     run_kopia_streamed,
     tags_args,
 )
-from .shell import CommandError, CommandResult
+from .shell import TIMEOUT_RETURN_CODE, CommandError, CommandResult
+from .stream_process import popen_args, terminate_processes, timeout_message
+
+
+class SnapshotCreateError(CommandError):
+    def __init__(self, result: CommandResult, snapshot_id: str | None = None):
+        self.snapshot_id = snapshot_id
+        super().__init__(result)
 
 
 @dataclass(frozen=True)
@@ -105,7 +112,8 @@ def snapshot_create_stdin(
     override_source: str,
     parallelism: int | None = None,
     cache_dir: Path | None = None,
-) -> None:
+    timeout: float | None = None,
+) -> str:
     """Snapshot a byte stream piped on stdin as if it were ``stdin_file``.
 
     The upstream of the pipe (``qemu-nbd | nbdcopy``) sources the bytes
@@ -121,6 +129,7 @@ def snapshot_create_stdin(
         "create",
         f"--stdin-file={stdin_file}",
         f"--override-source={override_source}",
+        "--json",
         *tags_args(tags),
         "-",
     ]
@@ -134,33 +143,77 @@ def snapshot_create_stdin(
         stderr=subprocess.PIPE,
         env=env,
         text=True,
+        start_new_session=True,
     )
     if source_stream is not None and source_stream.stdout is not None:
         with suppress(OSError):
             source_stream.stdout.close()
-    stdout, stderr = kopia_proc.communicate()
+    try:
+        stdout, stderr = kopia_proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        terminate_processes(kopia_proc, source_stream)
+        raise SnapshotCreateError(
+            CommandResult(
+                args=args,
+                returncode=TIMEOUT_RETURN_CODE,
+                stdout="",
+                stderr=timeout_message("kopia snapshot create", timeout),
+            )
+        ) from exc
     if source_stream is not None:
-        source_stream.wait()
+        try:
+            source_stream.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            snapshot_id = _snapshot_id_from_create_stdout(stdout or "")
+            terminate_processes(source_stream)
+            raise SnapshotCreateError(
+                CommandResult(
+                    args=popen_args(source_stream),
+                    returncode=TIMEOUT_RETURN_CODE,
+                    stdout="",
+                    stderr=timeout_message("upstream of kopia stdin", timeout),
+                ),
+                snapshot_id=snapshot_id,
+            ) from exc
     if kopia_proc.returncode != 0:
-        raise CommandError(
+        raise SnapshotCreateError(
             CommandResult(args=args, returncode=kopia_proc.returncode, stdout=stdout or "", stderr=stderr or "")
         )
+    snapshot_id = _snapshot_id_from_create_stdout(stdout or "")
     if source_stream is not None and source_stream.returncode != 0:
-        upstream_args: list[str] = []
-        upstream_raw: object = source_stream.args
-        if isinstance(upstream_raw, list | tuple):
-            for arg in cast("list[object]", upstream_raw):
-                upstream_args.append(str(arg))
-        else:
-            upstream_args.append(str(upstream_raw))
-        raise CommandError(
+        raise SnapshotCreateError(
             CommandResult(
-                args=upstream_args,
+                args=popen_args(source_stream),
                 returncode=source_stream.returncode,
                 stdout="",
                 stderr=f"upstream of kopia stdin failed (rc={source_stream.returncode})",
-            )
+            ),
+            snapshot_id=snapshot_id,
         )
+    return snapshot_id
+
+
+def _snapshot_id_from_create_stdout(stdout: str) -> str:
+    try:
+        parsed: object = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("kopia snapshot create did not return JSON") from exc
+    record = as_string_keyed(parsed)
+    snapshot_id = record.get("id")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        raise ValueError("kopia snapshot create JSON did not include id")
+    return snapshot_id
+
+
+def snapshot_delete(
+    *,
+    config_file: Path,
+    password_file: Path,
+    snapshot_id: str,
+    cache_dir: Path | None = None,
+) -> None:
+    args = [*build_config_args(config_file), "snapshot", "delete", snapshot_id, "--delete"]
+    run_kopia_streamed(args, password_file=password_file, cache_dir=cache_dir)
 
 
 def snapshot_list(
@@ -212,6 +265,7 @@ def snapshot_restore_to_stdout(
     snapshot_id: str,
     file_in_snapshot: str,
     cache_dir: Path | None = None,
+    stderr: int | IO[bytes] | None = subprocess.PIPE,
 ) -> subprocess.Popen[bytes]:
     """Stream a file from a snapshot to a child process' stdout.
 
@@ -221,11 +275,8 @@ def snapshot_restore_to_stdout(
     """
     env = build_kopia_env(password_file, cache_dir)
     spec = f"{snapshot_id}/{file_in_snapshot}"
-    # ``--shallow=0`` forces a full materialization of the referenced file
-    # in the snapshot rather than a placeholder, matching the plan's
-    # explicit restore command for streaming single-file output.
-    args = [KOPIA_BINARY, *build_config_args(config_file), "snapshot", "restore", "--shallow=0", spec, "-"]
-    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    args = [KOPIA_BINARY, *build_config_args(config_file), "snapshot", "restore", spec, "-"]
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=stderr, env=env, start_new_session=True)
 
 
 def snapshot_verify(

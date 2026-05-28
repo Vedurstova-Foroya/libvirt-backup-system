@@ -41,18 +41,17 @@ def check_peer_kopia_repos(config: Config) -> list[str]:
 
 
 def check_local_kopia_maintenance_probe(config: Config) -> list[str]:
-    """Confirm ``kopia maintenance run --safety=none`` succeeds."""
+    """Confirm ``kopia maintenance info`` can inspect repository maintenance state."""
     if not config.get("BACKUP_PATH").strip():
         return []
     cfg = kopia_repo.ensure_local_connected(config)
     if cfg is None:
         return []
     try:
-        kopia_client.maintenance_run(
+        kopia_client.maintenance_info(
             config_file=cfg,
             password_file=kopia_repo.password_file_path(config),
             cache_dir=kopia_repo.cache_dir(config),
-            safety="none",
         )
     except CommandError as exc:
         return [f"local kopia maintenance probe failed: {exc.result.stderr.strip() or exc.result.returncode}"]

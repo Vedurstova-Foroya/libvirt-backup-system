@@ -56,8 +56,11 @@ recovery procedure.
 ## `uninstall`
 
 Removes installed program files and systemd units. Config, state, logs, the
-kopia password file, and the on-disk repo are preserved unless purge flags
-are passed.
+kopia password file, and the on-disk repo are preserved by default. The
+purge flags only remove config, state, and logs; uninstall never removes the
+Kopia password file or repo. If `KOPIA_PASSWORD_FILE` is configured under
+`/var/lib/libvirt-backup-system`, `--purge-state` preserves that file and
+the parent directories needed to keep it in place.
 
 ```sh
 sudo libvirt-backup-system uninstall
@@ -89,8 +92,11 @@ surface that `check` covers. Specifically, `doctor` is a superset of
 - Last `libvirt-backup-system.service` run completed cleanly.
 - Local kopia repo connects with the shared password and
   `kopia repository status` is clean.
-- Local `kopia maintenance run --safety=none` and a lightweight
+- Local `kopia maintenance info` and a lightweight
   `kopia snapshot verify --verify-files-percent=0` complete cleanly.
+  `doctor` uses `maintenance info` because Kopia does not expose a
+  non-mutating `maintenance run --dry-run`; the scheduled timers run the
+  actual maintenance commands.
 - Every peer repo under `BACKUP_PATH/*/kopia-repo/` is reachable read-only
   with the shared password (cross-host-restore smoke test).
 
@@ -106,9 +112,11 @@ policy, and enables/starts `libvirt-backup-system.timer`,
 `libvirt-backup-system-maintenance.timer`,
 `libvirt-backup-system-maintenance-full.timer`, and
 `libvirt-backup-system-verify.timer`. Activates the schedules only; does
-not run a backup immediately. Use after `install`, after editing
-`/etc/libvirt-backup-system/libvirt-backup.env`, and after `check` has
-passed.
+not run a backup immediately. Kopia maintenance and verify timers have
+staggered activation-relative initial delays to avoid concurrent first-run
+repo operations.
+Use after `install`, after editing `/etc/libvirt-backup-system/libvirt-backup.env`,
+and after `check` has passed.
 
 ```sh
 sudo libvirt-backup-system start

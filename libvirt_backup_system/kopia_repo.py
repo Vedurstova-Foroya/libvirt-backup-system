@@ -200,6 +200,7 @@ def _apply_global_policy(config: Config) -> int:
             keep_monthly=_int_or_none(config.get("KEEP_MONTHLY")),
             keep_annual=_int_or_none(config.get("KEEP_ANNUAL")),
             compression=config.get("KOPIA_COMPRESSION") or None,
+            splitter=config.get("KOPIA_SPLITTER") or None,
         )
     except ValueError as exc:
         event("error", "kopia policy value invalid", error=str(exc))

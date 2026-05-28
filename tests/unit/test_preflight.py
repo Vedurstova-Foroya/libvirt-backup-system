@@ -17,8 +17,10 @@ from tests.unit._preflight_helpers import make_config
 
 def test_validate_libvirt_uri_accepts_known_schemes() -> None:
     assert preflight.validate_libvirt_uri("qemu:///system")
+    assert preflight.validate_libvirt_uri("qemu+unix:///system")
     assert preflight.validate_libvirt_uri("test://")
     assert not preflight.validate_libvirt_uri("https://nope")
+    assert not preflight.validate_libvirt_uri("qemu+ssh://host/system")
 
 
 def test_validate_config_zero_for_clean_config(tmp_path: Path) -> None:
@@ -169,6 +171,13 @@ def test_validate_floats_flags_negative_other(tmp_path: Path) -> None:
 def test_validate_env_values_rejects_unknown_libvirt_uri(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.values["LIBVIRT_URI"] = "https://nope"
+    failures = preflight._validate_env_values(cfg, require_writable=False)
+    assert any("LIBVIRT_URI must use one of these schemes" in failure for failure in failures)
+
+
+def test_validate_env_values_rejects_remote_libvirt_uri(tmp_path: Path) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["LIBVIRT_URI"] = "qemu+tcp://host/system"
     failures = preflight._validate_env_values(cfg, require_writable=False)
     assert any("LIBVIRT_URI must use one of these schemes" in failure for failure in failures)
 

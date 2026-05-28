@@ -22,6 +22,18 @@ def test_install_returns_password_failure_code(tmp_path: Path, monkeypatch, caps
     assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
 
 
+def test_install_reinstall_reports_insecure_password_file_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:
+    password = write_kopia_password_file(tmp_path, value="existing")
+    password.chmod(0o644)
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+
+    assert install(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "kopia password file security failure" in err
+    assert "must be mode 600" in err
+
+
 def test_install_rejects_relative_config_path(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
 

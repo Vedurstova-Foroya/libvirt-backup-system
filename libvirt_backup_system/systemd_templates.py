@@ -66,7 +66,7 @@ UNIT_INTERVAL_TIMER = """[Unit]
 Description={description}
 
 [Timer]
-OnBootSec=15min
+OnActiveSec={on_active_sec}
 OnUnitActiveSec={interval}
 
 [Install]

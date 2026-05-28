@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -147,25 +146,15 @@ def repository_change_password(
 ) -> None:
     """Wrap the master key under ``new_password``.
 
-    ``kopia repository change-password`` ordinarily prompts on stdin. We
-    drive it with ``Popen`` so we can pipe the new password in instead of
-    putting it on argv.
+    Kopia exposes ``--new-password`` for noninteractive rotation; use that
+    documented path instead of trying to script the interactive prompt.
     """
-    env = build_kopia_env(password_file, cache_dir)
-    args = [KOPIA_BINARY, *build_config_args(config_file), "repository", "change-password"]
-    proc = subprocess.Popen(
+    args = [*build_config_args(config_file), "repository", "change-password", f"--new-password={new_password}"]
+    run_kopia(
         args,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        text=True,
+        password_file=password_file,
+        cache_dir=cache_dir,
     )
-    stdout, stderr = proc.communicate(f"{new_password}\n{new_password}\n")
-    if proc.returncode != 0:
-        raise CommandError(
-            CommandResult(args=args, returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "")
-        )
 
 
 def policy_set_global(
@@ -180,6 +169,7 @@ def policy_set_global(
     keep_monthly: int | None = None,
     keep_annual: int | None = None,
     compression: str | None = None,
+    splitter: str | None = None,
 ) -> None:
     args = [*build_config_args(config_file), "policy", "set", "--global"]
     baseline = len(args)
@@ -195,6 +185,8 @@ def policy_set_global(
             args.extend([flag, str(value)])
     if compression is not None:
         args.extend(["--compression", compression])
+    if splitter is not None:
+        args.extend(["--splitter", splitter])
     if len(args) <= baseline:
         return
     run_kopia(args, password_file=password_file, cache_dir=cache_dir)
@@ -226,6 +218,11 @@ def maintenance_run(
     if safety is not None:
         args.append(f"--safety={safety}")
     run_kopia_streamed(args, password_file=password_file, cache_dir=cache_dir)
+
+
+def maintenance_info(*, config_file: Path, password_file: Path, cache_dir: Path | None = None) -> None:
+    args = [*build_config_args(config_file), "maintenance", "info"]
+    run_kopia(args, password_file=password_file, cache_dir=cache_dir)
 
 
 def maintenance_set_owner(*, config_file: Path, password_file: Path, owner: str, cache_dir: Path | None = None) -> None:

@@ -22,7 +22,6 @@ def test_list_disks_filters_non_disk_devices(monkeypatch: pytest.MonkeyPatch, tm
         "----------------------------------\n"
         " file   disk     vda      /var/lib/libvirt/images/alpha.qcow2\n"
         " file   cdrom    sda      /tmp/iso.iso\n"
-        " file   disk     vdb      -\n"
         " file   disk     vdc      /var/lib/libvirt/images/extra disk.qcow2\n"
     )
 
@@ -34,9 +33,26 @@ def test_list_disks_filters_non_disk_devices(monkeypatch: pytest.MonkeyPatch, tm
     snap = _make_snapper(tmp_path)
     disks = snap.list_disks("alpha")
     assert [d.target for d in disks] == ["vda", "vdc"]
+    assert all(d.source_type == "file" for d in disks)
     # ``split(None, 3)`` preserves spaces in the path tail so qcow2 files in
     # directories named with embedded whitespace survive the parse intact.
     assert disks[1].source == Path("/var/lib/libvirt/images/extra disk.qcow2")
+
+
+def test_list_disks_rejects_unsupported_disk_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    stdout = (
+        " Type   Device   Target   Source\n"
+        "----------------------------------\n"
+        " block  disk     vda      /dev/vg/alpha\n"
+    )
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        assert "domblklist" in args
+        return CommandResult(args, 0, stdout, "")
+
+    monkeypatch.setattr(vm_snapshot, "run", fake_run)
+    with pytest.raises(ValueError, match="unsupported disk source"):
+        _make_snapper(tmp_path).list_disks("alpha")
 
 
 def test_freeze_attempts_quiesce_then_records_overlays(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

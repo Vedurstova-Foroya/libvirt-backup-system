@@ -15,13 +15,19 @@ from .installer_helpers import print_install_next_steps as _print_install_next_s
 from .installer_helpers import write_initial_config as _write_initial_config
 from .installer_helpers import write_wrapper as _write_wrapper
 from .installer_password import install_password as _install_password
-from .installer_uninstall import purge_paths, remove_installed_files, remove_stale_kopia_units, resolve_purge_paths
+from .installer_uninstall import (
+    purge_paths,
+    remove_installed_files,
+    resolve_purge_paths,
+    resolve_purge_preserve_paths,
+)
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .shell import configure_default_timeout
 from .systemd_templates import UNIT_SERVICE, UNIT_TIMER
 from .systemd_units import (
     KOPIA_FULL_MAINTENANCE_INTERVAL,
+    KOPIA_TIMER_ON_ACTIVE_SEC,
     KOPIA_UNIT_DESCRIPTIONS,
     MAINTENANCE_FULL_TIMER_NAME,
     MAINTENANCE_FULL_UNIT_NAME,
@@ -54,15 +60,9 @@ def install(
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return 1
-    # Env file wins once it exists; first install still honors INSTALL_TIME_ENV_KEYS
-    # so the documented `BACKUP_PATH=... install` one-shot works.
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
     try:
         with acquire_run_lock(cfg):
-            # Install the pinned kopia + nbdcopy binaries BEFORE anything
-            # else: a fresh host should not need a separate manual
-            # ``apt install`` step. Idempotent — the modules skip the
-            # download when the right binary is already on disk.
             binary_code = _install_pinned_binaries(root)
             if binary_code != 0:
                 return binary_code
@@ -79,13 +79,6 @@ def install(
 
 
 def _install_pinned_binaries(root: Path) -> int:
-    """Install pinned kopia + nbdcopy binaries; return 0 on success.
-
-    Network failure or sha256 mismatch is reported as a clean error event
-    and a nonzero return so the rest of the install short-circuits before
-    touching systemd units. Idempotent: the helpers detect an already-
-    present binary at the pinned version and skip the network round-trip.
-    """
     try:
         install_kopia(prefix=root)
         install_nbdcopy(prefix=root)
@@ -96,7 +89,6 @@ def _install_pinned_binaries(root: Path) -> int:
 
 
 def _ensure_kopia_repo(cfg: Config) -> int:
-    """Create or connect the local kopia repo when BACKUP_PATH is configured."""
     if not cfg.get("BACKUP_PATH").strip():
         return 0
     failures = preflight.repo_creation_failures(cfg)
@@ -141,9 +133,6 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
 
     _print_install_next_steps(resolved_config, bin_path)
     if not backup_path:
-        # Scrub kopia housekeeping units before the legacy backup pair cleanup.
-        if not remove_stale_kopia_units(systemd_dir):
-            return 1
         return _install_without_backup_path(root, systemd_dir, resolved_config)
 
     systemd_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +154,6 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
 
 
 def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path) -> dict[str, str]:
-    """Render every unit file the installer writes. Empty dict signals failure."""
     backup_path = cfg.get("BACKUP_PATH").strip()
     try:
         service_text = render_unit_service(backup_path, bin_path, resolved_config, subcommand="run")
@@ -190,14 +178,17 @@ def _render_units(cfg: Config, root: Path, bin_path: Path, resolved_config: Path
     maintenance_timer = render_unit_interval_timer(
         description=KOPIA_UNIT_DESCRIPTIONS["maintenance"],
         interval=cfg.get("KOPIA_MAINTENANCE_INTERVAL"),
+        on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["maintenance"],
     )
     maintenance_full_timer = render_unit_interval_timer(
         description=KOPIA_UNIT_DESCRIPTIONS["maintenance-full"],
         interval=KOPIA_FULL_MAINTENANCE_INTERVAL,
+        on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["maintenance-full"],
     )
     verify_timer = render_unit_interval_timer(
         description=KOPIA_UNIT_DESCRIPTIONS["verify"],
         interval=cfg.get("KOPIA_VERIFY_INTERVAL"),
+        on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["verify"],
     )
     if timer_text is None or maintenance_timer is None or maintenance_full_timer is None or verify_timer is None:
         return {}
@@ -246,8 +237,6 @@ def _uninstall_locked(
     purge_state: bool,
     purge_logs: bool,
 ) -> int:
-    # A broken COMMAND_TIMEOUT_SECONDS must not abort the very uninstall
-    # (especially `--purge-config`) meant to clean it up — log and continue.
     try:
         configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
     except ValueError as exc:
@@ -267,19 +256,19 @@ def _uninstall_locked(
     )
     ok = remove_installed_files(root) and ok
     flags = {"config": purge_config, "state": purge_state, "logs": purge_logs}
-    ok = purge_paths(resolve_purge_paths(root, cfg, flags)) and ok
+    ok = (
+        purge_paths(
+            resolve_purge_paths(root, cfg, flags),
+            preserve_paths=resolve_purge_preserve_paths(root, cfg, flags),
+        )
+        and ok
+    )
     ok = run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
     _print_kopia_repo_retention_hint(cfg)
     return 0 if ok else 1
 
 
 def _print_kopia_repo_retention_hint(cfg: Config) -> None:
-    """Tell the operator we kept the local kopia repo and how to delete it.
-
-    Uninstall removes systemd units only; the local kopia repo and the
-    password file are operator decisions. We surface the on-disk path so an
-    operator who *does* want to wipe backups can do so in one ``rm``.
-    """
     backup_path = cfg.get("BACKUP_PATH").strip()
     if not backup_path:
         return

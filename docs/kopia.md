@@ -180,6 +180,8 @@ Each host maintains its own repo via a per-host systemd timer
 (`libvirt-backup-system-maintenance.timer`, default interval
 `KOPIA_MAINTENANCE_INTERVAL=24h`). No global owner, no cross-host
 coordination. Daily quick maintenance, weekly full maintenance.
+Maintenance and verify timers use activation-relative initial delays, then
+continue on their configured `OnUnitActiveSec` cadence.
 
 Manual run:
 

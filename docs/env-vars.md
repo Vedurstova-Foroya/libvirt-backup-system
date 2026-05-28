@@ -12,7 +12,11 @@ other value is rejected by preflight rather than silently coerced.
 LIBVIRT_URI=qemu:///system
 ```
 
-Libvirt connection used by `virsh` for VM discovery and state checks.
+Libvirt connection used by `virsh` for VM discovery and state checks. This
+Kopia engine only supports local libvirt transports (`qemu:///...` or
+`qemu+unix://...`) because disk streaming runs local `qemu-nbd` against local
+disk paths. Remote transports such as `qemu+ssh://`, `qemu+tcp://`, and
+`qemu+tls://` are rejected by preflight.
 
 ```
 BACKUP_PATH=
@@ -68,7 +72,9 @@ Require preflight and run commands to execute as root.
 COMMAND_TIMEOUT_SECONDS=86400
 ```
 
-Timeout for external commands.
+Timeout for external commands, including backup and restore streaming
+pipelines (`qemu-nbd`, `nbdcopy`, `kopia snapshot create/restore`, and
+`qemu-img convert`).
 
 ## Kopia repo
 

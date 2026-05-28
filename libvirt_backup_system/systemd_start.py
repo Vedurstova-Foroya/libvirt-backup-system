@@ -10,6 +10,7 @@ from .shell import configure_default_timeout
 from .systemd_units import (
     CHECK_UNIT_NAME,
     KOPIA_FULL_MAINTENANCE_INTERVAL,
+    KOPIA_TIMER_ON_ACTIVE_SEC,
     KOPIA_UNIT_DESCRIPTIONS,
     MAINTENANCE_FULL_TIMER_NAME,
     MAINTENANCE_FULL_UNIT_NAME,
@@ -57,7 +58,11 @@ def _render_kopia_pair(
     except ValueError as exc:
         event("error", "invalid systemd unit path", error=str(exc))
         return None
-    timer_text = render_unit_interval_timer(description=KOPIA_UNIT_DESCRIPTIONS[kind], interval=interval)
+    timer_text = render_unit_interval_timer(
+        description=KOPIA_UNIT_DESCRIPTIONS[kind],
+        interval=interval,
+        on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC[kind],
+    )
     if timer_text is None:
         return None
     return service_text, timer_text

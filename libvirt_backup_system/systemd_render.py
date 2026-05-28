@@ -19,6 +19,7 @@ KOPIA_UNIT_ARGS = {
     "verify": "verify",
 }
 KOPIA_FULL_MAINTENANCE_INTERVAL = "7d"
+KOPIA_TIMER_ON_ACTIVE_SEC = {"maintenance": "15min", "maintenance-full": "45min", "verify": "75min"}
 _SYSTEMD_PATH_FORBIDDEN_CHARS = frozenset("`'\"\\")
 
 
@@ -117,7 +118,7 @@ def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str, b
     )
 
 
-def render_unit_interval_timer(*, description: str, interval: str) -> str | None:
+def render_unit_interval_timer(*, description: str, interval: str, on_active_sec: str = "15min") -> str | None:
     interval = interval.strip()
     if not interval:
         event("error", "invalid systemd interval", error="timer interval must not be empty")
@@ -128,4 +129,14 @@ def render_unit_interval_timer(*, description: str, interval: str) -> str | None
     if interval.startswith("-"):
         event("error", "invalid systemd interval", error="timer interval must not start with '-'")
         return None
-    return UNIT_INTERVAL_TIMER.format(description=description, interval=interval)
+    on_active_sec = on_active_sec.strip()
+    if not on_active_sec:
+        event("error", "invalid systemd interval", error="timer OnActiveSec must not be empty")
+        return None
+    if has_control_char(on_active_sec):
+        event("error", "invalid systemd interval", error="timer OnActiveSec must not contain control characters")
+        return None
+    if on_active_sec.startswith("-"):
+        event("error", "invalid systemd interval", error="timer OnActiveSec must not start with '-'")
+        return None
+    return UNIT_INTERVAL_TIMER.format(description=description, interval=interval, on_active_sec=on_active_sec)

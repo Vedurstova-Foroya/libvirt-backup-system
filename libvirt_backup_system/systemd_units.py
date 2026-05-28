@@ -41,6 +41,7 @@ KOPIA_UNIT_DESCRIPTIONS = systemd_render.KOPIA_UNIT_DESCRIPTIONS
 # files probe weekly.
 KOPIA_UNIT_ARGS = systemd_render.KOPIA_UNIT_ARGS
 KOPIA_FULL_MAINTENANCE_INTERVAL = systemd_render.KOPIA_FULL_MAINTENANCE_INTERVAL
+KOPIA_TIMER_ON_ACTIVE_SEC = systemd_render.KOPIA_TIMER_ON_ACTIVE_SEC
 DISPATCH_OPT_OUT_ENV = "LIBVIRT_BACKUP_NO_SYSTEMD_DISPATCH"
 
 
@@ -151,8 +152,10 @@ def render_unit_kopia_service(bin_path: Path, config_path: Path, *, kind: str, b
     return systemd_render.render_unit_kopia_service(bin_path, config_path, kind=kind, backup_path=backup_path)
 
 
-def render_unit_interval_timer(*, description: str, interval: str) -> str | None:
-    return systemd_render.render_unit_interval_timer(description=description, interval=interval)
+def render_unit_interval_timer(*, description: str, interval: str, on_active_sec: str = "15min") -> str | None:
+    return systemd_render.render_unit_interval_timer(
+        description=description, interval=interval, on_active_sec=on_active_sec
+    )
 
 
 def unit_name_for(subcommand: str) -> str:

@@ -8,6 +8,7 @@ from libvirt_backup_system.shell import CommandResult
 from libvirt_backup_system.systemd_start import start
 from libvirt_backup_system.systemd_units import (
     CHECK_UNIT_NAME,
+    KOPIA_TIMER_ON_ACTIVE_SEC,
     MAINTENANCE_FULL_TIMER_NAME,
     MAINTENANCE_FULL_UNIT_NAME,
     MAINTENANCE_TIMER_NAME,
@@ -94,8 +95,7 @@ def test_render_unit_interval_timer_rejects_control_char(capsys) -> None:
 def test_start_rejects_invalid_kopia_service_path_via_render_failure(tmp_path: Path, monkeypatch, capsys) -> None:
     # systemd_start._render_kopia_pair MUST surface a ValueError from
     # render_unit_kopia_service. Patch the imported renderer to simulate
-    # the failure path the production install would hit on a hostile
-    # config_path.
+    # the failure path production install would hit on a hostile config_path.
     monkeypatch.setattr("libvirt_backup_system.systemd_start.systemctl_available", lambda root: True)
     config = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     backup_dir = tmp_path / "backups"
@@ -222,15 +222,21 @@ def test_start_installs_units_enables_and_starts_timer_schedule(tmp_path: Path, 
     assert "installed systemd units" in out
     assert "started systemd timer schedule" in out
     assert "Persistent=true" not in (systemd_dir / TIMER_UNIT_NAME).read_text(encoding="utf-8")
-    # The maintenance timer body must contain OnUnitActiveSec= from the
-    # config default. Verifies the interval-timer renderer is wired through
-    # systemd_start.
-    assert "OnUnitActiveSec=24h" in (systemd_dir / MAINTENANCE_TIMER_NAME).read_text(encoding="utf-8")
-    assert "OnUnitActiveSec=7d" in (systemd_dir / MAINTENANCE_FULL_TIMER_NAME).read_text(encoding="utf-8")
+    maintenance_timer_text = (systemd_dir / MAINTENANCE_TIMER_NAME).read_text(encoding="utf-8")
+    maintenance_full_timer_text = (systemd_dir / MAINTENANCE_FULL_TIMER_NAME).read_text(encoding="utf-8")
+    verify_timer_text = (systemd_dir / VERIFY_TIMER_NAME).read_text(encoding="utf-8")
+    assert f"OnActiveSec={KOPIA_TIMER_ON_ACTIVE_SEC['maintenance']}" in maintenance_timer_text
+    assert "OnBootSec" not in maintenance_timer_text
+    assert "OnUnitActiveSec=24h" in maintenance_timer_text
+    assert f"OnActiveSec={KOPIA_TIMER_ON_ACTIVE_SEC['maintenance-full']}" in maintenance_full_timer_text
+    assert "OnBootSec" not in maintenance_full_timer_text
+    assert f"OnActiveSec={KOPIA_TIMER_ON_ACTIVE_SEC['verify']}" in verify_timer_text
+    assert "OnBootSec" not in verify_timer_text
+    assert "OnUnitActiveSec=7d" in maintenance_full_timer_text
     assert "--full" in (systemd_dir / MAINTENANCE_FULL_UNIT_NAME).read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in (systemd_dir / MAINTENANCE_UNIT_NAME).read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in (systemd_dir / VERIFY_UNIT_NAME).read_text(encoding="utf-8")
-    assert "OnUnitActiveSec=7d" in (systemd_dir / VERIFY_TIMER_NAME).read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=7d" in verify_timer_text
 
 
 def test_start_configures_timeout_before_calendar_validation(tmp_path: Path, monkeypatch) -> None:

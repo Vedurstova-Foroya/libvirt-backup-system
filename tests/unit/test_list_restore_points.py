@@ -84,7 +84,12 @@ def _stub_repo_helpers(
     monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: local_cfg if local_config_present else None)
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda _cfg: cfg.prefix / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
-    monkeypatch.setattr(kopia_repo, "iter_connected_peers", lambda _cfg: peers or [])
+    monkeypatch.setattr(kopia_repo, "discover_peer_repos", lambda _cfg: peers or [])
+    monkeypatch.setattr(
+        kopia_repo,
+        "ensure_peer_connected",
+        lambda _cfg, host_id: next((peer.config_file for peer in peers or [] if peer.host_id == host_id), None),
+    )
     return local_cfg
 
 
@@ -117,6 +122,7 @@ def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatc
     _stub_snapshot_list(monkeypatch)
     rows = list_restore_points._local_rows(cfg)
     assert rows == []
+    assert list_restore_points._local_rows_result(cfg).ok is False
 
 
 def test_local_rows_reconnects_before_listing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,6 +191,7 @@ def test_rows_from_repo_returns_empty_on_command_error(tmp_path: Path, monkeypat
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, raise_command_error_for=local_cfg)
     assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
+    assert list_restore_points._rows_from_repo_result(cfg, host_id="host-a", config_file=local_cfg).ok is False
 
 
 def test_rows_from_repo_returns_empty_on_value_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +199,7 @@ def test_rows_from_repo_returns_empty_on_value_error(tmp_path: Path, monkeypatch
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, raise_value_error_for=local_cfg)
     assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
+    assert list_restore_points._rows_from_repo_result(cfg, host_id="host-a", config_file=local_cfg).ok is False
 
 
 def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,6 +219,16 @@ def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.
     assert rows[0].host_id == "host-b"
 
 
+def test_peer_rows_marks_failed_peer_connect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _make_config(tmp_path, host_id="host-a")
+    peer = kopia_repo.PeerRepo("host-b", tmp_path / "rb", tmp_path / "peer.config")
+    _stub_repo_helpers(monkeypatch, cfg, peers=[peer])
+    monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: None)
+    result = list_restore_points._peer_rows_result(cfg)
+    assert result.rows == []
+    assert result.ok is False
+
+
 def test_enumerate_backups_combines_local_and_peer_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path, host_id="host-a")
     local_cfg = cfg.prefix / "kopia-local.config"
@@ -223,9 +241,10 @@ def test_enumerate_backups_combines_local_and_peer_rows(tmp_path: Path, monkeypa
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda _cfg: cfg.prefix / "cache")
     monkeypatch.setattr(
         kopia_repo,
-        "iter_connected_peers",
+        "discover_peer_repos",
         lambda _cfg: [kopia_repo.PeerRepo("host-b", tmp_path / "rb", peer_cfg)],
     )
+    monkeypatch.setattr(kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: peer_cfg)
     _stub_snapshot_list(
         monkeypatch,
         {

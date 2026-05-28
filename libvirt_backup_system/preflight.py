@@ -5,7 +5,7 @@ import os
 import shutil
 from pathlib import Path
 
-from . import kopia_repo, preflight_host_id, preflight_kopia_password_file
+from . import disk_compat, kopia_repo, preflight_host_id, preflight_kopia_password_file
 from .config import CONFIG_KEYS, Config, float_value, int_value, split_words
 from .config import prefixed as _prefixed
 from .logging_json import event
@@ -21,9 +21,8 @@ INTEGER_KEYS = frozenset(
     "COMMAND_TIMEOUT_SECONDS KEEP_ANNUAL KEEP_DAILY KEEP_HOURLY KEEP_LATEST KEEP_MONTHLY KEEP_WEEKLY KOPIA_PARALLELISM SPACE_MARGIN_PERCENT".split()  # noqa: E501
 )
 FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
-# fmt: off
-ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+ssh:// qemu+tcp:// qemu+tls:// qemu+unix:// test:// test:///".split())
-# fmt: on
+ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+unix:// test:// test:///".split())
+REMOTE_LIBVIRT_URI_PREFIXES = tuple("qemu+ssh:// qemu+tcp:// qemu+tls://".split())
 WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
 HOST_ID_STATE_FILE = preflight_host_id.HOST_ID_STATE_FILE
@@ -31,7 +30,7 @@ prefixed = _prefixed
 
 
 def validate_libvirt_uri(uri: str) -> bool:
-    return uri.startswith(ALLOWED_LIBVIRT_URI_PREFIXES)
+    return uri.startswith(ALLOWED_LIBVIRT_URI_PREFIXES) and not uri.startswith(REMOTE_LIBVIRT_URI_PREFIXES)
 
 
 def _write_probe(path: Path) -> None:
@@ -274,6 +273,7 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
         vms = list_vms(config)
         if not vms:
             failures.append("no VMs selected")
+        failures.extend(disk_compat.selected_vm_disk_compatibility_failures(config, vms))
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
         vms = []

@@ -10,7 +10,7 @@ per-run timestamp columns straight into ``restore``.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import kopia_repo, kopia_snapshots
@@ -31,24 +31,49 @@ class BackupRow:
     config_file: Path  # which kopia config-file points at this row's repo
 
 
+@dataclass(frozen=True)
+class BackupEnumeration:
+    rows: list[BackupRow]
+    ok: bool
+
+
 def _local_rows(config: Config) -> list[BackupRow]:
     """List rows from this host's own repo (always present after install)."""
+    return _local_rows_result(config).rows
+
+
+def _local_rows_result(config: Config) -> BackupEnumeration:
     cfg_file = kopia_repo.ensure_local_connected(config)
     if cfg_file is None:
-        return []
-    return _rows_from_repo(config, host_id=config.get("HOST_ID"), config_file=cfg_file)
+        return BackupEnumeration([], ok=False)
+    return _rows_from_repo_result(config, host_id=config.get("HOST_ID"), config_file=cfg_file)
 
 
 def _peer_rows(config: Config) -> list[BackupRow]:
+    return _peer_rows_result(config).rows
+
+
+def _peer_rows_result(config: Config) -> BackupEnumeration:
     rows: list[BackupRow] = []
-    for peer in kopia_repo.iter_connected_peers(config):
+    ok = True
+    for peer in kopia_repo.discover_peer_repos(config):
         if peer.host_id == config.get("HOST_ID"):
             continue
-        rows.extend(_rows_from_repo(config, host_id=peer.host_id, config_file=peer.config_file))
-    return rows
+        config_file = kopia_repo.ensure_peer_connected(config, peer.host_id)
+        if config_file is None:
+            ok = False
+            continue
+        result = _rows_from_repo_result(config, host_id=peer.host_id, config_file=config_file)
+        rows.extend(result.rows)
+        ok = ok and result.ok
+    return BackupEnumeration(rows, ok)
 
 
 def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[BackupRow]:
+    return _rows_from_repo_result(config, host_id=host_id, config_file=config_file).rows
+
+
+def _rows_from_repo_result(config: Config, *, host_id: str, config_file: Path) -> BackupEnumeration:
     try:
         snapshots = kopia_snapshots.snapshot_list(
             config_file=config_file,
@@ -58,10 +83,10 @@ def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[
         )
     except CommandError as exc:
         event("error", "kopia snapshot list failed", host_id=host_id, stderr=exc.result.stderr.strip())
-        return []
+        return BackupEnumeration([], ok=False)
     except ValueError as exc:
         event("error", "kopia snapshot list returned bad data", host_id=host_id, error=str(exc))
-        return []
+        return BackupEnumeration([], ok=False)
     rows: list[BackupRow] = []
     for snap in snapshots:
         vm_uuid = snap.tags.get("vm-uuid", "")
@@ -82,16 +107,22 @@ def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[
                 config_file=config_file,
             )
         )
-    return rows
+    return BackupEnumeration(rows, ok=True)
 
 
 def enumerate_backups(config: Config, *, vm_uuid: str | None = None) -> list[BackupRow]:
-    rows = _local_rows(config) + _peer_rows(config)
+    return enumerate_backups_result(config, vm_uuid=vm_uuid).rows
+
+
+def enumerate_backups_result(config: Config, *, vm_uuid: str | None = None) -> BackupEnumeration:
+    local = _local_rows_result(config)
+    peers = _peer_rows_result(config)
+    rows = local.rows + peers.rows
     if vm_uuid is not None:
         rows = [row for row in rows if row.vm_uuid == vm_uuid]
     rows.sort(key=lambda row: row.timestamp, reverse=True)
     rows.sort(key=lambda row: (row.host_id, row.vm_uuid))
-    return rows
+    return BackupEnumeration(rows, local.ok and peers.ok)
 
 
 _HEADERS = ("source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name")
@@ -110,14 +141,26 @@ def format_rows(rows: list[BackupRow]) -> str:
 
 
 def format_json(rows: list[BackupRow]) -> str:
-    payload = [{key: str(value) for key, value in asdict(row).items()} for row in rows]
+    payload = [
+        {
+            "run_id": row.run_id,
+            "source_host_id": row.host_id,
+            "timestamp": row.timestamp,
+            "vm_name": row.vm_name,
+            "vm_uuid": row.vm_uuid,
+        }
+        for row in rows
+    ]
     return json.dumps(payload, sort_keys=True)
 
 
 def list_restore_points(config: Config, *, json_output: bool = False) -> int:
     if not runtime_backup_path_ok(config):
         return 1
-    rows = enumerate_backups(config)
+    result = enumerate_backups_result(config)
+    if not result.ok:
+        return 1
+    rows = result.rows
     if not rows:
         if json_output:
             print("[]")

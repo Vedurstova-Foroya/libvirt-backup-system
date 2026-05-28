@@ -10,6 +10,7 @@ from .logging_json import event
 from .systemd_units import (
     CHECK_UNIT_NAME,
     KOPIA_FULL_MAINTENANCE_INTERVAL,
+    KOPIA_TIMER_ON_ACTIVE_SEC,
     KOPIA_UNIT_DESCRIPTIONS,
     MAINTENANCE_FULL_TIMER_NAME,
     MAINTENANCE_FULL_UNIT_NAME,
@@ -99,16 +100,19 @@ def expected_unit_text(
             return render_unit_interval_timer(
                 description=KOPIA_UNIT_DESCRIPTIONS["maintenance"],
                 interval=config.get("KOPIA_MAINTENANCE_INTERVAL"),
+                on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["maintenance"],
             )
         if name == MAINTENANCE_FULL_TIMER_NAME:
             return render_unit_interval_timer(
                 description=KOPIA_UNIT_DESCRIPTIONS["maintenance-full"],
                 interval=KOPIA_FULL_MAINTENANCE_INTERVAL,
+                on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["maintenance-full"],
             )
         if name == VERIFY_TIMER_NAME:
             return render_unit_interval_timer(
                 description=KOPIA_UNIT_DESCRIPTIONS["verify"],
                 interval=config.get("KOPIA_VERIFY_INTERVAL"),
+                on_active_sec=KOPIA_TIMER_ON_ACTIVE_SEC["verify"],
             )
         return render_unit_timer(root, config.get("SYSTEMD_ON_CALENDAR"))
     except ValueError as exc:

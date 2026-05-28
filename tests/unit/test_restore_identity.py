@@ -9,7 +9,7 @@ from libvirt_backup_system import kopia_snapshots, restore
 from libvirt_backup_system.list_restore_points import BackupRow
 
 from .conftest import ALPHA_UUID, BETA_UUID
-from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row
+from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row, rows_result
 
 
 def test_match_row_rejects_duplicate_timestamp_matches(
@@ -26,7 +26,7 @@ def test_match_row_rejects_duplicate_timestamp_matches(
         snapshot_id="def456",
         config_file=tmp_path / "peer.config",
     )
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [first, second])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([first, second]))
     assert restore._match_row(cfg, ALPHA_UUID, TIMESTAMP) is None
     assert "matched multiple backups" in capsys.readouterr().err
 
@@ -49,7 +49,7 @@ def test_restore_rejects_manifest_that_does_not_match_selected_row(
 ) -> None:
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     manifest = replace(make_manifest(), **{field: manifest_value})
     monkeypatch.setattr(restore, "_restore_manifest", lambda *_a, **_k: manifest)
     monkeypatch.setattr(restore, "_local_domain_name_for_uuid", lambda *_a, **_k: pytest.fail("must stop early"))

@@ -137,12 +137,13 @@ def test_policy_set_global_emits_only_supplied_flags(tmp_path: Path, monkeypatch
         keep_latest=8,
         keep_daily=30,
         compression="zstd-fastest",
+        splitter="FIXED-4M",
     )
     args, _ = captured[0]
     assert "--keep-latest" in args and "8" in args
     assert "--keep-daily" in args and "30" in args
     assert "--compression" in args and "zstd-fastest" in args
-    assert "--splitter" not in args
+    assert "--splitter" in args and "FIXED-4M" in args
     assert "--keep-hourly" not in args
 
 
@@ -193,6 +194,14 @@ def test_maintenance_run_omits_full_and_safety_by_default(tmp_path: Path, monkey
     assert "--dry-run" not in args
 
 
+def test_maintenance_info_uses_read_only_info_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured = _make_run_capture(monkeypatch)
+    kopia_client.maintenance_info(config_file=tmp_path / "c", password_file=password)
+    args, _ = captured[0]
+    assert args[-2:] == ["maintenance", "info"]
+
+
 def test_maintenance_set_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     password = _write_password(tmp_path / "pw")
     captured = _make_run_capture(monkeypatch)
@@ -221,39 +230,21 @@ def test_kopia_available_true_and_false(monkeypatch: pytest.MonkeyPatch) -> None
     assert kopia_client.kopia_available() is False
 
 
-def test_repository_change_password_pipes_value_to_stdin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_repository_change_password_uses_new_password_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     password = _write_password(tmp_path / "pw")
-    calls: list[dict[str, Any]] = []
-
-    class FakePopen:
-        def __init__(self, args: list[str], **kwargs: Any) -> None:
-            calls.append({"args": args, "kwargs": kwargs})
-            self.returncode = 0
-
-        def communicate(self, input: str | None = None) -> tuple[str, str]:  # noqa: A002
-            calls[-1]["stdin"] = input
-            return ("ok", "")
-
-    monkeypatch.setattr(kopia_client.subprocess, "Popen", FakePopen)
+    captured = _make_run_capture(monkeypatch)
     kopia_client.repository_change_password(config_file=tmp_path / "c", password_file=password, new_password="new-pw")
-    assert calls[0]["stdin"].splitlines() == ["new-pw", "new-pw"]
+    args, _env = captured[0]
+    assert args[-2:] == ["change-password", "--new-password=new-pw"]
 
 
 def test_repository_change_password_raises_on_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     password = _write_password(tmp_path / "pw")
-
-    class FailingPopen:
-        def __init__(self, args: list[str], **_: Any) -> None:
-            self.args = args
-            self.returncode = 17
-
-        def communicate(self, _input: str | None = None) -> tuple[str, str]:
-            return ("", "boom")
-
-    monkeypatch.setattr(kopia_client.subprocess, "Popen", FailingPopen)
+    _make_run_capture(monkeypatch, stderr="boom", returncode=17)
     with pytest.raises(CommandError) as info:
         kopia_client.repository_change_password(config_file=tmp_path / "c", password_file=password, new_password="x")
     assert info.value.result.returncode == 17
+    assert info.value.result.stderr == "boom"
 
 
 def test_tags_args_renders_sorted(tmp_path: Path) -> None:

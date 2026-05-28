@@ -15,7 +15,7 @@ from libvirt_backup_system.restore_define import RESTORED_CONFIG_FILE
 from libvirt_backup_system.shell import CommandResult
 
 from .conftest import ALPHA_UUID
-from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row
+from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row, rows_result
 
 
 def _install_meta_writer(monkeypatch: pytest.MonkeyPatch, manifest: Manifest) -> None:
@@ -64,7 +64,7 @@ def test_restore_overwrite_path_success(
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)
     manifest, src_dir = _manifest_with_local_disks(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     streamed = _record_stream_dests(monkeypatch)
@@ -131,7 +131,7 @@ def test_restore_overwrite_writes_each_disk_to_its_own_source_path(
             ),
         ),
     )
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     streamed = _record_stream_dests(monkeypatch)
@@ -182,7 +182,7 @@ def test_restore_turnkey_different_host(
             ),
         ),
     )
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     streamed = _record_stream_dests(monkeypatch)
@@ -215,7 +215,7 @@ def test_restore_turnkey_same_host_when_local_uuid_absent(tmp_path: Path, monkey
     cfg = make_config(tmp_path, host_id="host-a")
     row = make_row(tmp_path, host_id="host-a")
     manifest, _ = _manifest_with_local_disks(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     streamed = _record_stream_dests(monkeypatch)

@@ -9,6 +9,7 @@ import pytest
 
 from libvirt_backup_system import list_restore_points
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.list_restore_points import BackupEnumeration
 
 ALPHA_UUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 RUN_ID_A = "11111111-1111-1111-1111-111111111111"
@@ -67,6 +68,8 @@ def test_format_json_preserves_spaced_vm_names(tmp_path: Path) -> None:
     payload = json.loads(list_restore_points.format_json([row]))
     assert payload[0]["vm_name"] == "alpha with spaces"
     assert payload[0]["timestamp"] == "20260521T023001"
+    assert payload[0]["source_host_id"] == "host-a"
+    assert set(payload[0]) == {"run_id", "source_host_id", "timestamp", "vm_name", "vm_uuid"}
 
 
 def test_list_restore_points_returns_one_when_backup_path_missing(
@@ -82,7 +85,7 @@ def test_list_restore_points_logs_and_returns_zero_when_no_rows(
 ) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
-    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [])
+    monkeypatch.setattr(list_restore_points, "enumerate_backups_result", lambda _cfg: BackupEnumeration([], ok=True))
     assert list_restore_points.list_restore_points(cfg) == 0
     assert "no backups found" in capsys.readouterr().out
 
@@ -92,7 +95,7 @@ def test_list_restore_points_prints_empty_json_when_no_rows(
 ) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
-    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [])
+    monkeypatch.setattr(list_restore_points, "enumerate_backups_result", lambda _cfg: BackupEnumeration([], ok=True))
     assert list_restore_points.list_restore_points(cfg, json_output=True) == 0
     assert capsys.readouterr().out == "[]\n"
 
@@ -102,7 +105,9 @@ def test_list_restore_points_prints_table_and_returns_zero(
 ) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
-    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [_row(tmp_path)])
+    monkeypatch.setattr(
+        list_restore_points, "enumerate_backups_result", lambda _cfg: BackupEnumeration([_row(tmp_path)], ok=True)
+    )
     assert list_restore_points.list_restore_points(cfg) == 0
     out = capsys.readouterr().out
     assert "snap-1" not in out
@@ -114,6 +119,18 @@ def test_list_restore_points_prints_json_and_returns_zero(
 ) -> None:
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
-    monkeypatch.setattr(list_restore_points, "enumerate_backups", lambda _cfg: [_row(tmp_path)])
+    monkeypatch.setattr(
+        list_restore_points, "enumerate_backups_result", lambda _cfg: BackupEnumeration([_row(tmp_path)], ok=True)
+    )
     assert list_restore_points.list_restore_points(cfg, json_output=True) == 0
-    assert json.loads(capsys.readouterr().out)[0]["snapshot_id"] == "snap-1"
+    assert json.loads(capsys.readouterr().out)[0]["run_id"] == RUN_ID_A
+
+
+def test_list_restore_points_returns_one_when_enumeration_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _make_config(tmp_path)
+    monkeypatch.setattr(list_restore_points, "runtime_backup_path_ok", lambda _cfg: True)
+    monkeypatch.setattr(list_restore_points, "enumerate_backups_result", lambda _cfg: BackupEnumeration([], ok=False))
+    assert list_restore_points.list_restore_points(cfg, json_output=True) == 1
+    assert capsys.readouterr().out == ""

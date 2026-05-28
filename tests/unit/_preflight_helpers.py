@@ -60,5 +60,6 @@ def stub_environment(
     monkeypatch.setattr(preflight, "list_vms", fake_list_vms)
     monkeypatch.setattr(preflight, "_df_available_kb", lambda _path: df_kb)
     monkeypatch.setattr(preflight, "_estimate_required_kb", lambda _cfg, _vms: estimate_kb)
+    monkeypatch.setattr(preflight.disk_compat, "selected_vm_disk_compatibility_failures", lambda _cfg, _vms: [])
     monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", lambda _cfg: Path("/tmp/kopia.config"))

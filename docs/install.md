@@ -190,7 +190,10 @@ environment file, reloads systemd, and enables/starts
 `libvirt-backup-system-verify.timer` after `check` has passed. Activating
 the timers does not run a backup immediately;
 the next backup waits for the configured schedule unless you run
-`sudo libvirt-backup-system run`.
+`sudo libvirt-backup-system run`. The Kopia maintenance and verify timers
+use staggered activation-relative initial delays so quick maintenance, full
+maintenance, and verify do not all contend for the local repo as soon as the
+timers are started.
 
 When the systemd units are installed, `sudo libvirt-backup-system run` and
 `sudo libvirt-backup-system check` dispatch through the corresponding
@@ -228,7 +231,9 @@ sudo libvirt-backup-system uninstall
 ```
 
 Uninstall removes installed program files and systemd units. Config, state,
-logs, the Kopia password file, and the on-disk repo are preserved unless
-`--purge-*` flags are passed. The repo directory under `BACKUP_PATH` is never
-touched by uninstall — delete it by hand once the operator is sure the
-backups are no longer needed.
+and logs are preserved unless their matching `--purge-*` flags are passed.
+The Kopia password file and repo directory under `BACKUP_PATH` are never
+touched by uninstall. If `KOPIA_PASSWORD_FILE` is configured under
+`/var/lib/libvirt-backup-system`, `--purge-state` preserves that file and
+the parent directories needed to keep it in place; delete it by hand once
+the operator is sure the backups are no longer needed.

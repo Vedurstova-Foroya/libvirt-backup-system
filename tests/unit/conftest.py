@@ -52,6 +52,29 @@ def stub_ensure_kopia_repo(monkeypatch: pytest.MonkeyPatch, *, return_code: int 
 
 
 @pytest.fixture(autouse=True)
+def _test_password_files_look_root_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests run as an unprivileged user but model root-owned install files."""
+    real_lstat = Path.lstat
+
+    class RootOwnedStat:
+        def __init__(self, real: object) -> None:
+            self._real = real
+
+        def __getattr__(self, name: str) -> object:
+            if name == "st_uid":
+                return 0
+            return getattr(self._real, name)
+
+    def fake_lstat(self: Path) -> object:
+        result = real_lstat(self)
+        if self.name in {"kopia.pw", "pw"} or self.name.startswith((".kopia.pw.", ".pw.")):
+            return RootOwnedStat(result)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+
+@pytest.fixture(autouse=True)
 def _stub_install_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace ``installer.install_kopia`` / ``install_nbdcopy`` with no-ops.
 

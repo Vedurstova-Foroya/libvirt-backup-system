@@ -1,9 +1,3 @@
-"""Helpers + input-validation tests for ``libvirt_backup_system.restore``.
-
-End-to-end overwrite / turnkey orchestration tests live in
-``test_restore_paths.py``. Both files share the project's 300-LOC ceiling.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,6 +21,7 @@ from .restore_helpers import (
     make_manifest,
     make_row,
     ok_result,
+    rows_result,
     run_shutdown,
     run_stream,
 )
@@ -47,9 +42,18 @@ def test_restore_fails_when_backup_path_not_mount(tmp_path: Path) -> None:
 
 
 def test_restore_no_matching_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = make_config(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [])
-    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([]))
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, TIMESTAMP) == 1
+
+
+@pytest.mark.parametrize("has_match", [False, True], ids=["no-row", "matching-row"])
+def test_restore_aborts_when_backup_enumeration_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_match: bool
+) -> None:
+    rows = [make_row(tmp_path)] if has_match else []
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result(rows, ok=False))
+    monkeypatch.setattr(restore, "_ensure_staging_root", lambda *_a, **_k: pytest.fail("must stop early"))
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, TIMESTAMP) == 1
 
 
 def test_match_row_skips_non_matching_timestamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,26 +67,26 @@ def test_match_row_skips_non_matching_timestamps(tmp_path: Path, monkeypatch: py
         snapshot_id="s",
         config_file=tmp_path / "kopia.config",
     )
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [other])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([other]))
     assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
 
 
-def test_restore_logs_unsafe_vm_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cfg = make_config(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [make_row(tmp_path)])
+def test_restore_logs_unsafe_vm_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([make_row(tmp_path)])
+    )
     monkeypatch.setattr(restore, "_restore_manifest", lambda *_a, **_k: make_manifest(vm_name="-evil"))
-    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, TIMESTAMP) == 1
     assert "manifest carries unsafe vm name" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("stub_name", ["_ensure_staging_root", "_prepare_staging", "_restore_manifest"])
 def test_restore_propagates_helper_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_name: str) -> None:
-    cfg = make_config(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [make_row(tmp_path)])
+    monkeypatch.setattr(
+        restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([make_row(tmp_path)])
+    )
     monkeypatch.setattr(restore, stub_name, lambda *_a, **_k: None)
-    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, TIMESTAMP) == 1
 
 
 def test_ensure_staging_root_logs_on_mkdir_failure(
@@ -216,7 +220,9 @@ def test_stream_disk_to_qcow2_kopia_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert run_stream(restore, tmp_path, monkeypatch, kopia=KopiaProc(returncode=7), popen=ConvertOk) is False
-    assert "kopia restore stream failed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "kopia restore stream failed" in err
+    assert "kopia stderr" in err
 
 
 def test_stream_disk_to_qcow2_success_closes_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,7 +232,6 @@ def test_stream_disk_to_qcow2_success_closes_pipe(tmp_path: Path, monkeypatch: p
 
 
 def test_stream_disk_to_qcow2_handles_missing_pipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``kopia_proc.stdout is None`` exercises the close-skip branch."""
     assert run_stream(restore, tmp_path, monkeypatch, kopia=KopiaProc(with_stdout=False), popen=ConvertOk) is True
 
 
@@ -252,7 +257,6 @@ def test_local_domain_name_returns_none(
 
 
 def test_shutdown_destroy_command_error_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``destroy`` returning a CommandError just logs and falls through."""
     assert (
         run_shutdown(
             restore,

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.list_restore_points import BackupRow
+from libvirt_backup_system.list_restore_points import BackupEnumeration, BackupRow
 from libvirt_backup_system.manifest import Manifest, ManifestDisk
 from libvirt_backup_system.shell import CommandResult
 
@@ -73,6 +73,10 @@ def make_row(tmp_path: Path, *, host_id: str = "host-a", run_id: str = "run-1") 
     )
 
 
+def rows_result(rows: list[BackupRow], *, ok: bool = True) -> BackupEnumeration:
+    return BackupEnumeration(rows, ok=ok)
+
+
 def ok_result(args: list[str], stdout: str = "") -> CommandResult:
     return CommandResult(args, 0, stdout, "")
 
@@ -98,23 +102,48 @@ class KopiaProc:
 
         self.stdout: Any = _Stdout() if with_stdout else None
 
-    def wait(self) -> None:
+    def wait(self, timeout: float | None = None) -> None:
+        _ = timeout
         self.waited = True
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 class ConvertOk:
     def __init__(self, *_a: Any, **_kw: Any) -> None:
         self.returncode = 0
 
-    def communicate(self) -> tuple[bytes, bytes]:
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        _ = timeout
         return (b"", b"")
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int:
+        _ = timeout
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 class ConvertFail:
     def __init__(self, *_a: Any, **_kw: Any) -> None:
         self.returncode = 9
 
-    def communicate(self) -> tuple[bytes, bytes]:
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        _ = timeout
         return (b"", b"qemu boom")
 
 
@@ -129,7 +158,8 @@ class ConvertWith:
         self.returncode = self._rc
         return self
 
-    def communicate(self) -> tuple[bytes, bytes]:
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        _ = timeout
         return (b"", self._stderr)
 
 
@@ -144,7 +174,13 @@ def run_stream(
     """Wire up ``_stream_disk_to_qcow2`` with stub kopia + qemu processes."""
     from libvirt_backup_system import kopia_snapshots, restore_io
 
-    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_stdout", lambda **_: kopia)
+    def fake_restore_to_stdout(**kwargs: Any) -> KopiaProc:
+        stderr = kwargs.get("stderr")
+        if stderr is not None:
+            stderr.write(b"kopia stderr")
+        return kopia
+
+    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_stdout", fake_restore_to_stdout)
     monkeypatch.setattr(restore_io.subprocess, "Popen", popen)
     return restore_module._stream_disk_to_qcow2(
         make_config(tmp_path), make_row(tmp_path), "s", "vda.raw", tmp_path / "vda.qcow2"

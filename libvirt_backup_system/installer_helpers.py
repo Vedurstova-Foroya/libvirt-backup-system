@@ -8,7 +8,15 @@ import sys
 from pathlib import Path
 
 from .logging_json import event
-from .systemd_units import run_systemctl
+from .systemd_units import (
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
+    run_systemctl,
+)
 
 # Only BACKUP_PATH is honored from the process env on first install: other
 # keys render as commented defaults and would desync from the systemd unit.
@@ -74,12 +82,24 @@ def install_without_backup_path(root: Path, systemd_dir: Path, resolved_config: 
         [
             ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
             ["systemctl", "stop", "libvirt-backup-system.service"],
+            ["systemctl", "disable", "--now", MAINTENANCE_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_UNIT_NAME],
+            ["systemctl", "disable", "--now", MAINTENANCE_FULL_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_FULL_UNIT_NAME],
+            ["systemctl", "disable", "--now", VERIFY_TIMER_NAME],
+            ["systemctl", "stop", VERIFY_UNIT_NAME],
         ],
     )
     for path in [
         systemd_dir / "libvirt-backup-system.service",
         systemd_dir / "libvirt-backup-system-check.service",
         systemd_dir / "libvirt-backup-system.timer",
+        systemd_dir / MAINTENANCE_UNIT_NAME,
+        systemd_dir / MAINTENANCE_TIMER_NAME,
+        systemd_dir / MAINTENANCE_FULL_UNIT_NAME,
+        systemd_dir / MAINTENANCE_FULL_TIMER_NAME,
+        systemd_dir / VERIFY_UNIT_NAME,
+        systemd_dir / VERIFY_TIMER_NAME,
     ]:
         try:
             path.unlink()

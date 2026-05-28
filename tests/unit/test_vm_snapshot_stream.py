@@ -132,6 +132,36 @@ def test_stream_disk_socket_never_appears(monkeypatch: pytest.MonkeyPatch, tmp_p
         pass
 
 
+def test_stream_disk_socket_wait_is_capped_by_command_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _FakePopen.instances = []
+
+    class RunningNoSocket(_FakePopen):
+        create_socket = False
+
+        def __init__(self, args: list[str], **kwargs: Any) -> None:
+            super().__init__(args, **kwargs)
+            self.returncode = None
+
+    class SmallStepClock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            self.t += 0.04
+            return self.t
+
+    clock = SmallStepClock()
+    monkeypatch.setattr(vm_snapshot.subprocess, "Popen", RunningNoSocket)
+    monkeypatch.setattr(vm_snapshot.time, "monotonic", clock)
+    monkeypatch.setattr(vm_snapshot.time, "sleep", lambda _seconds: None)
+    snap = vm_snapshot.LibvirtSnapshotter(
+        libvirt_uri="qemu:///system", socket_root=tmp_path, command_timeout_seconds=0.1
+    )
+    with pytest.raises(CommandError), snap.stream_disk(tmp_path / "base.qcow2"):
+        pass
+    assert clock.t < 1.0
+
+
 def test_stream_disk_kills_processes_that_ignore_terminate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _FakePopen.instances = []
 

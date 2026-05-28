@@ -78,6 +78,28 @@ def test_backup_vm_runs_commit_even_when_streaming_fails(
     assert "disk snapshot failed" in capsys.readouterr().err
 
 
+def test_backup_vm_rejects_non_file_disk_before_manifest(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured = _install_stubs(monkeypatch)
+    snapper = FakeSnapper(disks=[_disk_target(source="/dev/vg/alpha", source_type="block")])
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    assert "unsupported backup disk" in capsys.readouterr().err
+    assert captured["domain_xml"] == []
+    assert snapper.freeze_calls == []
+
+
+def test_backup_vm_rejects_non_qcow2_format_before_manifest(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured = _install_stubs(monkeypatch, disk_format="raw")
+    snapper = FakeSnapper(disks=[_disk_target()])
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    assert "only qcow2 disks are supported" in capsys.readouterr().err
+    assert captured["domain_xml"] == []
+    assert snapper.freeze_calls == []
+
+
 def test_missing_snapshot_base_logs_and_returns_false(
     monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:

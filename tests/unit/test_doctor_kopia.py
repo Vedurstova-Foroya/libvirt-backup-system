@@ -172,13 +172,12 @@ def test_check_local_kopia_maintenance_probe_passes(tmp_path: Path, monkeypatch:
     _stub_local_repo(monkeypatch, tmp_path, cfg_file)
     captured: list[dict[str, Any]] = []
 
-    def fake_maintenance_run(**kwargs: Any) -> None:
+    def fake_maintenance_info(**kwargs: Any) -> None:
         captured.append(kwargs)
 
-    monkeypatch.setattr(kopia_client, "maintenance_run", fake_maintenance_run)
+    monkeypatch.setattr(kopia_client, "maintenance_info", fake_maintenance_info)
     assert doctor._check_local_kopia_maintenance_probe(cfg) == []
-    assert "dry_run" not in captured[0]
-    assert captured[0]["safety"] == "none"
+    assert "safety" not in captured[0]
 
 
 def test_check_local_kopia_maintenance_probe_surfaces_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,7 +189,7 @@ def test_check_local_kopia_maintenance_probe_surfaces_failure(tmp_path: Path, mo
     def boom(**_: Any) -> None:
         raise CommandError(CommandResult(["kopia"], 2, "", "maintenance broken"))
 
-    monkeypatch.setattr(kopia_client, "maintenance_run", boom)
+    monkeypatch.setattr(kopia_client, "maintenance_info", boom)
     failures = doctor._check_local_kopia_maintenance_probe(cfg)
     assert any("maintenance probe failed" in failure for failure in failures)
     assert any("maintenance broken" in failure for failure in failures)
@@ -210,7 +209,7 @@ def test_check_local_kopia_maintenance_probe_surfaces_returncode_when_stderr_emp
     def boom(**_: Any) -> None:
         raise CommandError(CommandResult(["kopia"], 137, "", ""))
 
-    monkeypatch.setattr(kopia_client, "maintenance_run", boom)
+    monkeypatch.setattr(kopia_client, "maintenance_info", boom)
     failures = doctor._check_local_kopia_maintenance_probe(cfg)
     assert any("137" in failure for failure in failures)
 

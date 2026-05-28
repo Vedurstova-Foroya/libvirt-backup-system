@@ -57,7 +57,7 @@ def test_install_rejects_control_char_calendar(tmp_path: Path, monkeypatch, caps
     write_kopia_password_file(tmp_path)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
-        _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="daily\nOnBootSec=1"),
+        _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="daily\nOnActiveSec=1"),
     )
 
     assert install(str(tmp_path)) == 1

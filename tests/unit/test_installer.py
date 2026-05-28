@@ -121,18 +121,27 @@ def test_install_renders_kopia_maintenance_and_verify_unit_pairs(tmp_path: Path,
     verify_service = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.service"
     verify_timer = tmp_path / "etc/systemd/system/libvirt-backup-system-verify.timer"
     assert "kopia-passthrough -- maintenance run --safety=full" in maintenance_service.read_text(encoding="utf-8")
-    assert "OnUnitActiveSec=24h" in maintenance_timer.read_text(encoding="utf-8")
+    maintenance_timer_text = maintenance_timer.read_text(encoding="utf-8")
+    assert "OnActiveSec=15min" in maintenance_timer_text
+    assert "OnBootSec" not in maintenance_timer_text
+    assert "OnUnitActiveSec=24h" in maintenance_timer_text
     assert "kopia-passthrough -- maintenance run --safety=full --full" in maintenance_full_service.read_text(
         encoding="utf-8"
     )
-    assert "OnUnitActiveSec=7d" in maintenance_full_timer.read_text(encoding="utf-8")
+    maintenance_full_timer_text = maintenance_full_timer.read_text(encoding="utf-8")
+    assert "OnActiveSec=45min" in maintenance_full_timer_text
+    assert "OnBootSec" not in maintenance_full_timer_text
+    assert "OnUnitActiveSec=7d" in maintenance_full_timer_text
     assert f"RequiresMountsFor={backup_dir}" in maintenance_service.read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in maintenance_full_service.read_text(encoding="utf-8")
     assert f"RequiresMountsFor={backup_dir}" in verify_service.read_text(encoding="utf-8")
     verify_text = verify_service.read_text(encoding="utf-8")
     assert " verify" in verify_text
     assert "kopia-passthrough" not in verify_text
-    assert "OnUnitActiveSec=7d" in verify_timer.read_text(encoding="utf-8")
+    verify_timer_text = verify_timer.read_text(encoding="utf-8")
+    assert "OnActiveSec=75min" in verify_timer_text
+    assert "OnBootSec" not in verify_timer_text
+    assert "OnUnitActiveSec=7d" in verify_timer_text
 
     # Clearing BACKUP_PATH and re-installing MUST scrub the kopia
     # housekeeping units along with the legacy backup pair so the host

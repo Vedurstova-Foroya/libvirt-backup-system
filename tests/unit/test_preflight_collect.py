@@ -33,6 +33,15 @@ def test_check_returns_one_when_failures_present(tmp_path: Path, monkeypatch: py
     assert preflight.check(cfg) == 1
 
 
+def test_collect_check_failures_rejects_remote_libvirt_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    cfg.values["LIBVIRT_URI"] = "qemu+ssh://host/system"
+    write_password_file(cfg)
+    stub_environment(monkeypatch)
+    failures, _, _ = preflight.collect_check_failures(cfg)
+    assert any("LIBVIRT_URI must use one of these schemes" in failure for failure in failures)
+
+
 def test_collect_check_failures_locked_path_stamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
     write_password_file(cfg)
@@ -59,6 +68,20 @@ def test_collect_check_failures_libvirt_failure(tmp_path: Path, monkeypatch: pyt
     failures, vm_count, _kb = preflight.collect_check_failures(cfg)
     assert any("libvirt VM discovery failed: virsh down" in failure for failure in failures)
     assert vm_count == 0
+
+
+def test_collect_check_failures_includes_disk_compatibility(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    write_password_file(cfg)
+    stub_environment(monkeypatch)
+    monkeypatch.setattr(
+        preflight.disk_compat,
+        "selected_vm_disk_compatibility_failures",
+        lambda _cfg, vms: [f"unsupported backup disk for {vms[0].name}: raw disk"],
+    )
+    failures, vm_count, _kb = preflight.collect_check_failures(cfg)
+    assert vm_count == 1
+    assert "unsupported backup disk for alpha: raw disk" in failures
 
 
 def test_collect_check_failures_insufficient_space(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

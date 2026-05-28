@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .atomic_io import stamp_is_safe
 from .config import Config, prefixed
-from .list_restore_points import BackupRow, enumerate_backups
+from .list_restore_points import BackupRow, enumerate_backups_result
 from .logging_json import event
 from .manifest import Manifest
 from .paths import runtime_backup_path_ok
@@ -45,7 +45,11 @@ class _RestoreContext:
 def _match_row(
     config: Config, vm_uuid: str, timestamp: str, host_id: str | None = None, run_id: str | None = None
 ) -> BackupRow | None:
-    matches = [row for row in enumerate_backups(config, vm_uuid=vm_uuid) if row.timestamp == timestamp]
+    result = enumerate_backups_result(config, vm_uuid=vm_uuid)
+    if not result.ok:
+        event("error", "restore backup enumeration incomplete", vm_uuid=vm_uuid, timestamp=timestamp)
+        return None
+    matches = [row for row in result.rows if row.timestamp == timestamp]
     if host_id is not None:
         matches = [row for row in matches if row.host_id == host_id]
     if run_id is not None:
@@ -160,18 +164,18 @@ def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str,
 
 def _turnkey_dest_map(manifest: Manifest, staging: Path) -> dict[str, Path]:
     """Per-disk destination paths for the turnkey branch: under ``staging``."""
-    return {disk.target: staging / f"{disk.target}.qcow2" for disk in manifest.disks}
+    return {disk.target: staging / _turnkey_disk_filename(disk.target) for disk in manifest.disks}
+
+
+def _turnkey_disk_filename(target: str) -> str:
+    safe_target = target.replace("/", "_")
+    if safe_target in {"", ".", ".."}:
+        safe_target = "disk"
+    return f"{safe_target}.qcow2"
 
 
 def _rewrite_domain_disk_sources(domain_xml: str, dest_map: dict[str, Path]) -> str:
-    """Rewrite each ``<disk>/<source>`` to point at the restored qcow2.
-
-    Mapping is by ``<target dev="..."/>``: the source under each ``<disk>``
-    is rewritten to ``dest_map[target_dev]``. Disks whose target dev is not
-    present in the map are left alone. Handles ``<source file=...>`` and
-    ``<source dev=...>``; other source forms (volume / network) are skipped
-    because the plan only restores file-backed qcow2 disks.
-    """
+    """Rewrite restored file/block disk sources by ``<target dev=...>``."""
     root = ET.fromstring(domain_xml)  # noqa: S314
     for disk_el in root.findall(".//devices/disk"):
         target_el = disk_el.find("target")
@@ -192,7 +196,6 @@ def _rewrite_domain_disk_sources(domain_xml: str, dest_map: dict[str, Path]) -> 
 
 
 def _write_restored_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
-    """Persist the (possibly rewritten) domain XML for ``define_restored_domain``."""
     path = ctx.staging / RESTORED_CONFIG_FILE
     path.write_text(domain_xml, encoding="utf-8")
     return path

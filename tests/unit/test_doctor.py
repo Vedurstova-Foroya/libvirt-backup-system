@@ -40,7 +40,7 @@ def _stub_repo_local_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kopia_repo, "password_file_path", lambda cfg: cfg.prefix / "pw")
     monkeypatch.setattr(kopia_repo, "cache_dir", lambda cfg: cfg.prefix / "cache")
     monkeypatch.setattr(kopia_client, "repository_status", lambda **_: {"ok": True})
-    monkeypatch.setattr(kopia_client, "maintenance_run", lambda **_: None)
+    monkeypatch.setattr(kopia_client, "maintenance_info", lambda **_: None)
     monkeypatch.setattr(kopia_snapshots, "snapshot_verify", lambda **_: None)
     monkeypatch.setattr(kopia_repo, "discover_peer_repos", lambda _cfg: [])
 
@@ -216,6 +216,8 @@ def test_expected_unit_text_maintenance_timer_branch(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     text = doctor._expected_unit_text(cfg, MAINTENANCE_TIMER_NAME)
     assert text is not None
+    assert "OnActiveSec=15min" in text
+    assert "OnBootSec" not in text
     assert "OnUnitActiveSec=24h" in text
 
 
@@ -223,4 +225,6 @@ def test_expected_unit_text_verify_timer_branch(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     text = doctor._expected_unit_text(cfg, VERIFY_TIMER_NAME)
     assert text is not None
+    assert "OnActiveSec=75min" in text
+    assert "OnBootSec" not in text
     assert "OnUnitActiveSec=7d" in text

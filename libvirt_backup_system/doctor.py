@@ -2,7 +2,7 @@
 
 Kopia migration: in addition to the preflight surface, doctor confirms that
 the local kopia repo connects with the configured password, that
-``kopia maintenance run --safety=none`` is clean, that a lightweight
+``kopia maintenance info`` is clean, that a lightweight
 ``kopia snapshot verify --verify-files-percent=0`` is clean, that no recent
 QGA quiesce fallback events show up in the journal, and that every peer repo
 discoverable under

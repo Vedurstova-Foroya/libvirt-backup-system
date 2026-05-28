@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import cast
 
 from . import kopia_repo
 from .config import Config, float_value, int_value
@@ -21,9 +22,16 @@ def df_available_kb(path: Path) -> int:
     return int(parts[3])
 
 
-def disk_virtual_size_bytes(path: str) -> int:
+def disk_image_info(path: str) -> dict[str, object]:
     result = run(["qemu-img", "info", "--output=json", "-U", "--", path])
     info = json.loads(result.stdout)
+    if not isinstance(info, dict):
+        raise ValueError("qemu-img info did not return a JSON object")
+    return cast("dict[str, object]", info)
+
+
+def disk_virtual_size_bytes(path: str) -> int:
+    info = disk_image_info(path)
     return int(info["virtual-size"])
 
 

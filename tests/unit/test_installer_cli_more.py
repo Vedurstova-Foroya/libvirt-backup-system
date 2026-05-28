@@ -5,6 +5,7 @@ from pathlib import Path
 
 from libvirt_backup_system.cli import main
 from libvirt_backup_system.config import DEFAULTS, Config
+from libvirt_backup_system.list_restore_points import BackupEnumeration
 
 
 def _fake_config(tmp_path: Path) -> Config:
@@ -48,7 +49,10 @@ def test_cli_list_restore_points_json_keeps_logs_off_stdout(tmp_path: Path, monk
     cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
     monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
     monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: print("config log") or 0)
-    monkeypatch.setattr("libvirt_backup_system.cli.enumerate_backups", lambda config: [])
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.enumerate_backups_result",
+        lambda config: BackupEnumeration([], ok=True),
+    )
     assert main(["list-restore-points", "--json"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "[]\n"

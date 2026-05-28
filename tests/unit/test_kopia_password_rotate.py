@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from libvirt_backup_system import kopia_password, kopia_repo
+from libvirt_backup_system import kopia_client, kopia_password, kopia_repo
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandError, CommandResult
 
@@ -32,6 +32,12 @@ def _write_password(cfg: Config, value: str = "swordfish") -> Path:
     return path
 
 
+def _connected_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    config_file = tmp_path / "connected.config"
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: config_file)
+    return config_file
+
+
 def test_change_local_password_no_op_when_unchanged(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -48,21 +54,53 @@ def test_change_local_password_happy_path(
 ) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg, value="old-pw")
+    config_file = _connected_config(tmp_path, monkeypatch)
+    status_calls: list[dict[str, object]] = []
+
+    def fake_status(**kwargs: object) -> dict[str, object]:
+        status_calls.append(kwargs)
+        return {"connected": True}
+
     monkeypatch.setattr(
-        kopia_password.kopia_client,
+        kopia_client,
         "repository_status",
-        lambda **_: {"connected": True},
+        fake_status,
     )
     change_calls: list[dict[str, object]] = []
 
     def fake_change(**kwargs: object) -> None:
         change_calls.append(kwargs)
 
-    monkeypatch.setattr(kopia_password.kopia_client, "repository_change_password", fake_change)
+    monkeypatch.setattr(kopia_client, "repository_change_password", fake_change)
     assert kopia_password.change_local_password(cfg, "new-pw") == 0
+    assert status_calls and status_calls[0]["config_file"] == config_file
     assert change_calls and change_calls[0]["new_password"] == "new-pw"
+    assert change_calls[0]["config_file"] == config_file
     # File now reflects the rotated password.
     assert kopia_password.read_password_file(cfg) == "new-pw"
+
+
+def test_change_local_password_aborts_when_local_connect_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    _write_password(cfg, value="old-pw")
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    monkeypatch.setattr(
+        kopia_client,
+        "repository_status",
+        lambda **_: pytest.fail("must not run after connect fails"),
+    )
+    monkeypatch.setattr(
+        kopia_client,
+        "repository_change_password",
+        lambda **_: pytest.fail("must not run after connect fails"),
+    )
+    assert kopia_password.change_local_password(cfg, "new-pw") == 1
+    assert "did not connect with current password" in capsys.readouterr().err
+    assert kopia_password.read_password_file(cfg) == "old-pw"
 
 
 def test_change_local_password_aborts_when_repo_status_fails(
@@ -72,13 +110,14 @@ def test_change_local_password_aborts_when_repo_status_fails(
 ) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg, value="old-pw")
+    _connected_config(tmp_path, monkeypatch)
 
     def fail(**_: object) -> None:
         raise CommandError(CommandResult(["kopia"], 1, "", "no repo"))
 
-    monkeypatch.setattr(kopia_password.kopia_client, "repository_status", fail)
+    monkeypatch.setattr(kopia_client, "repository_status", fail)
     monkeypatch.setattr(
-        kopia_password.kopia_client,
+        kopia_client,
         "repository_change_password",
         lambda **_: pytest.fail("must not run after status fails"),
     )
@@ -95,11 +134,12 @@ def test_change_local_password_aborts_when_repo_status_returns_invalid_json(
 ) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg, value="old-pw")
+    _connected_config(tmp_path, monkeypatch)
 
     def status_returns_garbage(**_: object) -> dict[str, object]:
         raise ValueError("kopia returned a non-object JSON document")
 
-    monkeypatch.setattr(kopia_password.kopia_client, "repository_status", status_returns_garbage)
+    monkeypatch.setattr(kopia_client, "repository_status", status_returns_garbage)
     assert kopia_password.change_local_password(cfg, "new-pw") == 1
     assert "did not connect with current password" in capsys.readouterr().err
 
@@ -111,8 +151,9 @@ def test_change_local_password_aborts_when_change_password_fails(
 ) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg, value="old-pw")
+    _connected_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        kopia_password.kopia_client,
+        kopia_client,
         "repository_status",
         lambda **_: {"connected": True},
     )
@@ -120,7 +161,7 @@ def test_change_local_password_aborts_when_change_password_fails(
     def fail(**_: object) -> None:
         raise CommandError(CommandResult(["kopia"], 1, "", "rotate failed"))
 
-    monkeypatch.setattr(kopia_password.kopia_client, "repository_change_password", fail)
+    monkeypatch.setattr(kopia_client, "repository_change_password", fail)
     assert kopia_password.change_local_password(cfg, "new-pw") == 1
     err = capsys.readouterr().err
     assert "kopia change-password failed" in err
@@ -136,13 +177,14 @@ def test_change_local_password_reports_write_failure_after_rotation(
 ) -> None:
     cfg = _make_config(tmp_path)
     _write_password(cfg, value="old-pw")
+    _connected_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        kopia_password.kopia_client,
+        kopia_client,
         "repository_status",
         lambda **_: {"connected": True},
     )
     monkeypatch.setattr(
-        kopia_password.kopia_client,
+        kopia_client,
         "repository_change_password",
         lambda **_: None,
     )

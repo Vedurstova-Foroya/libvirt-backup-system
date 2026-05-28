@@ -26,6 +26,7 @@ from .restore_helpers import (
     make_config,
     make_manifest,
     make_row,
+    rows_result,
 )
 
 
@@ -66,7 +67,7 @@ def test_restore_overwrite_shutdown_failure(tmp_path: Path, monkeypatch: pytest.
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)
     manifest = make_manifest()
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
 
     def fake_run(args: list[str], **_: Any) -> CommandResult:
@@ -85,7 +86,7 @@ def test_restore_overwrite_shutdown_failure(tmp_path: Path, monkeypatch: pytest.
 def test_restore_overwrite_undefine_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, make_manifest())
 
     def fake_run(args: list[str], **_: Any) -> CommandResult:
@@ -105,7 +106,7 @@ def test_restore_overwrite_undefine_failure(tmp_path: Path, monkeypatch: pytest.
 def test_restore_turnkey_disk_snapshot_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     row = make_row(tmp_path, host_id="host-b")
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, make_manifest(host_id="host-b"))
     _install_disk_snapshot(monkeypatch, present=False)
     monkeypatch.setattr(restore, "run", lambda args, **_: CommandResult(args, 0, "", ""))
@@ -117,7 +118,7 @@ def test_restore_turnkey_qemu_convert_failure(tmp_path: Path, monkeypatch: pytes
     cfg = make_config(tmp_path)
     row = make_row(tmp_path, host_id="host-b")
     manifest, _ = _manifest_with_local_disks(tmp_path, host_id="host-b")
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     _install_stream(monkeypatch, popen=ConvertFail)
@@ -130,7 +131,7 @@ def test_restore_turnkey_define_failure(tmp_path: Path, monkeypatch: pytest.Monk
     cfg = make_config(tmp_path)
     row = make_row(tmp_path, host_id="host-b")
     manifest, _ = _manifest_with_local_disks(tmp_path, host_id="host-b")
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
 
@@ -150,7 +151,7 @@ def test_restore_overwrite_define_failure(tmp_path: Path, monkeypatch: pytest.Mo
     manifest, src_dir = _manifest_with_local_disks(tmp_path)
     original_disk = src_dir / "myvm-vda.qcow2"
     original_disk.write_bytes(b"old-disk")
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
 
@@ -200,7 +201,7 @@ def test_restore_overwrite_replace_failure_redefines_original_domain(
     manifest, src_dir = _manifest_with_local_disks(tmp_path)
     original_disk = src_dir / "myvm-vda.qcow2"
     original_disk.write_bytes(b"old-disk")
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
 
@@ -242,7 +243,7 @@ def test_restore_overwrite_replace_failure_redefines_original_domain(
 def test_restore_overwrite_disk_materialize_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     row = make_row(tmp_path)
-    monkeypatch.setattr(restore, "enumerate_backups", lambda _c, *, vm_uuid=None: [row])
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
     _install_meta_writer(monkeypatch, make_manifest())
     _install_disk_snapshot(monkeypatch, present=False)
 

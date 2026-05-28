@@ -175,3 +175,11 @@ def test_snapshot_restore_to_path_command(tmp_path: Path, monkeypatch: pytest.Mo
     args, _ = captured[0]
     assert args[-1] == str(tmp_path / "out")
     assert "abc" in args
+
+
+def test_snapshot_delete_confirms_delete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = _write_password(tmp_path / "pw")
+    captured = _make_run_capture(monkeypatch)
+    kopia_snapshots.snapshot_delete(config_file=tmp_path / "c", password_file=password, snapshot_id="snap-1")
+    args, _ = captured[0]
+    assert args[-3:] == ["delete", "snap-1", "--delete"]

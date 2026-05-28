@@ -114,6 +114,32 @@ def test_uninstall_returns_nonzero_when_purge_rmtree_fails(tmp_path: Path, monke
     assert "purge failed" in capsys.readouterr().err
 
 
+def test_uninstall_purge_state_preserves_configured_kopia_password_file_under_state_dir(tmp_path: Path) -> None:
+    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "BACKUP_PATH=\nKOPIA_PASSWORD_FILE=/var/lib/libvirt-backup-system/secrets/kopia.pw\n",
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "var/lib/libvirt-backup-system"
+    password_file = state_dir / "secrets/kopia.pw"
+    password_file.parent.mkdir(parents=True)
+    password_file.write_text("secret\n", encoding="utf-8")
+    stale_file = state_dir / "host-id"
+    stale_file.write_text("old-host\n", encoding="utf-8")
+    stale_dir_file = state_dir / "restore/run/tmp.txt"
+    stale_dir_file.parent.mkdir(parents=True)
+    stale_dir_file.write_text("old restore\n", encoding="utf-8")
+
+    assert uninstall(str(tmp_path), purge_state=True) == 0
+
+    assert password_file.read_text(encoding="utf-8") == "secret\n"
+    assert password_file.parent.exists()
+    assert not stale_file.exists()
+    assert not stale_dir_file.exists()
+    assert not stale_dir_file.parent.exists()
+
+
 def test_uninstall_returns_nonzero_when_purge_unlink_fails(tmp_path: Path, monkeypatch, capsys) -> None:
     log_file = tmp_path / "var/log/libvirt-backup-system"
     log_file.parent.mkdir(parents=True)

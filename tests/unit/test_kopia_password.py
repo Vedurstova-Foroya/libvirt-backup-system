@@ -116,7 +116,7 @@ def test_read_password_file_rejects_wrong_mode(tmp_path: Path) -> None:
         kopia_password.read_password_file(cfg)
 
 
-def test_read_password_file_rejects_non_root_owner_when_root(
+def test_read_password_file_rejects_non_root_owner_even_when_not_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -137,7 +137,7 @@ def test_read_password_file_rejects_non_root_owner_when_root(
     def fake_lstat(self: Path) -> object:
         return FakeStat(real_lstat(self))
 
-    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(Path, "lstat", fake_lstat)
     with pytest.raises(PermissionError, match="owned by root"):
         kopia_password.read_password_file(cfg)
@@ -253,7 +253,7 @@ def test_password_file_is_secure_returns_false_when_directory(tmp_path: Path) ->
     assert kopia_password.password_file_is_secure(path) is False
 
 
-def test_password_file_is_secure_returns_false_for_non_root_owner_when_root(
+def test_password_file_is_secure_returns_false_for_non_root_owner_even_when_not_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -275,6 +275,6 @@ def test_password_file_is_secure_returns_false_for_non_root_owner_when_root(
     def fake_lstat(self: Path) -> object:
         return FakeStat(real_lstat(self))
 
-    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(kopia_password.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(Path, "lstat", fake_lstat)
     assert kopia_password.password_file_is_secure(path) is False

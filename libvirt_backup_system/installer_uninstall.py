@@ -15,6 +15,7 @@ KOPIA_SYSTEMD_UNITS = (
     "libvirt-backup-system-verify.service",
     "libvirt-backup-system-verify.timer",
 )
+STATE_DIR = "/var/lib/libvirt-backup-system"
 
 
 def remove_installed_files(root: Path) -> bool:
@@ -66,24 +67,78 @@ def resolve_purge_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list
     if flags["config"]:
         paths.append(cfg.path)
     if flags["state"]:
-        paths.append(prefixed("/var/lib/libvirt-backup-system", root))
+        paths.append(prefixed(STATE_DIR, root))
     if flags["logs"]:
         paths.append(prefixed("/var/log/libvirt-backup-system", root))
     return paths
 
 
-def purge_paths(paths: list[Path]) -> bool:
+def resolve_purge_preserve_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list[Path]:
+    if not flags["state"]:
+        return []
+    raw_password_file = cfg.get("KOPIA_PASSWORD_FILE").strip()
+    if not raw_password_file:
+        return []
+    state_dir = prefixed(STATE_DIR, root)
+    password_file = prefixed(raw_password_file, root)
+    if not _is_relative_to(password_file, state_dir):
+        return []
+    return [password_file]
+
+
+def purge_paths(paths: list[Path], *, preserve_paths: list[Path] | None = None) -> bool:
     ok = True
+    preserved = tuple(preserve_paths or [])
     for path in paths:
         if not path.exists():
             continue
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            _purge_path(path, preserved)
             event("info", "purged", path=str(path))
         except OSError as exc:
             event("error", "purge failed", path=str(path), error=str(exc))
             ok = False
     return ok
+
+
+def _purge_path(path: Path, preserved: tuple[Path, ...]) -> None:
+    if _is_preserved(path, preserved):
+        event("info", "preserved purge path", path=str(path))
+        return
+    if path.is_dir() and not path.is_symlink():
+        if _has_preserved_descendant(path, preserved):
+            _purge_directory_contents(path, preserved)
+        else:
+            shutil.rmtree(path)
+        return
+    path.unlink()
+
+
+def _purge_directory_contents(path: Path, preserved: tuple[Path, ...]) -> None:
+    for child in path.iterdir():
+        if _is_preserved(child, preserved):
+            event("info", "preserved purge path", path=str(child))
+            continue
+        if child.is_dir() and not child.is_symlink() and _has_preserved_descendant(child, preserved):
+            _purge_directory_contents(child, preserved)
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _is_preserved(path: Path, preserved: tuple[Path, ...]) -> bool:
+    return any(path == preserve for preserve in preserved)
+
+
+def _has_preserved_descendant(path: Path, preserved: tuple[Path, ...]) -> bool:
+    return any(_is_relative_to(preserve, path) for preserve in preserved)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
