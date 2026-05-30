@@ -8,6 +8,7 @@ from .config import Config, default_config_path, prefixed, root_prefix
 from .fish_completion import install_fish_completion
 from .installer_binaries import BinaryInstallError, install_kopia, install_nbdcopy
 from .installer_helpers import INSTALL_TIME_ENV_KEYS
+from .installer_helpers import install_backup_path_configured as _install_backup_path_configured
 from .installer_helpers import install_package as _install_package
 from .installer_helpers import install_without_backup_path as _install_without_backup_path
 from .installer_helpers import log_dropped_install_time_env as _log_dropped_install_time_env
@@ -66,13 +67,27 @@ def install(
             binary_code = _install_pinned_binaries(root)
             if binary_code != 0:
                 return binary_code
-            password_code = _install_password(cfg, password_spec or kopia_password.PasswordSpec())
-            if password_code != 0:
-                return password_code
+            resolved_password_spec = password_spec or kopia_password.PasswordSpec()
+            password_supplied = any(
+                value is not None
+                for value in (
+                    resolved_password_spec.literal,
+                    resolved_password_spec.file,
+                    resolved_password_spec.env_var,
+                )
+            )
+            password_required = _install_backup_path_configured(
+                cfg.get("BACKUP_PATH"),
+                config_exists=resolved_config.exists(),
+            )
+            if password_required or password_supplied:
+                password_code = _install_password(cfg, resolved_password_spec)
+                if password_code != 0:
+                    return password_code
             install_code = _install_locked(root, resolved_config, cfg)
             if install_code != 0:
                 return install_code
-            return _ensure_kopia_repo(cfg)
+            return _ensure_kopia_repo(cfg) if password_required else 0
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1

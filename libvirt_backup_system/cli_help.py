@@ -145,7 +145,7 @@ kopia) are on PATH, libvirt is reachable, BACKUP_PATH is writable and
 (when BACKUP_REQUIRE_NFS_MOUNT=true) is a mounted filesystem, the scratch
 directory is writable, KOPIA_PASSWORD_FILE exists with mode 600 and (under
 root) is owned by root, and df reports enough free space to satisfy the
-estimated repo growth for all selected VMs.
+estimated repo growth for selected running VMs.
 
 ``preflight`` is an alias of ``check``."""
 
@@ -249,10 +249,20 @@ Pick one of:
   --new-kopia-password-file=PATH     read from file; '-' means stdin
   --new-kopia-password-env=VAR       read from the named environment variable
 
+Required acknowledgement:
+  --acknowledge-password-argv-exposure
+      confirms Kopia receives the new password in its subprocess argv
+
 Behavior:
   1. Validate the current password file decrypts the local repo.
   2. ``kopia repository change-password`` rewraps the master key.
   3. Atomically replace the password file with the new value.
+
+Kopia's documented noninteractive rotation interface is
+``repository change-password --new-password=...``. Even when this command
+reads the new value from ``--new-kopia-password-file`` or
+``--new-kopia-password-env``, the final call to Kopia must pass that value
+in Kopia's argv; avoid running rotation on shared process-listing hosts.
 
 If step 3 fails after step 2 succeeds, the repo decrypts only with the new
 password but the file still holds the old one. The log line names both

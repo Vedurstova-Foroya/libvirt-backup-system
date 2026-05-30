@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from libvirt_backup_system import kopia_snapshots
+from libvirt_backup_system import kopia_snapshots, stream_process
 from libvirt_backup_system.shell import TIMEOUT_RETURN_CODE
 
 
@@ -29,6 +29,9 @@ class _KopiaSuccess:
     def communicate(self, _input: str | None = None, timeout: float | None = None) -> tuple[str, str]:
         _ = timeout
         return ('{"id":"snap-stdin"}', "")
+
+    def poll(self) -> int | None:
+        return self.returncode
 
 
 class _Terminable:
@@ -106,3 +109,38 @@ def test_snapshot_create_stdin_times_out_upstream_wait(monkeypatch: pytest.Monke
     assert info.value.snapshot_id == "snap-stdin"
     assert info.value.result.returncode == TIMEOUT_RETURN_CODE
     assert upstream.terminated is True
+
+
+def test_snapshot_create_stdin_reuses_deadline_for_upstream_wait(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    password = _write_password(tmp_path / "pw")
+    times = iter([100.0, 103.0, 109.0])
+    communicate_timeouts: list[float | None] = []
+    wait_timeouts: list[float | None] = []
+
+    class RecordingKopia(_KopiaSuccess):
+        def communicate(self, _input: str | None = None, timeout: float | None = None) -> tuple[str, str]:
+            communicate_timeouts.append(timeout)
+            return super().communicate(_input, timeout)
+
+    class RecordingUpstream(_Terminable):
+        def wait(self, timeout: float | None = None) -> int:
+            wait_timeouts.append(timeout)
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(stream_process.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(kopia_snapshots.subprocess, "Popen", RecordingKopia)
+    snapshot_id = kopia_snapshots.snapshot_create_stdin(
+        config_file=tmp_path / "c",
+        password_file=password,
+        stdin_file="vda.raw",
+        tags={},
+        source_stream=RecordingUpstream(),  # type: ignore[arg-type]
+        override_source="h:libvirt-backup:uuid/vda",
+        timeout=10,
+    )
+    assert snapshot_id == "snap-stdin"
+    assert communicate_timeouts == [7.0]
+    assert wait_timeouts == [1.0]

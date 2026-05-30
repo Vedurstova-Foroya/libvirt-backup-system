@@ -45,6 +45,7 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l ac
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password -r -d "New shared kopia repo password"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-file -r -F -d "Path to a file holding the new kopia password; '-' reads stdin"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-env -r -d "Environment variable name holding the new kopia password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l acknowledge-password-argv-exposure -d "Acknowledge that Kopia receives the new password in argv"
 
 # uninstall flags.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from uninstall" -l purge-config -d "Also remove /etc/libvirt-backup-system/libvirt-backup.env"

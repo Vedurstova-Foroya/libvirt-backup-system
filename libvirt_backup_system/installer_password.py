@@ -56,8 +56,6 @@ def install_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
         return 0
     repo_exists = kopia_repo.local_repo_exists(cfg)
     if has_existing and not kopia_password.existing_password_matches(cfg, resolved):
-        if repo_exists and _supplied_password_connects_existing_repo(cfg, resolved):
-            return _replace_password_file(cfg, resolved, message="kopia password file repaired")
         event(
             "error",
             "kopia password file exists with a different value; "
@@ -67,10 +65,6 @@ def install_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
         return 1
     if has_existing:
         return 0
-    if repo_exists:
-        if not _supplied_password_connects_existing_repo(cfg, resolved):
-            return 1
-        return _replace_password_file(cfg, resolved, message="kopia password file restored")
     if not spec.acknowledge_loss:
         event(
             "error",
@@ -79,6 +73,10 @@ def install_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
             recovery="store this exact password in a secrets vault; losing it on every host makes backups unreadable",
         )
         return 1
+    if repo_exists:
+        if not _supplied_password_connects_existing_repo(cfg, resolved):
+            return 1
+        return _replace_password_file(cfg, resolved, message="kopia password file restored")
     return _replace_password_file(cfg, resolved, message="kopia password file installed")
 
 
@@ -138,6 +136,13 @@ def change_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
             "error",
             "change-password requires one of --new-kopia-password / "
             "--new-kopia-password-file / --new-kopia-password-env",
+        )
+        return 1
+    if not spec.acknowledge_argv_exposure:
+        event(
+            "error",
+            "change-password requires acknowledgement that Kopia receives the new password in argv",
+            flag="--acknowledge-password-argv-exposure",
         )
         return 1
     return kopia_password.change_local_password(cfg, resolved)

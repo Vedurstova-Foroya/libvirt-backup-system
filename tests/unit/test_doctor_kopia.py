@@ -137,6 +137,20 @@ def test_check_peer_kopia_repos_returns_empty_when_no_peers(tmp_path: Path, monk
     assert doctor._check_peer_kopia_repos(cfg) == []
 
 
+def test_check_peer_kopia_repos_reports_discovery_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = make_config(tmp_path)
+
+    def boom(_cfg: Config) -> list[kopia_repo.PeerRepo]:
+        raise kopia_repo.PeerDiscoveryError("kopia peer discovery failed for /backup: nfs hiccup")
+
+    monkeypatch.setattr(kopia_repo, "discover_peer_repos", boom)
+    failures = doctor._check_peer_kopia_repos(cfg)
+    assert failures == ["kopia peer discovery failed for /backup: nfs hiccup"]
+
+
 def test_check_local_kopia_maintenance_probe_skipped_when_no_backup_path(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, with_backup_path=False)
     assert doctor._check_local_kopia_maintenance_probe(cfg) == []

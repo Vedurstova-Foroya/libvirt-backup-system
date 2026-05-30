@@ -88,3 +88,31 @@ def test_install_without_backup_path_disables_kopia_units_before_removing_them(
         VERIFY_TIMER_NAME,
     ]:
         assert not (systemd_dir / unit).exists()
+
+
+def test_install_without_backup_path_cleans_stale_kopia_units_without_password(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("BACKUP_PATH=\n", encoding="utf-8")
+    password_file = tmp_path / "etc/libvirt-backup-system/kopia.pw"
+    password_file.write_text("stale\n", encoding="utf-8")
+    password_file.chmod(0o644)
+    systemd_dir = tmp_path / "etc/systemd/system"
+    systemd_dir.mkdir(parents=True)
+    stale_units = [
+        systemd_dir / "libvirt-backup-system-maintenance.service",
+        systemd_dir / "libvirt-backup-system-maintenance.timer",
+        systemd_dir / "libvirt-backup-system-verify.service",
+        systemd_dir / "libvirt-backup-system-verify.timer",
+    ]
+    for unit in stale_units:
+        unit.write_text("stale\n", encoding="utf-8")
+
+    assert install(str(tmp_path)) == 0
+
+    assert all(not unit.exists() for unit in stale_units)
+    assert password_file.exists()

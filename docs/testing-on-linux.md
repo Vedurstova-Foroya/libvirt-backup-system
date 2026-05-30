@@ -161,8 +161,10 @@ case is skipped with a notice. When the probes pass it defines two ephemeral
 domains under `qemu:///session` (one running, one shut off) backed by tiny
 qcow2 disks under a temporary workdir, installs `libvirt-backup-system` into a
 `--prefix` sandbox with a generated kopia password, then drives `check`,
-`list-vms --json`, `run`, `verify`, and `restore` against the sandbox. It
-asserts that:
+`list-vms --json`, `run`, `verify`, and `restore` against the sandbox. The
+scenario reuses the host `nbdcopy` from `PATH` during the sandboxed install, so
+the e2e path does not run `dpkg` against the host package database just to
+bootstrap the prefixed tree, and asserts that:
 
 - the kopia repo materializes under `BACKUP_PATH/<host-id>/kopia-repo/`,
 - the running VM gets new kopia snapshots on every `run` and the offline VM is

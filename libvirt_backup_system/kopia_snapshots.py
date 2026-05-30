@@ -26,7 +26,7 @@ from .kopia_client import (
     tags_args,
 )
 from .shell import TIMEOUT_RETURN_CODE, CommandError, CommandResult
-from .stream_process import popen_args, terminate_processes, timeout_message
+from .stream_process import command_deadline, popen_args, remaining_timeout, terminate_processes, timeout_message
 
 
 class SnapshotCreateError(CommandError):
@@ -136,6 +136,7 @@ def snapshot_create_stdin(
     if parallelism is not None:
         args.extend(["--parallel", str(parallelism)])
     source_stdout = source_stream.stdout if source_stream is not None else subprocess.PIPE
+    deadline = command_deadline(timeout)
     kopia_proc = subprocess.Popen(
         args,
         stdin=source_stdout,
@@ -149,7 +150,7 @@ def snapshot_create_stdin(
         with suppress(OSError):
             source_stream.stdout.close()
     try:
-        stdout, stderr = kopia_proc.communicate(timeout=timeout)
+        stdout, stderr = kopia_proc.communicate(timeout=remaining_timeout(deadline))
     except subprocess.TimeoutExpired as exc:
         terminate_processes(kopia_proc, source_stream)
         raise SnapshotCreateError(
@@ -162,10 +163,10 @@ def snapshot_create_stdin(
         ) from exc
     if source_stream is not None:
         try:
-            source_stream.wait(timeout=timeout)
+            source_stream.wait(timeout=remaining_timeout(deadline))
         except subprocess.TimeoutExpired as exc:
             snapshot_id = _snapshot_id_from_create_stdout(stdout or "")
-            terminate_processes(source_stream)
+            terminate_processes(kopia_proc, source_stream)
             raise SnapshotCreateError(
                 CommandResult(
                     args=popen_args(source_stream),

@@ -31,6 +31,7 @@ class PasswordSpec:
     file: str | None = None
     env_var: str | None = None
     acknowledge_loss: bool = False
+    acknowledge_argv_exposure: bool = False
 
 
 def resolve_password(spec: PasswordSpec, *, stdin: Iterable[str] = sys.stdin) -> str | None:
@@ -206,7 +207,11 @@ def change_local_password(config: Config, new_value: str) -> int:
     """
     from . import kopia_client, kopia_repo
 
-    old_value = read_password_file(config)
+    try:
+        old_value = read_password_file(config)
+    except (OSError, ValueError) as exc:
+        event("error", "current kopia password file unreadable", error=str(exc))
+        return 1
     if old_value == new_value:
         event("info", "kopia password unchanged; no rotation needed")
         return 0

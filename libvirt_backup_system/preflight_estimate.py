@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 from typing import cast
 
-from . import kopia_repo
+from . import kopia_repo, kopia_snapshots
 from .config import Config, float_value, int_value
 from .disks import libvirt_uri_uses_remote_transport, vm_disk_paths
 from .logging_json import event
@@ -32,7 +32,10 @@ def disk_image_info(path: str) -> dict[str, object]:
 
 def disk_virtual_size_bytes(path: str) -> int:
     info = disk_image_info(path)
-    return int(info["virtual-size"])
+    raw = info["virtual-size"]
+    if not isinstance(raw, (int, float, str)):
+        raise TypeError(f"unexpected virtual-size type: {type(raw)}")
+    return int(raw)
 
 
 def vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
@@ -56,7 +59,8 @@ def vm_estimated_bytes(uri: str, vm: VM, fallback_bytes: int) -> int:
 
 
 def estimate_required_kb(config: Config, vms: list[VM]) -> int:
-    if kopia_repo.local_repo_exists(config):
+    estimated_vms = _vms_needing_first_backup_estimate(config, vms)
+    if not estimated_vms:
         return 0
     try:
         fallback_per_vm_gb = float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM")
@@ -68,5 +72,25 @@ def estimate_required_kb(config: Config, vms: list[VM]) -> int:
         return 0
     fallback_per_vm_bytes = int(fallback_per_vm_gb * 1024 * 1024 * 1024)
     uri = config.get("LIBVIRT_URI")
-    total_bytes = sum(vm_estimated_bytes(uri, vm, fallback_per_vm_bytes) for vm in vms)
+    total_bytes = sum(vm_estimated_bytes(uri, vm, fallback_per_vm_bytes) for vm in estimated_vms)
     return int(total_bytes * multiplier * margin / 1024)
+
+
+def _vms_needing_first_backup_estimate(config: Config, vms: list[VM]) -> list[VM]:
+    if not vms or not kopia_repo.local_repo_exists(config):
+        return vms
+    config_file = kopia_repo.ensure_local_connected(config)
+    if config_file is None:
+        return []
+    try:
+        snapshots = kopia_snapshots.snapshot_list(
+            config_file=config_file,
+            password_file=kopia_repo.password_file_path(config),
+            cache_dir=kopia_repo.cache_dir(config),
+            tags={"kind": "meta"},
+        )
+    except (CommandError, OSError, ValueError) as exc:
+        event("warning", "meta snapshot probe failed for space estimate", error=str(exc))
+        return []
+    seen_vm_uuids = {snap.tags.get("vm-uuid", "") for snap in snapshots}
+    return [vm for vm in vms if vm.uuid not in seen_vm_uuids]

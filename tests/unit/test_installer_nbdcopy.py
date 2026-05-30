@@ -12,6 +12,11 @@ from libvirt_backup_system.shell import CommandError, CommandResult
 from tests.unit.test_installer_binaries import _FakeResponse, _pin_libnbd_sha256
 
 
+@pytest.fixture(autouse=True)
+def _hide_path_nbdcopy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("libvirt_backup_system.installer_binaries.shutil.which", lambda name: None)
+
+
 def test_install_nbdcopy_skips_when_binary_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     nbdcopy_path = tmp_path / "usr/bin/nbdcopy"
     nbdcopy_path.parent.mkdir(parents=True)
@@ -35,6 +40,30 @@ def test_install_nbdcopy_skips_when_binary_present(tmp_path: Path, monkeypatch: 
     install_nbdcopy(prefix=tmp_path)
     # Only the version probe ran; no dpkg invocations.
     assert seen == [[str(nbdcopy_path), "--version"]]
+
+
+def test_install_nbdcopy_prefix_skips_when_path_binary_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    host_nbdcopy = tmp_path / "host-bin/nbdcopy"
+    host_nbdcopy.parent.mkdir()
+    host_nbdcopy.write_text("placeholder\n", encoding="utf-8")
+    host_nbdcopy.chmod(0o755)
+    seen: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> CommandResult:
+        seen.append(args)
+        assert args == [str(host_nbdcopy), "--version"]
+        return CommandResult(args=args, returncode=0, stdout="nbdcopy 1.18.1\n", stderr="")
+
+    monkeypatch.setattr("libvirt_backup_system.installer_binaries.run", fake_run)
+    monkeypatch.setattr("libvirt_backup_system.installer_binaries.shutil.which", lambda name: str(host_nbdcopy))
+
+    def boom(_url: str) -> _FakeResponse:
+        raise AssertionError("sandboxed prefix install must not download or dpkg-install nbdcopy")
+
+    monkeypatch.setattr("libvirt_backup_system.installer_binaries.urllib.request.urlopen", boom)
+
+    install_nbdcopy(prefix=tmp_path / "root")
+    assert seen == [[str(host_nbdcopy), "--version"]]
 
 
 def test_install_nbdcopy_skip_handles_failed_version_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

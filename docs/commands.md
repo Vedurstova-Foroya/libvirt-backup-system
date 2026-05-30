@@ -42,10 +42,10 @@ verify it decrypts the local repo, run `kopia repository change-password` to
 rewrap the master key, atomically replace the password file.
 
 ```sh
-sudo libvirt-backup-system change-password --new-kopia-password=<value>
-sudo libvirt-backup-system change-password --new-kopia-password-file=/path
-echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
-sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
+sudo libvirt-backup-system change-password --new-kopia-password=<value> --acknowledge-password-argv-exposure
+sudo libvirt-backup-system change-password --new-kopia-password-file=/path --acknowledge-password-argv-exposure
+echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=- --acknowledge-password-argv-exposure
+sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW --acknowledge-password-argv-exposure
 ```
 
 Run the same command on every host. Order does not matter; each host rotates
@@ -53,14 +53,21 @@ its own local repo independently. `doctor` flags any host still holding the
 old value. See [Kopia operations](kopia.md#password-rotation) for the full
 recovery procedure.
 
+Kopia's documented noninteractive rotation flag is
+`repository change-password --new-password=...`. The wrapper can read the
+new value from stdin, a file, or an environment variable, but it must still
+pass that resolved value to Kopia in Kopia's argv for the rewrap step. Do
+not run `change-password` on hosts where other users can inspect process
+arguments during the acknowledged rotation window.
+
 ## `uninstall`
 
 Removes installed program files and systemd units. Config, state, logs, the
 kopia password file, and the on-disk repo are preserved by default. The
 purge flags only remove config, state, and logs; uninstall never removes the
-Kopia password file or repo. If `KOPIA_PASSWORD_FILE` is configured under
-`/var/lib/libvirt-backup-system`, `--purge-state` preserves that file and
-the parent directories needed to keep it in place.
+Kopia password file or repo. If `KOPIA_PASSWORD_FILE` is configured inside
+any purged config, state, or log path, uninstall preserves that file and the
+parent directories needed to keep it in place.
 
 ```sh
 sudo libvirt-backup-system uninstall

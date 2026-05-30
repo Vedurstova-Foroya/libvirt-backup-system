@@ -18,6 +18,7 @@ from libvirt_backup_system import manifest as manifest_module
 from libvirt_backup_system import shell as shell_module
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandError, CommandResult
+from libvirt_backup_system.vm_snapshot import DiskTarget, FrozenSnapshot
 from libvirt_backup_system.vms import VM
 
 from .conftest import ALPHA_UUID, BETA_UUID
@@ -76,6 +77,26 @@ def test_backup_vm_runs_commit_even_when_streaming_fails(
     # also pins the structured-error log so operators see the disk-level fault.
     assert len(snapper.commit_calls) == 1
     assert "disk snapshot failed" in capsys.readouterr().err
+
+
+def test_freeze_failure_returns_failed_vm_result_without_cleanup(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured = _install_stubs(monkeypatch)
+
+    class FreezeFailSnapper(FakeSnapper):
+        def freeze(self, vm_name: str, disks: list[DiskTarget]) -> FrozenSnapshot:
+            self.freeze_calls.append((vm_name, list(disks)))
+            raise CommandError(CommandResult(["virsh"], 1, "", "snapshot exploded"))
+
+    snapper = FreezeFailSnapper(disks=[_disk_target()])
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    record = _find_event(capsys.readouterr().err, "snapshot freeze failed")
+    assert record["vm"] == "alpha"
+    assert record["stderr"] == "snapshot exploded"
+    assert snapper.stream_calls == []
+    assert snapper.commit_calls == []
+    assert captured["create_stdin"] == []
 
 
 def test_backup_vm_rejects_non_file_disk_before_manifest(
@@ -202,7 +223,7 @@ def test_read_domain_xml_invokes_virsh_dumpxml(monkeypatch: pytest.MonkeyPatch) 
 
 def test_override_source_format(backup_config: Config) -> None:
     backup_config.values["HOST_ID"] = "host-a"
-    assert backup._override_source(backup_config, ALPHA_UUID, "meta") == f"host-a:libvirt-backup:{ALPHA_UUID}/meta"
+    assert backup._override_source(backup_config, ALPHA_UUID, "meta") == f"root@host-a:libvirt-backup:{ALPHA_UUID}/meta"
 
 
 def test_disk_and_meta_tags(backup_config: Config) -> None:

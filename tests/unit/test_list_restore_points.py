@@ -219,7 +219,7 @@ def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.
     assert rows[0].host_id == "host-b"
 
 
-def test_peer_rows_marks_failed_peer_connect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_peer_rows_marks_failed_peer_connect_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path, host_id="host-a")
     peer = kopia_repo.PeerRepo("host-b", tmp_path / "rb", tmp_path / "peer.config")
     _stub_repo_helpers(monkeypatch, cfg, peers=[peer])

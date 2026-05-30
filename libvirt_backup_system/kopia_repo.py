@@ -1,18 +1,8 @@
-"""Per-host kopia repo lifecycle and peer discovery.
-
-The system uses one filesystem-backed kopia repo per host, all sharing the
-same password. Each host writes only to its own ``$BACKUP_PATH/$HOST_ID/
-kopia-repo/`` tree. Cross-host listing and restore connect read-only to every
-peer repo discovered under ``$BACKUP_PATH/<host>/kopia-repo/`` using the same
-shared password.
-
-Each repo connection is keyed by a separate kopia config file under
-``/var/lib/libvirt-backup-system/kopia-configs/<host-id>.config``; kopia's
-default single-config-file layout cannot hold multiple connections at once.
-"""
+"""Per-host kopia repo lifecycle and peer discovery."""
 
 from __future__ import annotations
 
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +21,10 @@ class PeerRepo:
     host_id: str
     repo_path: Path
     config_file: Path
+
+
+class PeerDiscoveryError(RuntimeError):
+    """Raised when BACKUP_PATH cannot be scanned for peer repos."""
 
 
 def kopia_config_root(config: Config) -> Path:
@@ -265,12 +259,25 @@ def discover_peer_repos(config: Config) -> list[PeerRepo]:
         entries = sorted(backup_path.iterdir(), key=lambda p: p.name)
     except OSError as exc:
         event("error", "kopia peer discovery failed", backup_path=str(backup_path), error=str(exc))
-        return []
+        raise PeerDiscoveryError(f"kopia peer discovery failed for {backup_path}: {exc}") from exc
     for host_dir in entries:
-        if not host_dir.is_dir():
+        try:
+            host_info = host_dir.stat()
+        except OSError as exc:
+            event("warning", "kopia peer host dir skipped", path=str(host_dir), error=str(exc))
+            continue
+        if not stat.S_ISDIR(host_info.st_mode):
             continue
         repo_path = host_dir / REPO_DIR_NAME
-        if not (repo_path / "kopia.repository.f").is_file():
+        sentinel = repo_path / "kopia.repository.f"
+        try:
+            sentinel_info = sentinel.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            event("warning", "kopia peer repo sentinel skipped", path=str(sentinel), error=str(exc))
+            continue
+        if not stat.S_ISREG(sentinel_info.st_mode):
             continue
         peers.append(
             PeerRepo(

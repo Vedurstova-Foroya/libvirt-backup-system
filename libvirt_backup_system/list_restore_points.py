@@ -56,7 +56,11 @@ def _peer_rows(config: Config) -> list[BackupRow]:
 def _peer_rows_result(config: Config) -> BackupEnumeration:
     rows: list[BackupRow] = []
     ok = True
-    for peer in kopia_repo.discover_peer_repos(config):
+    try:
+        peers = kopia_repo.discover_peer_repos(config)
+    except kopia_repo.PeerDiscoveryError:
+        return BackupEnumeration([], ok=False)
+    for peer in peers:
         if peer.host_id == config.get("HOST_ID"):
             continue
         config_file = kopia_repo.ensure_peer_connected(config, peer.host_id)

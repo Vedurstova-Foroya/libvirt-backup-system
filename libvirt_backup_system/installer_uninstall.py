@@ -74,16 +74,24 @@ def resolve_purge_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list
 
 
 def resolve_purge_preserve_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list[Path]:
-    if not flags["state"]:
-        return []
+    candidates: list[Path] = []
     raw_password_file = cfg.get("KOPIA_PASSWORD_FILE").strip()
-    if not raw_password_file:
-        return []
-    state_dir = prefixed(STATE_DIR, root)
-    password_file = prefixed(raw_password_file, root)
-    if not _is_relative_to(password_file, state_dir):
-        return []
-    return [password_file]
+    if raw_password_file:
+        candidates.append(prefixed(raw_password_file, root))
+    raw_backup_path = cfg.get("BACKUP_PATH").strip()
+    if raw_backup_path:
+        candidates.append(prefixed(raw_backup_path, root))
+    raw_repo_path = cfg.get("KOPIA_REPO_PATH").strip()
+    if raw_repo_path:
+        candidates.append(prefixed(raw_repo_path, root))
+    elif raw_backup_path and cfg.get("HOST_ID").strip():
+        candidates.append(prefixed(Path(raw_backup_path) / cfg.get("HOST_ID") / "kopia-repo", root))
+    purge_roots = resolve_purge_paths(root, cfg, flags)
+    return [
+        path
+        for index, path in enumerate(candidates)
+        if path not in candidates[:index] and any(_is_preserved_by(path, purge_root) for purge_root in purge_roots)
+    ]
 
 
 def purge_paths(paths: list[Path], *, preserve_paths: list[Path] | None = None) -> bool:
@@ -142,3 +150,7 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_preserved_by(path: Path, purge_root: Path) -> bool:
+    return path == purge_root or _is_relative_to(path, purge_root)

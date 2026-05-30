@@ -42,7 +42,7 @@ sudo libvirt-backup-system list-vms
 sudo libvirt-backup-system verify
 sudo libvirt-backup-system list-restore-points
 sudo libvirt-backup-system restore <vm-uuid> <timestamp>
-sudo libvirt-backup-system change-password --new-kopia-password=<value>
+sudo libvirt-backup-system change-password --new-kopia-password=<value> --acknowledge-password-argv-exposure
 ```
 
 `list-restore-points` lists every restorable snapshot across all hosts. The

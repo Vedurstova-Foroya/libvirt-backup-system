@@ -103,6 +103,95 @@ def test_change_local_password_aborts_when_local_connect_fails(
     assert kopia_password.read_password_file(cfg) == "old-pw"
 
 
+def test_change_local_password_reports_missing_current_password_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    monkeypatch.setattr(
+        kopia_repo,
+        "ensure_local_connected",
+        lambda _cfg: pytest.fail("must not connect without current password"),
+    )
+    assert kopia_password.change_local_password(cfg, "new-pw") == 1
+    err = capsys.readouterr().err
+    assert "current kopia password file unreadable" in err
+    assert "kopia password file missing" in err
+    assert "fatal error" not in err
+    assert "new-pw" not in err
+
+
+def test_change_local_password_reports_insecure_current_password_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    pw_path = _write_password(cfg, value="old-pw")
+    pw_path.chmod(0o644)
+    monkeypatch.setattr(
+        kopia_repo,
+        "ensure_local_connected",
+        lambda _cfg: pytest.fail("must not connect with insecure current password"),
+    )
+    assert kopia_password.change_local_password(cfg, "new-pw") == 1
+    err = capsys.readouterr().err
+    assert "current kopia password file unreadable" in err
+    assert "must be mode 600" in err
+    assert "fatal error" not in err
+    assert "old-pw" not in err
+    assert "new-pw" not in err
+
+
+def test_change_local_password_reports_unreadable_current_password_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    pw_path = _write_password(cfg, value="old-pw")
+    real_read_text = Path.read_text
+
+    def unreadable(self: Path, *args: object, **kwargs: object) -> str:
+        if self == pw_path:
+            raise PermissionError("permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    monkeypatch.setattr(
+        kopia_repo,
+        "ensure_local_connected",
+        lambda _cfg: pytest.fail("must not connect with unreadable current password"),
+    )
+    assert kopia_password.change_local_password(cfg, "new-pw") == 1
+    err = capsys.readouterr().err
+    assert "current kopia password file unreadable" in err
+    assert "permission denied" in err
+    assert "old-pw" not in err
+    assert "new-pw" not in err
+
+
+def test_change_local_password_reports_invalid_current_password_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    pw_path = _write_password(cfg, value="old-pw")
+    pw_path.write_text("\n", encoding="utf-8")
+    monkeypatch.setattr(
+        kopia_repo,
+        "ensure_local_connected",
+        lambda _cfg: pytest.fail("must not connect with invalid current password"),
+    )
+    assert kopia_password.change_local_password(cfg, "new-pw") == 1
+    err = capsys.readouterr().err
+    assert "current kopia password file unreadable" in err
+    assert "must not be empty" in err
+    assert "new-pw" not in err
+
+
 def test_change_local_password_aborts_when_repo_status_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

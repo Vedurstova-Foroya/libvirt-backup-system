@@ -71,7 +71,12 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
         ("install", {"kopia-password", "kopia-password-file", "kopia-password-env", "acknowledge-password-loss"}),
         (
             "change-password",
-            {"new-kopia-password", "new-kopia-password-file", "new-kopia-password-env"},
+            {
+                "new-kopia-password",
+                "new-kopia-password-file",
+                "new-kopia-password-env",
+                "acknowledge-password-argv-exposure",
+            },
         ),
         ("uninstall", {"purge-config", "purge-state", "purge-logs"}),
         ("list-vms", {"json", "include-blacklisted"}),

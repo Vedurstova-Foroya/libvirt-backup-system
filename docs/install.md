@@ -233,7 +233,7 @@ sudo libvirt-backup-system uninstall
 Uninstall removes installed program files and systemd units. Config, state,
 and logs are preserved unless their matching `--purge-*` flags are passed.
 The Kopia password file and repo directory under `BACKUP_PATH` are never
-touched by uninstall. If `KOPIA_PASSWORD_FILE` is configured under
-`/var/lib/libvirt-backup-system`, `--purge-state` preserves that file and
-the parent directories needed to keep it in place; delete it by hand once
-the operator is sure the backups are no longer needed.
+touched by uninstall. If `KOPIA_PASSWORD_FILE` is configured inside any
+purged config, state, or log path, uninstall preserves that file and the
+parent directories needed to keep it in place; delete it by hand once the
+operator is sure the backups are no longer needed.

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from libvirt_backup_system import preflight
+from libvirt_backup_system.vms import VM
 from tests.unit._preflight_helpers import make_config, stub_environment, write_password_file
 
 
@@ -82,6 +83,37 @@ def test_collect_check_failures_includes_disk_compatibility(tmp_path: Path, monk
     failures, vm_count, _kb = preflight.collect_check_failures(cfg)
     assert vm_count == 1
     assert "unsupported backup disk for alpha: raw disk" in failures
+
+
+def test_collect_check_failures_checks_space_for_running_selected_vms_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_config(tmp_path)
+    write_password_file(cfg)
+    vms = [
+        VM("alpha", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        VM("beta", "shut off", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+    ]
+    compat_seen: list[list[str]] = []
+    estimate_seen: list[list[str]] = []
+    stub_environment(monkeypatch, vms=vms)
+
+    def fake_compat(_cfg: object, checked_vms: list[VM]) -> list[str]:
+        compat_seen.append([vm.name for vm in checked_vms])
+        return []
+
+    def fake_estimate(_cfg: object, estimated_vms: list[VM]) -> int:
+        estimate_seen.append([vm.name for vm in estimated_vms])
+        return 123
+
+    monkeypatch.setattr(preflight.disk_compat, "selected_vm_disk_compatibility_failures", fake_compat)
+    monkeypatch.setattr(preflight, "_estimate_required_kb", fake_estimate)
+    failures, vm_count, required_kb = preflight.collect_check_failures(cfg)
+    assert failures == []
+    assert vm_count == 2
+    assert required_kb == 123
+    assert compat_seen == [["alpha"]]
+    assert estimate_seen == [["alpha"]]
 
 
 def test_collect_check_failures_insufficient_space(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

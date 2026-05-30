@@ -26,6 +26,9 @@ def test_install_reinstall_reports_insecure_password_file_cleanly(tmp_path: Path
     password = write_kopia_password_file(tmp_path, value="existing")
     password.chmod(0o644)
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    backup_path = tmp_path / "backups"
+    backup_path.mkdir()
+    monkeypatch.setenv("BACKUP_PATH", str(backup_path))
 
     assert install(str(tmp_path)) == 1
 

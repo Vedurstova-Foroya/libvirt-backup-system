@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -20,6 +21,14 @@ def timeout_message(command: str, timeout_seconds: float | None) -> str:
     if timeout_seconds is None:
         return f"{command} timed out"
     return f"{command} timed out after {timeout_seconds:g} seconds"
+
+
+def command_deadline(timeout_seconds: float | None) -> float | None:
+    return None if timeout_seconds is None else time.monotonic() + timeout_seconds
+
+
+def remaining_timeout(deadline: float | None) -> float | None:
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
 
 
 def terminate_process(proc: subprocess.Popen[Any] | None) -> None:

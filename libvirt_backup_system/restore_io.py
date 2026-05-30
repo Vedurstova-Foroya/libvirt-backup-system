@@ -13,7 +13,7 @@ from .list_restore_points import BackupRow
 from .logging_json import event
 from .manifest import MANIFEST_FILENAME, Manifest, read_manifest
 from .shell import CommandError
-from .stream_process import terminate_processes, timeout_message
+from .stream_process import command_deadline, remaining_timeout, terminate_processes, timeout_message
 
 
 def restore_manifest(config: Config, row: BackupRow, staging: Path) -> Manifest | None:
@@ -83,6 +83,7 @@ def _command_timeout(config: Config) -> int:
 
 def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_in_snap: str, dest: Path) -> bool:
     timeout = _command_timeout(config)
+    deadline = command_deadline(timeout)
     with tempfile.TemporaryFile() as kopia_stderr:
         kopia_proc = kopia_snapshots.snapshot_restore_to_stdout(
             config_file=row.config_file,
@@ -103,8 +104,8 @@ def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_
             with suppress(OSError):
                 kopia_proc.stdout.close()
         try:
-            stdout, stderr = convert.communicate(timeout=timeout)
-            kopia_proc.wait(timeout=timeout)
+            stdout, stderr = convert.communicate(timeout=remaining_timeout(deadline))
+            kopia_proc.wait(timeout=remaining_timeout(deadline))
         except subprocess.TimeoutExpired:
             terminate_processes(convert, kopia_proc)
             event(

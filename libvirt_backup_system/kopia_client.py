@@ -146,8 +146,8 @@ def repository_change_password(
 ) -> None:
     """Wrap the master key under ``new_password``.
 
-    Kopia exposes ``--new-password`` for noninteractive rotation; use that
-    documented path instead of trying to script the interactive prompt.
+    Kopia documents only ``--new-password`` for noninteractive rotation, so
+    the resolved new password is visible in the Kopia subprocess argv.
     """
     args = [*build_config_args(config_file), "repository", "change-password", f"--new-password={new_password}"]
     run_kopia(

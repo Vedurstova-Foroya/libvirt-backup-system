@@ -27,6 +27,12 @@ def install_time_env_keys_present() -> list[str]:
     return [key for key in INSTALL_TIME_ENV_KEYS if os.environ.get(key) is not None]
 
 
+def install_backup_path_configured(config_backup_path: str, *, config_exists: bool) -> bool:
+    if config_exists:
+        return bool(config_backup_path.strip())
+    return bool(os.environ.get("BACKUP_PATH", config_backup_path).strip())
+
+
 def log_dropped_install_time_env(path: Path) -> None:
     dropped = install_time_env_keys_present()
     if dropped:

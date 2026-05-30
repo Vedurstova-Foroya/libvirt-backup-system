@@ -1,9 +1,4 @@
-"""Kopia-engine backup orchestration.
-
-A run is one set of disk snapshots plus one manifest snapshot, tied together
-with a per-VM ``run-id``. Kopia maintenance stays on its own systemd timer so
-slow GC cannot block backups.
-"""
+"""Kopia-engine backup orchestration."""
 
 from __future__ import annotations
 
@@ -54,7 +49,12 @@ def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list
                 snapshot_filename=snapshot_filename_for_target(disk.target),
             )
         )
-    domain_xml = _read_domain_xml(libvirt_uri, vm.name)
+    try:
+        domain_xml = _read_domain_xml(libvirt_uri, vm.name)
+    except (CommandError, OSError) as exc:
+        stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
+        event("error", "domain xml read failed", vm=vm.name, error=str(exc), stderr=stderr)
+        return None
     return Manifest(
         vm_name=vm.name,
         vm_uuid=vm.uuid,
@@ -139,7 +139,7 @@ def _parallelism(config: Config) -> int | None:
 
 
 def _override_source(config: Config, vm_uuid: str, suffix: str) -> str:
-    return f"{config.get('HOST_ID')}:libvirt-backup:{vm_uuid}/{suffix}"
+    return f"root@{config.get('HOST_ID')}:libvirt-backup:{vm_uuid}/{suffix}"
 
 
 @contextmanager
@@ -169,6 +169,10 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
     except ValueError as exc:
         event("error", "unsupported backup disk", vm=vm.name, error=str(exc))
         return False
+    except (CommandError, OSError) as exc:
+        stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
+        event("error", "disk listing failed", vm=vm.name, error=str(exc), stderr=stderr)
+        return False
     manifest = _build_manifest(config, vm, run_id, stamp, snapper_disks)
     if manifest is None:
         return False
@@ -193,7 +197,12 @@ def _stream_all_disks(
     config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter, snapper_disks: list[DiskTarget]
 ) -> tuple[bool, str]:
     """Drive freeze → stream each disk → commit, all through the same snapper."""
-    frozen = snapper.freeze(vm.name, snapper_disks)
+    try:
+        frozen = snapper.freeze(vm.name, snapper_disks)
+    except CommandError as exc:
+        stderr = exc.result.stderr.strip()
+        event("error", "snapshot freeze failed", vm=vm.name, run_id=run_id, stderr=stderr)
+        return False, "failed"
     consistency = "quiesced" if frozen.quiesced else "crash"
     created_disk_snapshot_ids: list[str] = []
     meta_written = False
@@ -249,14 +258,7 @@ def _stream_single_disk(
         if isinstance(exc, kopia_snapshots.SnapshotCreateError) and exc.snapshot_id is not None:
             backup_cleanup.cleanup_created_disk_snapshots(config, vm, run_id, [exc.snapshot_id])
         stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""
-        event(
-            "error",
-            "disk snapshot failed",
-            vm=vm.name,
-            target=target,
-            stderr=stderr,
-            error=str(exc),
-        )
+        event("error", "disk snapshot failed", vm=vm.name, target=target, stderr=stderr, error=str(exc))
         return None
 
 

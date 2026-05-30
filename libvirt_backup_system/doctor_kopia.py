@@ -32,7 +32,11 @@ def check_local_kopia_repo(config: Config) -> list[str]:
 def check_peer_kopia_repos(config: Config) -> list[str]:
     """Read-only connect to every peer repo as a cross-host smoke test."""
     failures: list[str] = []
-    for peer in kopia_repo.discover_peer_repos(config):
+    try:
+        peers = kopia_repo.discover_peer_repos(config)
+    except kopia_repo.PeerDiscoveryError as exc:
+        return [str(exc)]
+    for peer in peers:
         if peer.host_id == config.get("HOST_ID"):
             continue
         if kopia_repo.ensure_peer_connected(config, peer.host_id) is None:

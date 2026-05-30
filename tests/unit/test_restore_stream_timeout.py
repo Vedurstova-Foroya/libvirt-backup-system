@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from libvirt_backup_system import restore
+from libvirt_backup_system import restore, restore_io, stream_process
 
 from .restore_helpers import ConvertOk, KopiaProc, run_stream
 
@@ -61,3 +61,29 @@ def test_stream_disk_to_qcow2_times_out_kopia_wait(
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=ConvertOk) is False
     assert "restore stream timed out" in capsys.readouterr().err
     assert kopia_proc.returncode == -15
+
+
+def test_stream_disk_to_qcow2_reuses_deadline_for_kopia_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    times = iter([100.0, 104.0, 109.5])
+    convert_timeouts: list[float | None] = []
+
+    class RecordingConvert(ConvertOk):
+        def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+            convert_timeouts.append(timeout)
+            return super().communicate(timeout)
+
+    class RecordingKopia(KopiaProc):
+        def __init__(self) -> None:
+            super().__init__(returncode=0)
+            self.wait_timeouts: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> None:
+            self.wait_timeouts.append(timeout)
+            super().wait(timeout)
+
+    kopia_proc = RecordingKopia()
+    monkeypatch.setattr(restore_io, "_command_timeout", lambda _cfg: 10)
+    monkeypatch.setattr(stream_process.time, "monotonic", lambda: next(times))
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=RecordingConvert) is True
+    assert convert_timeouts == [6.0]
+    assert kopia_proc.wait_timeouts == [0.5]

@@ -16,9 +16,6 @@ SESSION_URI = "qemu:///session"
 PROBE_BINARIES = ("virsh", "qemu-img", "qemu-nbd", "nbdcopy", "kopia")
 KOPIA_PASSWORD = "swordfish-e2e"
 HOST_ID = "lbs-e2e"
-# Generous bound; the test disk is 16 MiB so anything under 50 MiB proves
-# the kopia content-addressed store deduplicated the restored disk against
-# the snapshots that produced it.
 POST_RESTORE_BLOAT_LIMIT = 50 * 1024 * 1024
 
 
@@ -119,8 +116,6 @@ def _json_lines(output: str) -> list[dict[str, object]]:
 
 
 class _KopiaCtx:
-    """Bundled kopia connection params for direct CLI probes from the test."""
-
     def __init__(self, config_file: Path, password_file: Path, cache_dir: Path) -> None:
         self.config_file = config_file
         self.password_file = password_file
@@ -172,18 +167,17 @@ def _pick_restore_point(bin_path: Path, vm_uuid: str) -> str:
 
 
 def _assert_counts(ctx: _KopiaCtx, vm_uuid: str, *, meta: int, disk: int) -> None:
-    """Per the plan: at least ``meta`` meta snapshots + ``disk`` per disk target."""
     got_meta = ctx.snapshot_count({"vm-uuid": vm_uuid, "kind": "meta"})
     assert got_meta >= meta, f"vm-uuid:{vm_uuid} meta snapshots: got {got_meta}, expected >= {meta}"
     got_disk = ctx.snapshot_count({"vm-uuid": vm_uuid, "kind": "disk", "disk": "vda"})
     assert got_disk >= disk, f"vm-uuid:{vm_uuid} disk:vda snapshots: got {got_disk}, expected >= {disk}"
 
 
-def _install(prefix: Path) -> tuple[Path, _KopiaCtx]:
+def _install(prefix: Path, backup_path: Path) -> tuple[Path, _KopiaCtx]:
     args = [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix)]
     _run(
         [*args, "install", f"--kopia-password={KOPIA_PASSWORD}", "--acknowledge-password-loss"],
-        env=_install_env(prefix),
+        env=_install_env(prefix, backup_path),
     )
     bin_path = prefix / "usr/local/bin/libvirt-backup-system"
     password_file = prefix / "etc/libvirt-backup-system/kopia.pw"
@@ -194,24 +188,31 @@ def _install(prefix: Path) -> tuple[Path, _KopiaCtx]:
     return bin_path, _KopiaCtx(config_file, password_file, cache_dir)
 
 
-def _install_env(prefix: Path) -> dict[str, str]:
-    return {"LIBVIRT_BACKUP_ROOT_PREFIX": str(prefix), "PYTHONPATH": str(ROOT)}
+def _install_env(prefix: Path, backup_path: Path | None = None) -> dict[str, str]:
+    env = {"LIBVIRT_BACKUP_ROOT_PREFIX": str(prefix), "PYTHONPATH": str(ROOT)}
+    if backup_path is None:
+        return env
+    return env | {
+        "BACKUP_PATH": str(backup_path),
+        "BACKUP_REQUIRE_NFS_MOUNT": "false",
+        "HOST_ID": HOST_ID,
+        "LIBVIRT_URI": SESSION_URI,
+        "REQUIRE_ROOT": "false",
+    }
 
 
 def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     backup_path = work / "backup"
     backup_path.mkdir()
     prefix = work / "root"
-
-    bin_path, ctx = _install(prefix)
     config_path = prefix / "etc/libvirt-backup-system/libvirt-backup.env"
-
     test_uuids = {
         _virsh(["domuuid", running_name]).stdout.strip(),
         _virsh(["domuuid", offline_name]).stdout.strip(),
     }
     pre_existing = [uid for uid in _session_domain_uuids() if uid not in test_uuids]
     _write_config(config_path, backup_path=backup_path, blacklist=pre_existing)
+    bin_path, ctx = _install(prefix, backup_path)
 
     check = _run([str(bin_path), "check"])
     records = _json_lines(check.stdout)

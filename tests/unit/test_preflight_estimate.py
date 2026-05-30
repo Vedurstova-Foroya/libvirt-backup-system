@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -117,11 +118,47 @@ def test_estimate_required_kb_zero_when_no_vms(tmp_path: Path) -> None:
 
 def test_estimate_required_kb_zero_when_local_repo_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
+    vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
-    assert (
-        preflight_estimate.estimate_required_kb(cfg, [VM("a", "running", "a" * 8 + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa")])
-        == 0
+    monkeypatch.setattr(preflight_estimate, "_vms_needing_first_backup_estimate", lambda _cfg, _vms: [])
+    assert preflight_estimate.estimate_required_kb(cfg, [vm]) == 0
+
+
+def test_estimate_required_kb_counts_selected_vms_without_meta_snapshots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _cfg(tmp_path)
+    new_vm = VM("new", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    old_vm = VM("old", "running", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    seen: list[str] = []
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
+    monkeypatch.setattr(preflight_estimate, "_vms_needing_first_backup_estimate", lambda _cfg, _vms: [new_vm])
+    monkeypatch.setattr(
+        preflight_estimate,
+        "vm_estimated_bytes",
+        lambda uri, vm, fb: seen.append(vm.name) or 1024 * 1024 * 1024,
     )
+    out = preflight_estimate.estimate_required_kb(cfg, [new_vm, old_vm])
+    assert out > 1_000_000
+    assert seen == ["new"]
+
+
+def test_vms_needing_first_backup_estimate_filters_only_vms_with_meta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _cfg(tmp_path)
+    new_vm = VM("new", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    old_vm = VM("old", "running", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "ensure_local_connected", lambda _cfg: tmp_path / "kopia.config")
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
+    monkeypatch.setattr(
+        preflight_estimate.kopia_snapshots,
+        "snapshot_list",
+        lambda **_: [SimpleNamespace(tags={"vm-uuid": old_vm.uuid})],
+    )
+    assert preflight_estimate._vms_needing_first_backup_estimate(cfg, [new_vm, old_vm]) == [new_vm]
 
 
 def test_estimate_required_kb_scales_with_vms(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

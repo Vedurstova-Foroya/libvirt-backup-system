@@ -6,7 +6,8 @@ import shutil
 from pathlib import Path
 
 from . import disk_compat, kopia_repo, preflight_host_id, preflight_kopia_password_file
-from .config import CONFIG_KEYS, Config, float_value, int_value, split_words
+from .config import Config, float_value, int_value, split_words
+from .config_data import CONFIG_KEYS
 from .config import prefixed as _prefixed
 from .logging_json import event
 from .paths import backup_root
@@ -273,11 +274,12 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
         vms = list_vms(config)
         if not vms:
             failures.append("no VMs selected")
-        failures.extend(disk_compat.selected_vm_disk_compatibility_failures(config, vms))
+        running_vms = [vm for vm in vms if vm.running]
+        failures.extend(disk_compat.selected_vm_disk_compatibility_failures(config, running_vms))
     except Exception as exc:
         failures.append(f"libvirt VM discovery failed: {exc}")
-        vms = []
-    required_kb = _estimate_required_kb(config, vms)
+        vms = running_vms = []
+    required_kb = _estimate_required_kb(config, running_vms)
     backup_path = config.path_value("BACKUP_PATH")
     if config.get("BACKUP_PATH").strip() and backup_path.exists() and backup_path.is_dir():
         try:

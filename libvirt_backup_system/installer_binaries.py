@@ -240,15 +240,18 @@ def install_nbdcopy(prefix: Path | None = None) -> None:
     installed via ``dpkg -i`` with an ``apt-get install -f`` fallback for
     transitive deps.
 
-    The ``prefix`` argument is honored for the idempotency probe path so
-    tests under tmp can preseed a binary; the actual dpkg call always runs
-    against the host package database (dpkg has no rooted-install mode in
-    this project).
+    The ``prefix`` argument is honored for the idempotency probe path. For
+    non-rooted installs, a runnable ``nbdcopy`` on PATH also satisfies the
+    bootstrap so sandboxed e2e installs do not mutate the host dpkg database.
     """
     root = prefix if prefix is not None else Path("/")
     nbdcopy_path = prefixed("/usr/bin/nbdcopy", root)
     if _nbdcopy_present(nbdcopy_path):
         event("info", "nbdcopy already installed; skipping pinned-deb install", path=str(nbdcopy_path))
+        return
+    path_nbdcopy = shutil.which("nbdcopy") if root != Path("/") else None
+    if path_nbdcopy and _nbdcopy_present(Path(path_nbdcopy)):
+        event("info", "nbdcopy available on PATH; skipping pinned-deb install", path=path_nbdcopy)
         return
     libnbd0_pin = _BinaryPin(name="libnbd0", url=LIBNBD0_DEB_URL, sha256=LIBNBD0_SHA256)
     libnbd_bin_pin = _BinaryPin(name="libnbd-bin", url=LIBNBD_BIN_DEB_URL, sha256=LIBNBD_BIN_SHA256)

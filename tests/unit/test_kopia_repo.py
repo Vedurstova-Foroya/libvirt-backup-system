@@ -277,7 +277,8 @@ def test_discover_peer_repos_logs_when_iterdir_fails(
         raise OSError("nfs hiccup")
 
     monkeypatch.setattr(Path, "iterdir", boom)
-    assert kopia_repo.discover_peer_repos(cfg) == []
+    with pytest.raises(kopia_repo.PeerDiscoveryError, match="nfs hiccup"):
+        kopia_repo.discover_peer_repos(cfg)
     assert "kopia peer discovery failed" in capsys.readouterr().err
 
 

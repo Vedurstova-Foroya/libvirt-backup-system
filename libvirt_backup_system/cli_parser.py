@@ -49,6 +49,7 @@ def password_spec_from_args(args: argparse.Namespace, *, prefix: str) -> Passwor
         file=getattr(args, f"{prefix}kopia_password_file", None),
         env_var=getattr(args, f"{prefix}kopia_password_env", None),
         acknowledge_loss=getattr(args, "acknowledge_password_loss", False),
+        acknowledge_argv_exposure=getattr(args, "acknowledge_password_argv_exposure", False),
     )
 
 
@@ -104,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
         description=cli_help.CHANGE_PASSWORD_DESCRIPTION,
     )
     _add_password_flags(change_password_parser, prefix="new-")
+    change_password_parser.add_argument(
+        "--acknowledge-password-argv-exposure",
+        action="store_true",
+        help="Required for rotation: confirms Kopia receives the new password in its subprocess argv.",
+    )
 
     uninstall_parser = _add_subparser(
         sub, "uninstall", help_text=cli_help.UNINSTALL_HELP, description=cli_help.UNINSTALL_DESCRIPTION

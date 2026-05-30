@@ -135,7 +135,7 @@ def test_install_password_existing_repo_rejects_bad_supplied_password_without_wr
 
     monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fail_connect)
 
-    spec = kopia_password.PasswordSpec(literal="bad-pw")
+    spec = kopia_password.PasswordSpec(literal="bad-pw", acknowledge_loss=True)
     assert installer_password.install_password(cfg, spec) == 1
     assert not _password_path(cfg).exists()
     assert not list(_password_path(cfg).parent.glob(".kopia.pw.verify.*.tmp"))
@@ -144,7 +144,20 @@ def test_install_password_existing_repo_rejects_bad_supplied_password_without_wr
     assert "invalid password" in err
 
 
-def test_install_password_existing_repo_restores_missing_file_after_validation(
+def test_install_password_existing_repo_missing_file_still_requires_ack(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _make_config(tmp_path)
+    _create_local_repo_sentinel(cfg)
+
+    spec = kopia_password.PasswordSpec(literal="correct-pw")
+    assert installer_password.install_password(cfg, spec) == 1
+    assert not _password_path(cfg).exists()
+    assert "--acknowledge-password-loss" in capsys.readouterr().err
+
+
+def test_install_password_existing_repo_restores_missing_file_after_ack_and_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -160,15 +173,16 @@ def test_install_password_existing_repo_restores_missing_file_after_validation(
 
     monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fake_connect)
 
-    spec = kopia_password.PasswordSpec(literal="correct-pw")
+    spec = kopia_password.PasswordSpec(literal="correct-pw", acknowledge_loss=True)
     assert installer_password.install_password(cfg, spec) == 0
     assert seen and seen[0] != _password_path(cfg)
     assert _password_path(cfg).read_text(encoding="utf-8") == "correct-pw\n"
 
 
-def test_install_password_existing_repo_repairs_wrong_file_after_validation(
+def test_install_password_existing_repo_rejects_wrong_file_without_repairing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     cfg = _make_config(tmp_path)
     _create_local_repo_sentinel(cfg)
@@ -185,9 +199,10 @@ def test_install_password_existing_repo_repairs_wrong_file_after_validation(
 
     monkeypatch.setattr(installer_password.kopia_client, "repository_connect_filesystem", fake_connect)
 
-    spec = kopia_password.PasswordSpec(literal="correct-pw")
-    assert installer_password.install_password(cfg, spec) == 0
-    assert pw_path.read_text(encoding="utf-8") == "correct-pw\n"
+    spec = kopia_password.PasswordSpec(literal="correct-pw", acknowledge_loss=True)
+    assert installer_password.install_password(cfg, spec) == 1
+    assert pw_path.read_text(encoding="utf-8") == "stale-pw\n"
+    assert "change-password" in capsys.readouterr().err
 
 
 def test_install_password_reports_resolution_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -244,6 +259,13 @@ def test_change_password_requires_a_password_spec(tmp_path: Path, capsys: pytest
     assert "--new-kopia-password" in err
 
 
+def test_change_password_requires_argv_acknowledgement(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = _make_config(tmp_path)
+    assert installer_password.change_password(cfg, kopia_password.PasswordSpec(literal="rotated-pw")) == 1
+    err = capsys.readouterr().err
+    assert "--acknowledge-password-argv-exposure" in err
+
+
 def test_change_password_reports_resolution_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _make_config(tmp_path)
     spec = kopia_password.PasswordSpec(literal="bad\nvalue")
@@ -264,7 +286,7 @@ def test_change_password_delegates_to_kopia_password(
         return 0
 
     monkeypatch.setattr(installer_password.kopia_password, "change_local_password", fake_change)
-    spec = kopia_password.PasswordSpec(literal="rotated-pw")
+    spec = kopia_password.PasswordSpec(literal="rotated-pw", acknowledge_argv_exposure=True)
     assert installer_password.change_password(cfg, spec) == 0
     assert captured["value"] == "rotated-pw"
     assert captured["config"] is cfg
