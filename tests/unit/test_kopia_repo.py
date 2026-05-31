@@ -288,6 +288,28 @@ def test_iter_connected_peers_returns_empty_with_no_peers(tmp_path: Path) -> Non
     assert kopia_repo.iter_connected_peers(cfg) == []
 
 
+def test_ensure_peer_connected_rejects_unsafe_repo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Lines 222-223: subpath_is_safe returns False for peer repo path."""
+    cfg = _make_config(tmp_path)
+    _write_password(cfg)
+    # Create a symlink under backup/ so that backup_path / host_id / kopia-repo
+    # follows a symlink, making subpath_is_safe return False.
+    host_id = "legit-host"
+    evil_target = tmp_path / "evil"
+    evil_target.mkdir()
+    link = tmp_path / "backup" / host_id
+    link.symlink_to(evil_target)
+
+    def fail_connect(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("unsafe peer path must not reach kopia")
+
+    monkeypatch.setattr(kopia_client, "repository_connect_filesystem", fail_connect)
+    assert kopia_repo.ensure_peer_connected(cfg, host_id) is None
+    assert "kopia peer repo path rejected" in capsys.readouterr().err
+
+
 def test_discover_peer_repos_skips_non_directory_entries(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
     backup = tmp_path / "backup"

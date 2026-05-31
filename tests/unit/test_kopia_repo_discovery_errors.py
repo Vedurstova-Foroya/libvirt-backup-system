@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -61,3 +62,20 @@ def test_discover_peer_repos_skips_when_repo_sentinel_stat_fails(
     peers = kopia_repo.discover_peer_repos(cfg)
     assert [peer.host_id for peer in peers] == ["host-c"]
     assert "kopia peer repo sentinel skipped" in capsys.readouterr().err
+
+
+def test_discover_peer_repos_skips_sentinel_that_is_not_regular_file(tmp_path: Path) -> None:
+    """Line 281: sentinel exists but is not a regular file (e.g. a directory)."""
+    cfg = _make_config(tmp_path)
+    backup = tmp_path / "backup"
+
+    # host-good has a proper sentinel file
+    _write_repo(backup, "host-good")
+
+    # host-bad has a directory named kopia.repository.f instead of a file
+    bad_repo = backup / "host-bad" / "kopia-repo"
+    bad_repo.mkdir(parents=True)
+    (bad_repo / "kopia.repository.f").mkdir()  # directory, not a file
+
+    peers = kopia_repo.discover_peer_repos(cfg)
+    assert [p.host_id for p in peers] == ["host-good"]
