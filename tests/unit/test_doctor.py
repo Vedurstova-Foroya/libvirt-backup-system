@@ -212,6 +212,27 @@ def test_expected_unit_text_verify_service_branch(tmp_path: Path) -> None:
     assert "kopia-passthrough" not in text
 
 
+def test_expected_unit_text_maintenance_full_service_branch(tmp_path: Path) -> None:
+    """doctor_units.py line 96: MAINTENANCE_FULL_UNIT_NAME branch."""
+    from libvirt_backup_system.systemd_units import MAINTENANCE_FULL_UNIT_NAME
+
+    cfg = make_config(tmp_path)
+    text = doctor._expected_unit_text(cfg, MAINTENANCE_FULL_UNIT_NAME)
+    assert text is not None
+    assert "maintenance run --safety=full --full" in text
+
+
+def test_expected_unit_text_maintenance_full_timer_branch(tmp_path: Path) -> None:
+    """doctor_units.py line 106: MAINTENANCE_FULL_TIMER_NAME branch."""
+    from libvirt_backup_system.systemd_units import MAINTENANCE_FULL_TIMER_NAME
+
+    cfg = make_config(tmp_path)
+    text = doctor._expected_unit_text(cfg, MAINTENANCE_FULL_TIMER_NAME)
+    assert text is not None
+    assert "OnActiveSec=45min" in text
+    assert "OnUnitActiveSec=7d" in text
+
+
 def test_expected_unit_text_maintenance_timer_branch(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     text = doctor._expected_unit_text(cfg, MAINTENANCE_TIMER_NAME)
@@ -228,3 +249,29 @@ def test_expected_unit_text_verify_timer_branch(tmp_path: Path) -> None:
     assert "OnActiveSec=75min" in text
     assert "OnBootSec" not in text
     assert "OnUnitActiveSec=7d" in text
+
+
+def test_collect_quiesce_fallbacks_delegates_to_doctor_quiesce() -> None:
+    """doctor.py line 135: _collect_quiesce_fallbacks is a thin wrapper."""
+    import json as _json
+
+    line = _json.dumps(
+        {
+            "ts": "2026-05-22T01:00:00.000000Z",
+            "level": "warning",
+            "message": doctor.QUIESCE_FALLBACK_MESSAGE,
+            "vm": "vm-test",
+        }
+    )
+    result = doctor._collect_quiesce_fallbacks(line)
+    assert "vm-test" in result
+    assert result["vm-test"] == "2026-05-22T01:00:00.000000Z"
+
+
+def test_format_quiesce_fallbacks_delegates_to_doctor_quiesce() -> None:
+    """doctor.py line 139: _format_quiesce_fallbacks is a thin wrapper."""
+    events = {"vm-alpha": "2026-05-22T00:00:00Z"}
+    result = doctor._format_quiesce_fallbacks(events)
+    assert len(result) == 1
+    assert "vm-alpha" in result[0]
+    assert "recent QGA quiesce fallback" in result[0]

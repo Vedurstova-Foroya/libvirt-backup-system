@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from libvirt_backup_system.installer import install
+from libvirt_backup_system.config import Config
+from libvirt_backup_system.installer import _ensure_kopia_repo, install
 from tests.unit.conftest import write_kopia_password_file
 
 
@@ -144,3 +145,9 @@ def test_install_reports_stale_kopia_unit_removal_failure(tmp_path: Path, monkey
     err = capsys.readouterr().err
     assert "failed to remove stale systemd unit" in err
     assert str(maintenance_path) in err
+
+
+def test_ensure_kopia_repo_returns_zero_when_backup_path_empty(tmp_path: Path) -> None:
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    cfg.values["BACKUP_PATH"] = "  "
+    assert _ensure_kopia_repo(cfg) == 0

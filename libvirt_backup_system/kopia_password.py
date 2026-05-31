@@ -13,7 +13,7 @@ import os
 import secrets
 import stat
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -154,7 +154,7 @@ def write_password_file(config: Config, value: str) -> None:
 
 
 @contextmanager
-def temporary_password_file(config: Config, value: str) -> Iterator[Path]:
+def temporary_password_file(config: Config, value: str) -> Generator[Path]:
     """Yield a short-lived secure password file for install-time validation."""
     from . import kopia_repo
 

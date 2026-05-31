@@ -25,6 +25,36 @@ def test_list_disks_command_error_returns_failed_vm_result(
     assert record["stderr"] == "libvirt unavailable"
 
 
+def test_list_disks_value_error_returns_failed_vm_result(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_stubs(monkeypatch)
+
+    class ListValueErrorSnapper(FakeSnapper):
+        def list_disks(self, vm_name: str) -> list[DiskTarget]:
+            raise ValueError("no disks found for VM")
+
+    assert backup.backup_vm(backup_config, _vm(), snapper=ListValueErrorSnapper(disks=[])) is False
+    record = _find_event(capsys.readouterr().err, "unsupported backup disk")
+    assert record["vm"] == "alpha"
+    assert "no disks found for VM" in record["error"]
+
+
+def test_validated_virtual_size_rejects_bool_virtual_size(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_stubs(monkeypatch)
+
+    def fake_disk_info(path: str) -> dict[str, object]:
+        return {"format": "qcow2", "virtual-size": True}
+
+    monkeypatch.setattr(backup, "disk_image_info", fake_disk_info)
+    snapper = FakeSnapper(disks=[_disk_target()])
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    record = _find_event(capsys.readouterr().err, "unsupported backup disk")
+    assert record["reason"] == "missing virtual size"
+
+
 def test_domain_xml_command_error_returns_failed_vm_result(
     monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,7 +155,7 @@ class LibvirtSnapshotter:
         return False
 
     @contextmanager
-    def stream_disk(self, base: Path) -> Iterator[subprocess.Popen[bytes]]:
+    def stream_disk(self, base: Path) -> Generator[subprocess.Popen[bytes]]:
         """Open the base qcow2 read-only and yield an ``nbdcopy`` stream.
 
         Lifecycle:

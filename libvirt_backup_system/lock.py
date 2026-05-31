@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 from .config import Config, prefixed
@@ -24,7 +24,7 @@ def lock_path(config: Config) -> Path:
 
 
 @contextlib.contextmanager
-def acquire_run_lock(config: Config) -> Iterator[Path]:
+def acquire_run_lock(config: Config) -> Generator[Path]:
     path = lock_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     # O_NOFOLLOW matches the openat pattern used by _write_probe and the

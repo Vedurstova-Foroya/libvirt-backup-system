@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -143,7 +143,7 @@ def _override_source(config: Config, vm_uuid: str, suffix: str) -> str:
 
 
 @contextmanager
-def _staging_dir() -> Iterator[Path]:
+def _staging_dir() -> Generator[Path]:
     tmp = Path(tempfile.mkdtemp(prefix="lbs-meta-"))
     try:
         yield tmp
