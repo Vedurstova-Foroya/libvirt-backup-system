@@ -191,15 +191,6 @@ def _install_stubs(
     return captured
 
 
-def test_current_month_uses_provided_datetime() -> None:
-    assert backup.current_month(dt.datetime(2024, 3, 5, tzinfo=dt.timezone.utc)) == "2024-03"
-
-
-def test_current_month_defaults_to_now() -> None:
-    out = backup.current_month()
-    assert len(out) == 7 and out[4] == "-"
-
-
 def test_timestamp_wraps_utc_timestamp() -> None:
     now = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
     assert backup.timestamp(now) == "20240102T030405"
@@ -259,6 +250,24 @@ def test_backup_vm_post_meta_mount_loss_logs_and_returns_false(
     snapper = FakeSnapper(disks=[_disk_target()])
     assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
     assert "backup completed but backup path no longer mounted" in capsys.readouterr().err
+
+
+def test_backup_vm_commits_when_stream_spawn_raises_oserror(
+    monkeypatch: pytest.MonkeyPatch, backup_config: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_stubs(monkeypatch)
+
+    class SpawnFailSnapper(FakeSnapper):
+        @contextmanager
+        def stream_disk(self, base: Path) -> Iterator[_FakeUpstream]:
+            self.stream_calls.append(base)
+            raise OSError("qemu-nbd missing")
+            yield _FakeUpstream(args=["qemu-nbd", str(base)])
+
+    snapper = SpawnFailSnapper(disks=[_disk_target()])
+    assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is False
+    assert snapper.commit_calls
+    assert "disk snapshot failed" in capsys.readouterr().err
 
 
 def test_backup_vm_uses_default_snapper_when_none(monkeypatch: pytest.MonkeyPatch, backup_config: Config) -> None:

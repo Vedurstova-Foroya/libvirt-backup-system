@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from libvirt_backup_system import preflight
+from libvirt_backup_system import preflight, preflight_backup_path
 from tests.unit._preflight_helpers import make_config
 
 
@@ -93,6 +93,7 @@ def test_validate_local_kopia_repo_delegates_to_repo_setup(tmp_path: Path, monke
 
     monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", fake_connect)
+    monkeypatch.setattr(preflight, "_validate_local_kopia_repo_writable", lambda _cfg: [])
     assert preflight._validate_local_kopia_repo(cfg) == []
     assert called == [cfg]
 
@@ -101,6 +102,7 @@ def test_validate_local_kopia_repo_surfaces_failure(tmp_path: Path, monkeypatch:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: True)
     monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", lambda _cfg: None)
+    monkeypatch.setattr(preflight, "_validate_local_kopia_repo_writable", lambda _cfg: [])
     assert "local kopia repo" in preflight._validate_local_kopia_repo(cfg)[0]
 
 
@@ -192,13 +194,13 @@ def test_write_probe_raises_if_write_truncated(tmp_path: Path, monkeypatch: pyte
 
     monkeypatch.setattr(preflight.os, "write", short_write)
     with pytest.raises(OSError, match="write probe was incomplete"):
-        preflight._write_probe(tmp_path / "probe")
+        preflight.write_probe(tmp_path / "probe")
 
 
 def test_write_probe_cleans_up_when_open_fails(tmp_path: Path) -> None:
     """FileNotFoundError flows through ``finally`` without touching the path."""
     with pytest.raises(FileNotFoundError):
-        preflight._write_probe(tmp_path / "no-such-dir" / "probe")
+        preflight.write_probe(tmp_path / "no-such-dir" / "probe")
 
 
 def test_validate_scratch_dir_missing_directory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,7 +224,7 @@ def test_validate_scratch_dir_write_failure(tmp_path: Path, monkeypatch: pytest.
     def boom(_path: Path) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(preflight, "_write_probe", boom)
+    monkeypatch.setattr(preflight, "write_probe", boom)
     failures = preflight._validate_scratch_dir()
     assert failures and "must be writable for write probes" in failures[0]
 
@@ -232,7 +234,7 @@ def test_backup_path_is_mount_returns_error(monkeypatch: pytest.MonkeyPatch, tmp
         raise OSError("ESTALE")
 
     monkeypatch.setattr(Path, "is_mount", boom)
-    mounted, error = preflight._backup_path_is_mount(tmp_path)
+    mounted, error = preflight_backup_path.backup_path_is_mount(tmp_path)
     assert mounted is False
     assert error == "ESTALE"
 

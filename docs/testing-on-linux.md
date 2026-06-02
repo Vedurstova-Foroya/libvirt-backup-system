@@ -97,7 +97,7 @@ the tests.
 ## Install Linux Test Dependencies
 
 Inside the L1 VM or on a direct Linux/KVM host, install the libvirt and QEMU
-tooling plus `nbdcopy`, which the backup engine pipes the NBD export through:
+tooling:
 
 ```bash
 sudo apt update
@@ -105,11 +105,21 @@ sudo apt install -y \
   qemu-kvm \
   qemu-utils \
   libvirt-daemon-system \
-  libvirt-clients \
-  libnbd-bin
+  libvirt-clients
 ```
 
-Install `kopia` separately — see [install.md](install.md#install-kopia).
+The production installer can fetch pinned `kopia` and `nbdcopy` builds; see
+[Bundled binary install](install.md#bundled-binary-install). The real-KVM e2e
+case probes before it runs its sandboxed install, so both binaries must already
+be runnable on `PATH`. On Debian/Ubuntu, `nbdcopy` is provided by `libnbd-bin`:
+
+```bash
+sudo apt install -y libnbd-bin
+```
+
+Install `kopia` from the pinned release documented in
+[install.md](install.md#bundled-binary-install), or pre-place a compatible
+`/usr/local/bin/kopia` as shown in the offline install notes.
 
 Install `uv` if it is not already present:
 

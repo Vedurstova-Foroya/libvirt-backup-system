@@ -225,12 +225,6 @@ def maintenance_info(*, config_file: Path, password_file: Path, cache_dir: Path 
     run_kopia(args, password_file=password_file, cache_dir=cache_dir)
 
 
-def maintenance_set_owner(*, config_file: Path, password_file: Path, owner: str, cache_dir: Path | None = None) -> None:
-    """Claim ``owner`` (typically ``HOST_ID``) as the maintenance owner."""
-    args = [*build_config_args(config_file), "maintenance", "set", f"--owner={owner}"]
-    run_kopia(args, password_file=password_file, cache_dir=cache_dir)
-
-
 def kopia_available() -> bool:
     """Return True if the ``kopia`` binary is on PATH and runs ``--version``."""
     try:

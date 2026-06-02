@@ -81,9 +81,6 @@ def _define_domain(work: Path, name: str, *, running: bool) -> Path:
 
 
 def _teardown_domains(names: Iterable[str]) -> None:
-    # Kopia owns chunk lifecycle, so we no longer need --checkpoints-metadata
-    # (virtnbdbackup left libvirt checkpoints behind that blocked undefine; the
-    # new engine does not create any).
     for name in names:
         _virsh(["destroy", name], check=False)
         _virsh(["undefine", name], check=False)
@@ -224,10 +221,12 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     uuids = {vm["name"]: vm["uuid"] for vm in listed}
     running_uuid, offline_uuid = uuids[running_name], uuids[offline_name]
 
-    # First backup: repo materializes, running VM gets one meta + one disk
-    # snapshot, offline VM stays absent.
+    # First backup: repo materializes, grows, and only the running VM is stored.
+    first_size_before = _repo_size_bytes(backup_path)
     first_run = _run([str(bin_path), "run"])
     repo = _assert_repo_layout(backup_path)
+    first_growth = _repo_size_bytes(backup_path) - first_size_before
+    assert first_growth > 0, "first backup did not grow the kopia repo"
     _assert_offline_skip_logged(_json_lines(first_run.stdout), offline_name)
     _assert_counts(ctx, running_uuid, meta=1, disk=1)
     assert ctx.snapshot_count({"vm-uuid": offline_uuid}) == 0
@@ -240,10 +239,7 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     _assert_counts(ctx, running_uuid, meta=2, disk=2)
     assert ctx.snapshot_count({"vm-uuid": offline_uuid}) == 0
 
-    # Delete-restore-rebackup invariant: deleting the local VM, restoring it
-    # from kopia, then re-running ``run`` must NOT bloat the repo (the
-    # chain-poison era required a fresh full after every restore — kopia's
-    # content-addressed store proves dedup against the restored disks).
+    # Delete-restore-rebackup must not bloat the content-addressed repo.
     timestamp = _pick_restore_point(bin_path, running_uuid)
     size_before = _repo_size_bytes(repo)
     _virsh(["destroy", running_name], check=False)
@@ -258,10 +254,7 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     )
     _assert_counts(ctx, running_uuid, meta=3, disk=3)
 
-    # Retention pruning: a tight ``keep-latest`` global policy must evict
-    # older snapshots when maintenance runs. Drive both directly through
-    # kopia so the assertion does not depend on how the wrapper surfaces
-    # the policy knob.
+    # Retention pruning must evict older snapshots after maintenance.
     ctx.kopia("policy", "set", "--global", "--keep-latest=1")
     ctx.kopia("maintenance", "run", "--safety=none", "--full")
     after_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "meta"})

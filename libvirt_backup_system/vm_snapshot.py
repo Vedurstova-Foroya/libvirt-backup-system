@@ -160,7 +160,7 @@ class LibvirtSnapshotter:
 
         Lifecycle:
           1. spawn ``qemu-nbd -r --persistent --shared=4 --socket=<sock>``
-          2. spawn ``nbdcopy nbd+unix://<sock> -`` and yield its process
+          2. spawn ``nbdcopy nbd+unix:///?socket=<sock> -`` and yield its process
           3. on exit, terminate both processes and unlink the socket
         The caller pipes ``proc.stdout`` directly into ``kopia snapshot
         create --stdin-file=...``; the consumer (kopia) ``communicate()``s
@@ -185,7 +185,7 @@ class LibvirtSnapshotter:
             )
             self._await_socket(socket, qemu_nbd)
             nbdcopy = subprocess.Popen(
-                [self.nbdcopy_path, f"nbd+unix://?socket={socket}", "-"],
+                [self.nbdcopy_path, f"nbd+unix:///?socket={socket}", "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,

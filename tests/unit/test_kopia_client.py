@@ -202,14 +202,6 @@ def test_maintenance_info_uses_read_only_info_command(tmp_path: Path, monkeypatc
     assert args[-2:] == ["maintenance", "info"]
 
 
-def test_maintenance_set_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    password = _write_password(tmp_path / "pw")
-    captured = _make_run_capture(monkeypatch)
-    kopia_client.maintenance_set_owner(config_file=tmp_path / "c", password_file=password, owner="host-a@host-a")
-    args, _ = captured[0]
-    assert "--owner=host-a@host-a" in args
-
-
 def test_kopia_available_true_and_false(monkeypatch: pytest.MonkeyPatch) -> None:
     def ok_run(args: list[str], **_: Any) -> CommandResult:
         return CommandResult(args, 0, "kopia 0.16.0", "")

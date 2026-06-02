@@ -75,12 +75,20 @@ class _MonotonicClock:
 def test_stream_disk_starts_qemu_nbd_and_nbdcopy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _FakePopen.instances = []
     monkeypatch.setattr(vm_snapshot.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(vm_snapshot.secrets, "token_hex", lambda _n: "socktoken")
     snap = vm_snapshot.LibvirtSnapshotter(libvirt_uri="qemu:///system", socket_root=tmp_path)
+    socket = tmp_path / "vnbd-socktoken.sock"
     with snap.stream_disk(tmp_path / "base.qcow2") as proc:
         assert proc is _FakePopen.instances[-1]
-    cmds = [inst.args[0] for inst in _FakePopen.instances]
-    assert cmds[0] == "qemu-nbd"
-    assert cmds[1] == "nbdcopy"
+    assert _FakePopen.instances[0].args == [
+        "qemu-nbd",
+        "-r",
+        "--persistent",
+        "--shared=4",
+        f"--socket={socket}",
+        str(tmp_path / "base.qcow2"),
+    ]
+    assert _FakePopen.instances[1].args == ["nbdcopy", f"nbd+unix:///?socket={socket}", "-"]
 
 
 def test_stream_disk_raises_when_qemu_nbd_dies_before_socket(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

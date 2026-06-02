@@ -93,13 +93,21 @@ def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_
             file_in_snapshot=file_in_snap,
             stderr=kopia_stderr,
         )
-        convert = subprocess.Popen(
-            ["qemu-img", "convert", "-f", "raw", "-O", "qcow2", "-S", "4096", "-", str(dest)],
-            stdin=kopia_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            convert = subprocess.Popen(
+                ["qemu-img", "convert", "-f", "raw", "-O", "qcow2", "-S", "4096", "-", str(dest)],
+                stdin=kopia_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            if kopia_proc.stdout is not None:
+                with suppress(OSError):
+                    kopia_proc.stdout.close()
+            terminate_processes(kopia_proc)
+            event("error", "qemu-img convert failed", target=dest.name, stderr=str(exc))
+            return False
         if kopia_proc.stdout is not None:
             with suppress(OSError):
                 kopia_proc.stdout.close()

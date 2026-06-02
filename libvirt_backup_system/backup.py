@@ -22,12 +22,7 @@ from .shell import CommandError
 from .vm_snapshot import DiskTarget, LibvirtSnapshotter, VmSnapshotter
 from .vms import VM, is_safe_vm_name, is_safe_vm_uuid, list_vms
 
-__all__ = ["backup_root", "backup_vm", "current_month", "run_backups", "runtime_backup_path_ok", "timestamp"]
-
-
-def current_month(now: dt.datetime | None = None) -> str:
-    now = now or dt.datetime.now(dt.timezone.utc)
-    return f"{now.year:04d}-{now.month:02d}"
+__all__ = ["backup_root", "backup_vm", "run_backups", "runtime_backup_path_ok", "timestamp"]
 
 
 def timestamp(now: dt.datetime | None = None) -> str:
@@ -254,7 +249,7 @@ def _stream_single_disk(
                 parallelism=_parallelism(config),
                 timeout=int(config.get("COMMAND_TIMEOUT_SECONDS")),
             )
-    except (CommandError, ValueError) as exc:
+    except (CommandError, OSError, ValueError) as exc:
         if isinstance(exc, kopia_snapshots.SnapshotCreateError) and exc.snapshot_id is not None:
             backup_cleanup.cleanup_created_disk_snapshots(config, vm, run_id, [exc.snapshot_id])
         stderr = exc.result.stderr.strip() if isinstance(exc, CommandError) else ""

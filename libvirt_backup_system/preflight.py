@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import secrets
 import shutil
 from pathlib import Path
 
@@ -10,7 +11,12 @@ from .config import Config, float_value, int_value, split_words
 from .config import prefixed as _prefixed
 from .config_data import CONFIG_KEYS
 from .logging_json import event
-from .paths import backup_root
+from .preflight_backup_path import (
+    WRITE_PROBE_NAME,
+    validate_backup_path_readonly,
+    validate_backup_path_writable,
+    write_probe,
+)
 from .preflight_estimate import df_available_kb as _df_available_kb
 from .preflight_estimate import estimate_required_kb as _estimate_required_kb
 from .storage import subpath_is_safe
@@ -24,7 +30,6 @@ INTEGER_KEYS = frozenset(
 FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
 ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+unix:// test:// test:///".split())
 REMOTE_LIBVIRT_URI_PREFIXES = tuple("qemu+ssh:// qemu+tcp:// qemu+tls://".split())
-WRITE_PROBE_NAME = ".libvirt-backup-system-write-test"
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
 HOST_ID_STATE_FILE = preflight_host_id.HOST_ID_STATE_FILE
 prefixed = _prefixed
@@ -32,22 +37,6 @@ prefixed = _prefixed
 
 def validate_libvirt_uri(uri: str) -> bool:
     return uri.startswith(ALLOWED_LIBVIRT_URI_PREFIXES) and not uri.startswith(REMOTE_LIBVIRT_URI_PREFIXES)
-
-
-def _write_probe(path: Path) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd: int | None = None
-    created = False
-    try:
-        fd = os.open(path, flags, 0o600)
-        created = True
-        if os.write(fd, b"ok\n") != 3:
-            raise OSError("write probe was incomplete")
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if created:
-            path.unlink(missing_ok=True)
 
 
 def _validate_required_present(config: Config) -> list[str]:
@@ -106,7 +95,7 @@ def _validate_floats(config: Config) -> list[str]:
 
 def _validate_scratch_dir() -> list[str]:
     try:
-        _write_probe(SCRATCH_DIR / WRITE_PROBE_NAME)
+        write_probe(SCRATCH_DIR / WRITE_PROBE_NAME)
     except (FileNotFoundError, NotADirectoryError):
         return [f"{SCRATCH_DIR} must exist as a directory for write probes"]
     except OSError as exc:
@@ -155,14 +144,19 @@ def _validate_local_kopia_repo(config: Config, *, require_existing: bool = False
         return []
     if kopia_repo.ensure_local_connected(config) is None:
         return ["local kopia repo could not be connected with the shared password"]
-    return []
+    return _validate_local_kopia_repo_writable(config)
 
 
-def _backup_path_is_mount(backup_path: Path) -> tuple[bool, str | None]:
+def _validate_local_kopia_repo_writable(config: Config) -> list[str]:
     try:
-        return backup_path.is_mount(), None
+        repo_path = kopia_repo.local_repo_path(config)
+        probe_name = f"{WRITE_PROBE_NAME}.kopia.{secrets.token_hex(8)}"
+        write_probe(repo_path / probe_name)
+    except ValueError as exc:
+        return [f"local kopia repo path rejected: {exc}"]
     except OSError as exc:
-        return False, str(exc)
+        return [f"local kopia repo must be writable: {exc}"]
+    return []
 
 
 def host_id_state_path(config: Config) -> Path:
@@ -177,57 +171,6 @@ def host_id_drift_failures(config: Config) -> list[str]:
     return preflight_host_id.host_id_drift_failures(config)
 
 
-def _validate_backup_path_readonly(config: Config) -> list[str]:
-    if not config.get("BACKUP_PATH").strip():
-        return []
-    backup_path = config.path_value("BACKUP_PATH")
-    if not backup_path.is_absolute():
-        return ["BACKUP_PATH must be an absolute path"]
-    if not backup_path.exists():
-        return ["BACKUP_PATH must exist"]
-    if not backup_path.is_dir():
-        return ["BACKUP_PATH must be a directory"]
-    if config.enabled("BACKUP_REQUIRE_NFS_MOUNT"):
-        mounted, error = _backup_path_is_mount(backup_path)
-        if error is not None:
-            return [f"BACKUP_PATH mount probe failed: {error}"]
-        if not mounted:
-            return ["BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"]
-    if not subpath_is_safe(backup_path, backup_root(config)):
-        return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
-    return []
-
-
-def _validate_backup_path_writable(config: Config) -> list[str]:
-    failures = _validate_backup_path_readonly(config)
-    if failures or not config.get("BACKUP_PATH").strip():
-        return failures
-    backup_path = config.path_value("BACKUP_PATH")
-    mount_required = config.enabled("BACKUP_REQUIRE_NFS_MOUNT")
-    mount_msg = "BACKUP_PATH must be a mount point when BACKUP_REQUIRE_NFS_MOUNT=true"
-    try:
-        host_root = backup_root(config)
-        if mount_required:
-            mounted, error = _backup_path_is_mount(backup_path)
-            if error is not None:
-                return [f"BACKUP_PATH mount probe failed: {error}"]
-            if not mounted:
-                return [mount_msg]
-        host_root.mkdir(parents=True, exist_ok=True)
-        if not subpath_is_safe(backup_path, host_root):
-            return ["BACKUP_PATH / HOST_ID must stay within BACKUP_PATH"]
-        if mount_required:
-            mounted, error = _backup_path_is_mount(backup_path)
-            if error is not None:
-                return [f"BACKUP_PATH mount probe failed: {error}"]
-            if not mounted:
-                return [mount_msg]
-        _write_probe(host_root / WRITE_PROBE_NAME)
-    except OSError as exc:
-        return [f"BACKUP_PATH must be writable: {exc}"]
-    return []
-
-
 def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]:
     failures: list[str] = list(_validate_required_present(config))
     failures.extend(_validate_vm_blacklist(config))
@@ -238,7 +181,7 @@ def _validate_env_values(config: Config, *, require_writable: bool) -> list[str]
     libvirt_uri = config.get("LIBVIRT_URI").strip()
     if libvirt_uri and not validate_libvirt_uri(libvirt_uri):
         failures.append("LIBVIRT_URI must use one of these schemes: " + ", ".join(ALLOWED_LIBVIRT_URI_PREFIXES))
-    check = _validate_backup_path_writable if require_writable and not bool_failures else _validate_backup_path_readonly
+    check = validate_backup_path_writable if require_writable and not bool_failures else validate_backup_path_readonly
     failures.extend(check(config))
     failures.extend(_validate_kopia_repo_path(config))
     return failures
@@ -253,7 +196,7 @@ def validate_config(config: Config) -> int:
 
 def repo_creation_failures(config: Config) -> list[str]:
     failures = _validate_booleans(config)
-    failures.extend([] if failures else _validate_backup_path_writable(config))
+    failures.extend([] if failures else validate_backup_path_writable(config))
     failures.extend(_validate_kopia_repo_path(config))
     return failures
 

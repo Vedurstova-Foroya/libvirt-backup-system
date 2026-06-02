@@ -63,6 +63,19 @@ def test_stream_disk_to_qcow2_times_out_kopia_wait(
     assert kopia_proc.returncode == -15
 
 
+def test_stream_disk_to_qcow2_cleans_kopia_when_convert_spawn_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def raise_oserror(*_a: Any, **_kw: Any) -> None:
+        raise OSError("qemu-img missing")
+
+    kopia_proc = KopiaProc(returncode=None)
+    assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=raise_oserror) is False
+    assert kopia_proc.returncode == -15
+    assert kopia_proc.stdout.closed is True
+    assert "qemu-img convert failed" in capsys.readouterr().err
+
+
 def test_stream_disk_to_qcow2_reuses_deadline_for_kopia_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100.0, 104.0, 109.5])
     convert_timeouts: list[float | None] = []

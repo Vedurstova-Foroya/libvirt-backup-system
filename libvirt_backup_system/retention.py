@@ -9,8 +9,10 @@ distinguish the two engines.
 
 from __future__ import annotations
 
-from . import kopia_repo
+from . import kopia_client, kopia_repo
 from .config import Config
+from .logging_json import event
+from .shell import CommandError
 
 
 def prune_old_months(config: Config, *, current_month: str | None = None) -> int:
@@ -33,3 +35,22 @@ def apply_policy(config: Config) -> int:
     flags applied twice produce the same on-disk policy.
     """
     return kopia_repo.ensure_local_repo(config, apply_global_policy=True)
+
+
+def inspect_policy(config: Config) -> dict[str, object] | None:
+    """Return the current kopia global policy for the local repo."""
+    config_file = kopia_repo.ensure_local_connected(config)
+    if config_file is None:
+        return None
+    try:
+        return kopia_client.policy_show_global(
+            config_file=config_file,
+            password_file=kopia_repo.password_file_path(config),
+            cache_dir=kopia_repo.cache_dir(config),
+        )
+    except CommandError as exc:
+        detail = exc.result.stderr.strip() or str(exc.result.returncode)
+        event("error", "kopia policy inspection failed", error=detail)
+    except ValueError as exc:
+        event("error", "kopia policy inspection failed", error=str(exc))
+    return None

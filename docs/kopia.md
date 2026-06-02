@@ -184,6 +184,17 @@ sudo env KOPIA_PASSWORD="$KOPIA_PASSWORD" kopia --config-file="$CFG" snapshot li
 `doctor` lays these per-peer configs down as a side effect of its smoke
 test, so this works out of the box on a healthy host.
 
+The CLI also has a hidden helper for the same ad-hoc work:
+
+```sh
+sudo libvirt-backup-system kopia-passthrough -- snapshot list --all
+sudo libvirt-backup-system kopia-passthrough --host-id=host-a -- snapshot list --tags=vm-uuid:<uuid>
+```
+
+It resolves the managed `--config-file` and password environment before
+execing `kopia`. Keep the literal `--` between wrapper options and Kopia
+arguments so Kopia flags are forwarded unchanged.
+
 ## Maintenance
 
 Each host maintains its own repo via a per-host systemd timer
