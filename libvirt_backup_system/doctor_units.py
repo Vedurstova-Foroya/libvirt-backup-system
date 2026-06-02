@@ -39,11 +39,15 @@ DOCTOR_UNIT_NAMES = (
 
 
 class RenderUnitService(Protocol):
-    def __call__(self, backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run") -> str: ...
+    def __call__(  # pragma: no branch
+        self, backup_path: str, bin_path: Path, config_path: Path, *, subcommand: str = "run"
+    ) -> str: ...
 
 
 class RenderUnitKopiaService(Protocol):
-    def __call__(self, bin_path: Path, config_path: Path, *, kind: str, backup_path: str = "") -> str: ...
+    def __call__(  # pragma: no branch
+        self, bin_path: Path, config_path: Path, *, kind: str, backup_path: str = ""
+    ) -> str: ...
 
 
 RenderUnitTimer = Callable[[Path, str], str | None]

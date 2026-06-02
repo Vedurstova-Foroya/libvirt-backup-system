@@ -14,13 +14,13 @@ def test_stamp_host_id_creates_state_on_first_run(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
     failures = preflight.stamp_host_id_on_first_run(cfg)
     assert failures == []
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     assert state_path.read_text(encoding="utf-8").strip() == "alpha"
 
 
 def test_stamp_host_id_detects_drift_against_existing_state(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text("beta\n", encoding="utf-8")
     failures = preflight.stamp_host_id_on_first_run(cfg)
@@ -29,7 +29,7 @@ def test_stamp_host_id_detects_drift_against_existing_state(tmp_path: Path) -> N
 
 def test_stamp_host_id_fills_empty_state(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text("", encoding="utf-8")
     failures = preflight.stamp_host_id_on_first_run(cfg)
@@ -39,7 +39,7 @@ def test_stamp_host_id_fills_empty_state(tmp_path: Path) -> None:
 
 def test_stamp_host_id_skips_write_when_stamp_matches(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text("alpha\n", encoding="utf-8")
     failures = preflight.stamp_host_id_on_first_run(cfg)
@@ -64,7 +64,7 @@ def test_host_id_drift_failures_returns_empty_when_state_missing(tmp_path: Path)
 
 def test_host_id_drift_failures_detects_drift(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text("beta\n", encoding="utf-8")
     failures = preflight.host_id_drift_failures(cfg)
@@ -73,7 +73,7 @@ def test_host_id_drift_failures_detects_drift(tmp_path: Path) -> None:
 
 def test_host_id_drift_failures_returns_empty_when_state_matches(tmp_path: Path) -> None:
     cfg = make_config(tmp_path, host_id="alpha")
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text("alpha\n", encoding="utf-8")
     assert preflight.host_id_drift_failures(cfg) == []

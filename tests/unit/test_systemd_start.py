@@ -366,32 +366,32 @@ def test_render_unit_interval_timer_rejects_dash_on_active_sec(capsys) -> None:
 
 
 def test_systemd_units_quote_systemd_path_wrapper() -> None:
-    """systemd_units.py line 119: thin wrapper _quote_systemd_path."""
-    from libvirt_backup_system.systemd_units import _quote_systemd_path
+    """systemd_units.py line 119: thin wrapper quote_systemd_path."""
+    from libvirt_backup_system.systemd_units import quote_systemd_path
 
-    result = _quote_systemd_path("/some/path")
+    result = quote_systemd_path("/some/path")
     assert result == '"/some/path"'
 
 
 def test_systemd_units_escape_systemd_path_wrapper() -> None:
-    """systemd_units.py line 123: thin wrapper _escape_systemd_path."""
-    from libvirt_backup_system.systemd_units import _escape_systemd_path
+    """systemd_units.py line 123: thin wrapper escape_systemd_path."""
+    from libvirt_backup_system.systemd_units import escape_systemd_path
 
-    result = _escape_systemd_path("/some/path with space")
+    result = escape_systemd_path("/some/path with space")
     assert result == "/some/path\\ with\\ space"
 
 
 def test_systemd_units_requires_mounts_for_wrapper() -> None:
-    """systemd_units.py line 127: thin wrapper _requires_mounts_for."""
-    from libvirt_backup_system.systemd_units import _requires_mounts_for
+    """systemd_units.py line 127: thin wrapper requires_mounts_for."""
+    from libvirt_backup_system.systemd_units import requires_mounts_for
 
-    result = _requires_mounts_for("/mnt/backup")
+    result = requires_mounts_for("/mnt/backup")
     assert "RequiresMountsFor=/mnt/backup" in result
 
 
 def test_systemd_units_has_control_char_wrapper() -> None:
-    """systemd_units.py line 135: thin wrapper _has_control_char."""
-    from libvirt_backup_system.systemd_units import _has_control_char
+    """systemd_units.py line 135: thin wrapper has_control_char."""
+    from libvirt_backup_system.systemd_units import has_control_char
 
-    assert _has_control_char("hello\x01world") is True
-    assert _has_control_char("hello world") is False
+    assert has_control_char("hello\x01world") is True
+    assert has_control_char("hello world") is False

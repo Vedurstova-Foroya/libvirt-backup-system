@@ -120,7 +120,7 @@ def test_local_rows_returns_empty_when_no_config_file(tmp_path: Path, monkeypatc
     cfg = _make_config(tmp_path)
     _stub_repo_helpers(monkeypatch, cfg, local_config_present=False)
     _stub_snapshot_list(monkeypatch)
-    rows = list_restore_points._local_rows(cfg)
+    rows = list_restore_points.local_rows(cfg)
     assert rows == []
     assert list_restore_points._local_rows_result(cfg).ok is False
 
@@ -136,7 +136,7 @@ def test_local_rows_reconnects_before_listing(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(kopia_repo, "ensure_local_connected", fake_ensure)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot()]})
-    assert list_restore_points._local_rows(cfg)[0].snapshot_id == "snap-1"
+    assert list_restore_points.local_rows(cfg)[0].snapshot_id == "snap-1"
     assert calls == [cfg]
 
 
@@ -144,7 +144,7 @@ def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: p
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot()]})
-    rows = list_restore_points._local_rows(cfg)
+    rows = list_restore_points.local_rows(cfg)
     assert len(rows) == 1
     row = rows[0]
     assert row.vm_uuid == ALPHA_UUID
@@ -159,7 +159,7 @@ def test_local_rows_uses_timestamp_tag(tmp_path: Path, monkeypatch: pytest.Monke
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(timestamp_tag="20260101T010101")]})
-    assert list_restore_points._local_rows(cfg)[0].timestamp == "20260101T010101"
+    assert list_restore_points.local_rows(cfg)[0].timestamp == "20260101T010101"
 
 
 def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,21 +167,21 @@ def test_local_rows_skips_snapshots_missing_tags(tmp_path: Path, monkeypatch: py
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     snaps = [_snapshot(vm_uuid=""), _snapshot(run_id=""), _snapshot(timestamp_tag=None), _snapshot(host_tag="")]
     _stub_snapshot_list(monkeypatch, {local_cfg: snaps})
-    assert list_restore_points._local_rows(cfg) == []
+    assert list_restore_points.local_rows(cfg) == []
 
 
 def test_local_rows_skips_snapshots_with_host_tag_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path, host_id="host-a")
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(host_tag="host-b")]})
-    assert list_restore_points._local_rows(cfg) == []
+    assert list_restore_points.local_rows(cfg) == []
 
 
 def test_local_rows_allows_older_snapshots_without_vm_name_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, {local_cfg: [_snapshot(vm_name="")]})
-    rows = list_restore_points._local_rows(cfg)
+    rows = list_restore_points.local_rows(cfg)
     assert len(rows) == 1
     assert rows[0].vm_name == ""
 
@@ -190,7 +190,7 @@ def test_rows_from_repo_returns_empty_on_command_error(tmp_path: Path, monkeypat
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, raise_command_error_for=local_cfg)
-    assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
+    assert list_restore_points.rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
     assert list_restore_points._rows_from_repo_result(cfg, host_id="host-a", config_file=local_cfg).ok is False
 
 
@@ -198,7 +198,7 @@ def test_rows_from_repo_returns_empty_on_value_error(tmp_path: Path, monkeypatch
     cfg = _make_config(tmp_path)
     local_cfg = _stub_repo_helpers(monkeypatch, cfg)
     _stub_snapshot_list(monkeypatch, raise_value_error_for=local_cfg)
-    assert list_restore_points._rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
+    assert list_restore_points.rows_from_repo(cfg, host_id="host-a", config_file=local_cfg) == []
     assert list_restore_points._rows_from_repo_result(cfg, host_id="host-a", config_file=local_cfg).ok is False
 
 
@@ -214,7 +214,7 @@ def test_peer_rows_skips_local_host_entries(tmp_path: Path, monkeypatch: pytest.
     ]
     _stub_repo_helpers(monkeypatch, cfg, peers=peers)
     _stub_snapshot_list(monkeypatch, {peer_cfg: [_snapshot(snap_id="b-1", host_tag="host-b")]})
-    rows = list_restore_points._peer_rows(cfg)
+    rows = list_restore_points.peer_rows(cfg)
     assert len(rows) == 1
     assert rows[0].host_id == "host-b"
 

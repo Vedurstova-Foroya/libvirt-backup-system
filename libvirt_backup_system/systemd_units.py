@@ -115,15 +115,15 @@ def validate_systemd_path(value: str | Path, label: str) -> str:
     return systemd_render.validate_systemd_path(value, label)
 
 
-def _quote_systemd_path(path: str) -> str:
+def quote_systemd_path(path: str) -> str:
     return systemd_render.quote_systemd_path(path)
 
 
-def _escape_systemd_path(path: str) -> str:
+def escape_systemd_path(path: str) -> str:
     return systemd_render.escape_systemd_path(path)
 
 
-def _requires_mounts_for(backup_path: str) -> str:
+def requires_mounts_for(backup_path: str) -> str:
     return systemd_render.requires_mounts_for(backup_path)
 
 
@@ -131,7 +131,7 @@ def render_unit_service(backup_path: str, bin_path: Path, config_path: Path, *, 
     return systemd_render.render_unit_service(backup_path, bin_path, config_path, subcommand=subcommand)
 
 
-def _has_control_char(value: str) -> bool:
+def has_control_char(value: str) -> bool:
     return systemd_render.has_control_char(value)
 
 

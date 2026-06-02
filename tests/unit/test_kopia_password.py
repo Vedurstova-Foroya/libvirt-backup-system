@@ -371,9 +371,11 @@ def test_write_password_file_security_failure_cleans_up_tmp(
 
 def test_temporary_password_file_rejects_empty_value(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path)
-    with pytest.raises(ValueError, match="kopia password must not be empty"):
-        with kopia_password.temporary_password_file(cfg, ""):
-            pass  # pragma: no cover
+    with (
+        pytest.raises(ValueError, match="kopia password must not be empty"),
+        kopia_password.temporary_password_file(cfg, ""),
+    ):
+        pass  # pragma: no cover
 
 
 # --- temporary_password_file: chown failure (lines 175-179) -----------------
@@ -395,9 +397,11 @@ def test_temporary_password_file_chown_failure_cleans_up(
         raise PermissionError("chown denied")
 
     monkeypatch.setattr(kopia_password.os, "chown", boom_chown)
-    with pytest.raises(OSError, match="chown root:root failed"):
-        with kopia_password.temporary_password_file(cfg, "verify-pw"):
-            pass  # pragma: no cover
+    with (
+        pytest.raises(OSError, match="chown root:root failed"),
+        kopia_password.temporary_password_file(cfg, "verify-pw"),
+    ):
+        pass  # pragma: no cover
     # No stray .tmp files should remain.
     leftovers = [child for child in pw_dir.iterdir() if child.name.startswith(".")]
     assert leftovers == []
@@ -424,9 +428,11 @@ def test_temporary_password_file_security_failure_cleans_up(
         return real_security_check(path, label=label)
 
     monkeypatch.setattr(kopia_password, "password_file_security_failure", fail_for_tmp)
-    with pytest.raises(PermissionError, match="is not a regular file"):
-        with kopia_password.temporary_password_file(cfg, "verify-pw"):
-            pass  # pragma: no cover
+    with (
+        pytest.raises(PermissionError, match="is not a regular file"),
+        kopia_password.temporary_password_file(cfg, "verify-pw"),
+    ):
+        pass  # pragma: no cover
     # No stray .tmp files should remain.
     leftovers = [child for child in pw_dir.iterdir() if child.name.startswith(".")]
     assert leftovers == []

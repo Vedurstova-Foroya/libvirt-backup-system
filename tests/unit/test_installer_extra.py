@@ -88,7 +88,7 @@ def test_write_initial_config_skips_write_when_file_appears_under_race(tmp_path:
 
 
 def test_install_rejects_backticked_config_path(tmp_path: Path, capsys) -> None:
-    # Backticks survive _quote_systemd_path: systemd does not run /bin/sh, but
+    # Backticks survive quote_systemd_path: systemd does not run /bin/sh, but
     # operator tooling re-rendering the unit through a shell would expand them.
     assert install(str(tmp_path), config_path=str(tmp_path / "bad`name.env")) == 1
     err = capsys.readouterr().err

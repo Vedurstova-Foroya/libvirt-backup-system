@@ -16,7 +16,7 @@ def _quoted_systemd_path(path: Path) -> str:
 
 
 def _escaped_systemd_path(path: Path) -> str:
-    # Mirrors libvirt_backup_system.systemd_units._escape_systemd_path: path-
+    # Mirrors libvirt_backup_system.systemd_units.escape_systemd_path: path-
     # typed directives (EnvironmentFile=, RequiresMountsFor=) are emitted
     # unquoted with backslash-escaped whitespace and doubled %.
     escaped = str(path).replace("\\", "\\\\").replace("%", "%%")

@@ -19,8 +19,7 @@ from libvirt_backup_system.manifest import MANIFEST_FILENAME, Manifest, Manifest
 from libvirt_backup_system.shell import CommandError, CommandResult
 
 from .conftest import ALPHA_UUID
-from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row, ok_result, rows_result
-
+from .restore_helpers import TIMESTAMP, Snap, make_config, make_manifest, make_row, rows_result
 
 # ---- _inactive_domain_xml: CommandError (lines 130-131) ----
 
@@ -115,9 +114,7 @@ def _manifest_with_local_disks(tmp_path: Path) -> tuple[Manifest, Path]:
 # ---- _restore_overwrite: _inactive_domain_xml returns None (lines 218-219) ----
 
 
-def test_restore_overwrite_exits_when_dumpxml_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_restore_overwrite_exits_when_dumpxml_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When ``_inactive_domain_xml`` returns None after disks are materialized,
     ``_restore_overwrite`` must clean up temp files and return 1."""
     cfg = make_config(tmp_path)
@@ -141,9 +138,7 @@ def test_restore_overwrite_exits_when_dumpxml_fails(
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr(restore, "run", fake_run)
-    monkeypatch.setattr(
-        restore, "define_restored_domain", lambda *_a, **_kw: pytest.fail("define must not be called")
-    )
+    monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: pytest.fail("define must not be called"))
     assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
     # Temp file should have been cleaned up.
     temp = src_dir / ".myvm-vda.qcow2.vda.restore.tmp"
@@ -182,9 +177,7 @@ def test_restore_overwrite_exits_when_shutdown_fails_after_dumpxml(
         return CommandResult(args, 0, "", "")
 
     monkeypatch.setattr(restore, "run", fake_run)
-    monkeypatch.setattr(
-        restore, "define_restored_domain", lambda *_a, **_kw: pytest.fail("define must not be called")
-    )
+    monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: pytest.fail("define must not be called"))
     assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
     # Temp file should have been cleaned up.
     temp = src_dir / ".myvm-vda.qcow2.vda.restore.tmp"

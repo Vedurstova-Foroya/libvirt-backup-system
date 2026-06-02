@@ -7,8 +7,8 @@ from pathlib import Path
 
 from . import disk_compat, kopia_repo, preflight_host_id, preflight_kopia_password_file
 from .config import Config, float_value, int_value, split_words
-from .config_data import CONFIG_KEYS
 from .config import prefixed as _prefixed
+from .config_data import CONFIG_KEYS
 from .logging_json import event
 from .paths import backup_root
 from .preflight_estimate import df_available_kb as _df_available_kb
@@ -165,7 +165,7 @@ def _backup_path_is_mount(backup_path: Path) -> tuple[bool, str | None]:
         return False, str(exc)
 
 
-def _host_id_state_path(config: Config) -> Path:
+def host_id_state_path(config: Config) -> Path:
     return preflight_host_id.host_id_state_path(config)
 
 

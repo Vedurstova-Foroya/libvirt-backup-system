@@ -331,9 +331,9 @@ def test_install_password_existing_repo_reports_temp_file_oserror(
     import contextlib
 
     @contextlib.contextmanager
-    def boom_temp_file(_cfg: object, _value: str):  # noqa: ANN202
+    def boom_temp_file(_cfg: object, _value: str):
         raise OSError("disk full")
-        yield  # pragma: no cover – never reached; satisfies generator requirement
+        yield  # pragma: no cover - never reached; satisfies generator requirement
 
     monkeypatch.setattr(installer_password.kopia_password, "temporary_password_file", boom_temp_file)
 

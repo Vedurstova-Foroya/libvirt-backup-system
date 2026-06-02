@@ -49,7 +49,7 @@ def test_collect_check_failures_locked_path_stamps(tmp_path: Path, monkeypatch: 
     stub_environment(monkeypatch)
     failures, _vm_count, _kb = preflight.collect_check_failures(cfg, lock_held=True)
     assert failures == []
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     assert state_path.read_text(encoding="utf-8").strip() == "alpha"
 
 
@@ -189,6 +189,6 @@ def test_collect_check_failures_skips_stamp_when_lock_held_but_failures_present(
     cfg.values["BACKUP_PATH"] = str(tmp_path / "missing")
     stub_environment(monkeypatch)
     failures, _, _ = preflight.collect_check_failures(cfg, lock_held=True)
-    state_path = preflight._host_id_state_path(cfg)
+    state_path = preflight.host_id_state_path(cfg)
     assert not state_path.exists()
     assert any("BACKUP_PATH must exist" in failure for failure in failures)

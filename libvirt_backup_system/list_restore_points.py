@@ -37,7 +37,7 @@ class BackupEnumeration:
     ok: bool
 
 
-def _local_rows(config: Config) -> list[BackupRow]:
+def local_rows(config: Config) -> list[BackupRow]:
     """List rows from this host's own repo (always present after install)."""
     return _local_rows_result(config).rows
 
@@ -49,7 +49,7 @@ def _local_rows_result(config: Config) -> BackupEnumeration:
     return _rows_from_repo_result(config, host_id=config.get("HOST_ID"), config_file=cfg_file)
 
 
-def _peer_rows(config: Config) -> list[BackupRow]:
+def peer_rows(config: Config) -> list[BackupRow]:
     return _peer_rows_result(config).rows
 
 
@@ -73,7 +73,7 @@ def _peer_rows_result(config: Config) -> BackupEnumeration:
     return BackupEnumeration(rows, ok)
 
 
-def _rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[BackupRow]:
+def rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[BackupRow]:
     return _rows_from_repo_result(config, host_id=host_id, config_file=config_file).rows
 
 

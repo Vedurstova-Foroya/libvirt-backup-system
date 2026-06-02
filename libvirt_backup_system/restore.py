@@ -20,12 +20,12 @@ from .restore_io import manifest_matches_request as _manifest_matches_request
 from .restore_io import restore_manifest as _restore_manifest
 from .restore_io import stream_disk_to_qcow2 as _stream_disk_to_qcow2
 from .restore_overwrite import (
-    _cleanup_paths,
-    _overwrite_dest_map,
-    _overwrite_temp_dest_map,
-    _replace_overwrite_disks,  # noqa: F401 - re-exported for focused unit tests.
-    _replace_overwrite_disks_with_backups,
-    _rollback_overwrite_disks,
+    cleanup_paths,
+    overwrite_dest_map,
+    overwrite_temp_dest_map,
+    replace_overwrite_disks,  # noqa: F401 - re-exported for focused unit tests.  # pyright: ignore[reportUnusedImport]
+    replace_overwrite_disks_with_backups,
+    rollback_overwrite_disks,
 )
 from .shell import CommandError, run
 from .storage import subpath_is_safe
@@ -208,30 +208,30 @@ def _write_original_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
 
 
 def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> int:
-    dest_map = _overwrite_dest_map(ctx.manifest)
-    temp_map = _overwrite_temp_dest_map(dest_map)
+    dest_map = overwrite_dest_map(ctx.manifest)
+    temp_map = overwrite_temp_dest_map(dest_map)
     if not _materialize_disks(ctx, config, temp_map):
-        _cleanup_paths(temp_map)
+        cleanup_paths(temp_map)
         return 1
     original_xml = _inactive_domain_xml(config, vm_name)
     if original_xml is None:
-        _cleanup_paths(temp_map)
+        cleanup_paths(temp_map)
         return 1
     original_xml_path = _write_original_xml(ctx, original_xml)
     if not _shutdown_and_undefine(config, vm_name):
-        _cleanup_paths(temp_map)
+        cleanup_paths(temp_map)
         return 1
-    backup_map = _replace_overwrite_disks_with_backups(temp_map, dest_map)
+    backup_map = replace_overwrite_disks_with_backups(temp_map, dest_map)
     if backup_map is None:
-        _cleanup_paths(temp_map)
+        cleanup_paths(temp_map)
         _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
     xml_path = _write_restored_xml(ctx, ctx.manifest.domain_xml)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
-        _rollback_overwrite_disks(backup_map, dest_map)
+        rollback_overwrite_disks(backup_map, dest_map)
         _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
-    _cleanup_paths(backup_map)
+    cleanup_paths(backup_map)
     event("info", "restore overwrite completed", vm=vm_name, output=str(ctx.staging))
     return 0
 

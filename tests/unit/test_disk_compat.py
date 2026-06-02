@@ -75,7 +75,9 @@ def test_selected_vm_list_disks_command_error(tmp_path: Path, monkeypatch: pytes
 def test_selected_vm_list_disks_os_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_config(tmp_path)
     monkeypatch.setattr(
-        disk_compat, "LibvirtSnapshotter", lambda *, libvirt_uri: _ErrorSnapshotter(OSError("cannot connect")),
+        disk_compat,
+        "LibvirtSnapshotter",
+        lambda *, libvirt_uri: _ErrorSnapshotter(OSError("cannot connect")),
     )
     failures = disk_compat.selected_vm_disk_compatibility_failures(cfg, [_vm()])
     assert len(failures) == 1
@@ -134,4 +136,5 @@ def test_disk_compatibility_failure_returns_none_for_valid_qcow2(monkeypatch: py
 def _raise(exc: BaseException):
     def _inner(_path: str):
         raise exc
+
     return _inner

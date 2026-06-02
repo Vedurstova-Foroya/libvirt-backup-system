@@ -131,11 +131,11 @@ def _check_recent_quiesce_fallbacks(root: Path) -> list[str]:
     )
 
 
-def _collect_quiesce_fallbacks(stdout: str) -> dict[str, str]:
+def collect_quiesce_fallbacks(stdout: str) -> dict[str, str]:
     return doctor_quiesce.collect_quiesce_fallbacks(stdout)
 
 
-def _format_quiesce_fallbacks(events: dict[str, str]) -> list[str]:
+def format_quiesce_fallbacks(events: dict[str, str]) -> list[str]:
     return doctor_quiesce.format_quiesce_fallbacks(events)
 
 

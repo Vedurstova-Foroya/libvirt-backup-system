@@ -252,7 +252,7 @@ def test_expected_unit_text_verify_timer_branch(tmp_path: Path) -> None:
 
 
 def test_collect_quiesce_fallbacks_delegates_to_doctor_quiesce() -> None:
-    """doctor.py line 135: _collect_quiesce_fallbacks is a thin wrapper."""
+    """doctor.py line 135: collect_quiesce_fallbacks is a thin wrapper."""
     import json as _json
 
     line = _json.dumps(
@@ -263,15 +263,15 @@ def test_collect_quiesce_fallbacks_delegates_to_doctor_quiesce() -> None:
             "vm": "vm-test",
         }
     )
-    result = doctor._collect_quiesce_fallbacks(line)
+    result = doctor.collect_quiesce_fallbacks(line)
     assert "vm-test" in result
     assert result["vm-test"] == "2026-05-22T01:00:00.000000Z"
 
 
 def test_format_quiesce_fallbacks_delegates_to_doctor_quiesce() -> None:
-    """doctor.py line 139: _format_quiesce_fallbacks is a thin wrapper."""
+    """doctor.py line 139: format_quiesce_fallbacks is a thin wrapper."""
     events = {"vm-alpha": "2026-05-22T00:00:00Z"}
-    result = doctor._format_quiesce_fallbacks(events)
+    result = doctor.format_quiesce_fallbacks(events)
     assert len(result) == 1
     assert "vm-alpha" in result[0]
     assert "recent QGA quiesce fallback" in result[0]

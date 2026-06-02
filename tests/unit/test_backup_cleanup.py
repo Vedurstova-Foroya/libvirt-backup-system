@@ -6,11 +6,9 @@ from typing import Any
 
 import pytest
 
-from libvirt_backup_system import backup, kopia_snapshots
+from libvirt_backup_system import backup, backup_cleanup, kopia_snapshots
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.shell import CommandError, CommandResult
-
-from libvirt_backup_system import backup_cleanup
 from libvirt_backup_system.vms import VM
 
 from .conftest import ALPHA_UUID

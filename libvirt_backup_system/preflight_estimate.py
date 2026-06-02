@@ -33,7 +33,7 @@ def disk_image_info(path: str) -> dict[str, object]:
 def disk_virtual_size_bytes(path: str) -> int:
     info = disk_image_info(path)
     raw = info["virtual-size"]
-    if not isinstance(raw, (int, float, str)):
+    if not isinstance(raw, int | float | str):
         raise TypeError(f"unexpected virtual-size type: {type(raw)}")
     return int(raw)
 

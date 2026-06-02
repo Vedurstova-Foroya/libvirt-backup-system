@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -143,9 +142,7 @@ def test_snapshot_id_from_create_stdout_raises_on_non_string_id() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_peer_rows_result_returns_not_ok_on_discovery_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_peer_rows_result_returns_not_ok_on_discovery_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Lines 61-62: PeerDiscoveryError -> BackupEnumeration([], ok=False)."""
     cfg = _make_config(tmp_path)
 
@@ -177,9 +174,7 @@ def test_validate_local_kopia_repo_returns_empty_when_backup_path_empty(tmp_path
 
 def test_disk_image_info_rejects_non_dict(monkeypatch: pytest.MonkeyPatch) -> None:
     """Line 29: raise ValueError when qemu-img returns a non-dict JSON."""
-    monkeypatch.setattr(
-        preflight_estimate, "run", lambda args, **_: CommandResult(args, 0, '"just a string"', "")
-    )
+    monkeypatch.setattr(preflight_estimate, "run", lambda args, **_: CommandResult(args, 0, '"just a string"', ""))
     with pytest.raises(ValueError, match="did not return a JSON object"):
         preflight_estimate.disk_image_info("/tmp/x.qcow2")
 
@@ -215,7 +210,6 @@ def test_estimate_required_kb_returns_zero_on_bad_int_value(tmp_path: Path) -> N
     cfg = _cfg(tmp_path)
     cfg.values["SPACE_MARGIN_PERCENT"] = "not-an-int"
     vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    monkeypatch_needed = False
     # _vms_needing_first_backup_estimate returns the vm list when repo does not exist
     assert preflight_estimate.estimate_required_kb(cfg, [vm]) == 0
 
@@ -247,9 +241,7 @@ def test_vms_needing_first_backup_estimate_returns_empty_on_command_error(
     cfg = _cfg(tmp_path)
     vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
-    monkeypatch.setattr(
-        preflight_estimate.kopia_repo, "ensure_local_connected", lambda _cfg: tmp_path / "kopia.config"
-    )
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "ensure_local_connected", lambda _cfg: tmp_path / "kopia.config")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
 
@@ -268,9 +260,7 @@ def test_vms_needing_first_backup_estimate_returns_empty_on_value_error(
     cfg = _cfg(tmp_path)
     vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: True)
-    monkeypatch.setattr(
-        preflight_estimate.kopia_repo, "ensure_local_connected", lambda _cfg: tmp_path / "kopia.config"
-    )
+    monkeypatch.setattr(preflight_estimate.kopia_repo, "ensure_local_connected", lambda _cfg: tmp_path / "kopia.config")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "password_file_path", lambda _cfg: tmp_path / "pw")
     monkeypatch.setattr(preflight_estimate.kopia_repo, "cache_dir", lambda _cfg: tmp_path / "cache")
 

@@ -27,7 +27,7 @@ def test_overwrite_dest_map_uses_original_source_paths() -> None:
             snapshot_filename="vdb.raw",
         ),
     )
-    dest_map = restore._overwrite_dest_map(make_manifest(disks=disks))
+    dest_map = restore.overwrite_dest_map(make_manifest(disks=disks))
     assert dest_map == {
         "vda": Path("/pool-a/alpha-system.qcow2"),
         "vdb": Path("/pool-b/alpha-data.qcow2"),
@@ -58,7 +58,7 @@ def test_turnkey_dest_map_sanitizes_malformed_targets(tmp_path: Path, target: st
 
 def test_overwrite_temp_dest_map_uses_sibling_hidden_paths(tmp_path: Path) -> None:
     dest_map = {"vda": tmp_path / "pool-a" / "sys.qcow2"}
-    temp_map = restore._overwrite_temp_dest_map(dest_map)
+    temp_map = restore.overwrite_temp_dest_map(dest_map)
     assert temp_map == {"vda": tmp_path / "pool-a" / ".sys.qcow2.vda.restore.tmp"}
 
 
@@ -67,7 +67,7 @@ def test_replace_overwrite_disks_moves_temp_to_final(tmp_path: Path) -> None:
     dest.write_bytes(b"old")
     temp = tmp_path / ".disk.qcow2.vda.restore.tmp"
     temp.write_bytes(b"new")
-    assert restore._replace_overwrite_disks({"vda": temp}, {"vda": dest}) is True
+    assert restore.replace_overwrite_disks({"vda": temp}, {"vda": dest}) is True
     assert dest.read_bytes() == b"new"
     assert not temp.exists()
     assert not (tmp_path / ".disk.qcow2.vda.restore.old").exists()
@@ -93,7 +93,7 @@ def test_replace_overwrite_disks_rolls_back_after_later_failure(
 
     monkeypatch.setattr(Path, "replace", fail_second_temp_replace)
     assert (
-        restore._replace_overwrite_disks(
+        restore.replace_overwrite_disks(
             {"vda": first_temp, "vdb": second_temp},
             {"vda": first, "vdb": second},
         )
@@ -138,7 +138,7 @@ def test_materialize_disks_writes_to_dest_map_paths(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(restore, "_stream_disk_to_qcow2", fake_stream)
     ctx = restore._RestoreContext(row=make_row(tmp_path), manifest=manifest, staging=tmp_path / "s", verbose=False)
-    assert restore._materialize_disks(ctx, make_config(tmp_path), restore._overwrite_dest_map(manifest)) is True
+    assert restore._materialize_disks(ctx, make_config(tmp_path), restore.overwrite_dest_map(manifest)) is True
     assert written == [pool_a / "sys.qcow2", pool_b / "data.qcow2"]
 
 
@@ -164,7 +164,7 @@ def test_materialize_disks_unlinks_existing_file(tmp_path: Path, monkeypatch: py
 
     monkeypatch.setattr(restore, "_stream_disk_to_qcow2", fake_stream)
     ctx = restore._RestoreContext(row=make_row(tmp_path), manifest=manifest, staging=tmp_path / "s", verbose=False)
-    assert restore._materialize_disks(ctx, make_config(tmp_path), restore._overwrite_dest_map(manifest)) is True
+    assert restore._materialize_disks(ctx, make_config(tmp_path), restore.overwrite_dest_map(manifest)) is True
     assert observed["existed_before_stream"] is False
 
 
@@ -175,7 +175,7 @@ def test_materialize_disks_returns_false_on_missing_snapshot(tmp_path: Path, mon
     )
     manifest = make_manifest()
     ctx = restore._RestoreContext(row=make_row(tmp_path), manifest=manifest, staging=tmp_path / "s", verbose=False)
-    assert restore._materialize_disks(ctx, make_config(tmp_path), restore._overwrite_dest_map(manifest)) is False
+    assert restore._materialize_disks(ctx, make_config(tmp_path), restore.overwrite_dest_map(manifest)) is False
 
 
 def test_materialize_disks_returns_false_on_stream_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -183,7 +183,7 @@ def test_materialize_disks_returns_false_on_stream_failure(tmp_path: Path, monke
     monkeypatch.setattr(restore, "_stream_disk_to_qcow2", lambda *_a, **_kw: False)
     manifest = make_manifest()
     ctx = restore._RestoreContext(row=make_row(tmp_path), manifest=manifest, staging=tmp_path / "s", verbose=False)
-    assert restore._materialize_disks(ctx, make_config(tmp_path), restore._overwrite_dest_map(manifest)) is False
+    assert restore._materialize_disks(ctx, make_config(tmp_path), restore.overwrite_dest_map(manifest)) is False
 
 
 def test_rewrite_domain_disk_sources_rewrites_file_attr() -> None:

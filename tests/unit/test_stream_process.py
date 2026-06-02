@@ -3,14 +3,11 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from libvirt_backup_system import stream_process
-from libvirt_backup_system.shell import TERMINATE_GRACE_SECONDS
-
 
 # ---------------------------------------------------------------------------
 # popen_args
@@ -337,9 +334,7 @@ def test_terminate_process_kill_oserror_suppressed(monkeypatch: pytest.MonkeyPat
 
 def test_terminate_processes_multiple(monkeypatch: pytest.MonkeyPatch) -> None:
     terminated: list[object] = []
-    monkeypatch.setattr(
-        stream_process, "terminate_process", lambda proc: terminated.append(proc)
-    )
+    monkeypatch.setattr(stream_process, "terminate_process", lambda proc: terminated.append(proc))
     a, b, c = object(), None, object()
     stream_process.terminate_processes(a, b, c)  # type: ignore[arg-type]
     assert terminated == [a, b, c]
