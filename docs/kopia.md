@@ -85,10 +85,10 @@ matches; hard-fails on a mismatch.
 ### Password rotation
 
 ```sh
-sudo libvirt-backup-system change-password --new-kopia-password=<value> --acknowledge-password-argv-exposure
-sudo libvirt-backup-system change-password --new-kopia-password-file=/path --acknowledge-password-argv-exposure
-echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=- --acknowledge-password-argv-exposure
-sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW --acknowledge-password-argv-exposure
+sudo libvirt-backup-system change-password --new-kopia-password=<value>
+sudo libvirt-backup-system change-password --new-kopia-password-file=/path
+echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
+sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Per host:
@@ -102,9 +102,8 @@ Kopia currently documents `--new-password` as the noninteractive input for
 or stdin equivalent. The wrapper therefore keeps its own CLI safer for
 operators by accepting `--new-kopia-password-file=-` and env/file sources,
 but the final Kopia subprocess still receives the resolved new password in
-its argv. The wrapper requires `--acknowledge-password-argv-exposure` so the
-operator explicitly accepts that short exposure window on hosts where
-untrusted users can inspect process arguments.
+its argv. Avoid running rotation on hosts where untrusted users can inspect
+process arguments.
 
 Run the same command on every host with the same new value. Order does not
 matter — each host rotates its local repo independently. `doctor` flags

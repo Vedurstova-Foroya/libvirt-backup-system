@@ -14,8 +14,8 @@ from libvirt_backup_system.systemd_units import (
     MAINTENANCE_TIMER_NAME,
     RUN_UNIT_NAME,
     TIMER_UNIT_NAME,
-    VERIFY_UNIT_NAME,
     VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
 )
 from tests.unit._doctor_helpers import stub_systemctl_values
 

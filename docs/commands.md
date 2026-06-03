@@ -42,10 +42,10 @@ verify it decrypts the local repo, run `kopia repository change-password` to
 rewrap the master key, atomically replace the password file.
 
 ```sh
-sudo libvirt-backup-system change-password --new-kopia-password=<value> --acknowledge-password-argv-exposure
-sudo libvirt-backup-system change-password --new-kopia-password-file=/path --acknowledge-password-argv-exposure
-echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=- --acknowledge-password-argv-exposure
-sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW --acknowledge-password-argv-exposure
+sudo libvirt-backup-system change-password --new-kopia-password=<value>
+sudo libvirt-backup-system change-password --new-kopia-password-file=/path
+echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
+sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
 ```
 
 Run the same command on every host. Order does not matter; each host rotates
@@ -58,7 +58,7 @@ Kopia's documented noninteractive rotation flag is
 new value from stdin, a file, or an environment variable, but it must still
 pass that resolved value to Kopia in Kopia's argv for the rewrap step. Do
 not run `change-password` on hosts where other users can inspect process
-arguments during the acknowledged rotation window.
+arguments during the rotation window.
 
 ## `uninstall`
 

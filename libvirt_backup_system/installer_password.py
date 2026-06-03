@@ -138,11 +138,4 @@ def change_password(cfg: Config, spec: kopia_password.PasswordSpec) -> int:
             "--new-kopia-password-file / --new-kopia-password-env",
         )
         return 1
-    if not spec.acknowledge_argv_exposure:
-        event(
-            "error",
-            "change-password requires acknowledgement that Kopia receives the new password in argv",
-            flag="--acknowledge-password-argv-exposure",
-        )
-        return 1
     return kopia_password.change_local_password(cfg, resolved)

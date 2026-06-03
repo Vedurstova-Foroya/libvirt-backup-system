@@ -2,60 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from libvirt_backup_system.config import DEFAULTS, Config
 from libvirt_backup_system.installer import install, uninstall
 from libvirt_backup_system.shell import CommandResult
+from tests.unit._installer_helpers import fake_config_factory as _fake_config_factory
+from tests.unit._installer_helpers import fake_systemd_root as _fake_systemd_root
 from tests.unit.conftest import stub_ensure_kopia_repo, write_kopia_password_file
-
-
-def _fake_config_factory(
-    tmp_path: Path,
-    *,
-    backup_path: str | None = None,
-    calendar: str | None = None,
-    timeout_seconds: str | None = None,
-) -> object:
-    def fake_config(
-        config_path: str | None = None,
-        prefix: str | None = None,
-        *,
-        apply_env_overrides: bool = True,
-    ) -> Config:
-        values = dict(DEFAULTS)
-        values["HOST_ID"] = "host-a"
-        if backup_path is not None:
-            values["BACKUP_PATH"] = backup_path
-        if calendar is not None:
-            values["SYSTEMD_ON_CALENDAR"] = calendar
-        if timeout_seconds is not None:
-            values["COMMAND_TIMEOUT_SECONDS"] = timeout_seconds
-        return Config(values=values, path=tmp_path / "etc/config.env", prefix=tmp_path)
-
-    return fake_config
-
-
-def _fake_systemd_root(tmp_path: Path, monkeypatch) -> None:
-    original_exists = Path.exists
-
-    def fake_exists(self: Path) -> bool:
-        return True if str(self) == "/run/systemd/system" else original_exists(self)
-
-    fake_prefixed = lambda path, root: tmp_path / str(path).lstrip("/")  # noqa: E731
-    monkeypatch.setattr("libvirt_backup_system.installer.root_prefix", lambda prefix=None: Path("/"))
-    monkeypatch.setattr("libvirt_backup_system.installer.prefixed", fake_prefixed)
-    monkeypatch.setattr("libvirt_backup_system.installer_uninstall.prefixed", fake_prefixed)
-    monkeypatch.setattr("libvirt_backup_system.systemd_units.prefixed", fake_prefixed)
-    monkeypatch.setattr(
-        "libvirt_backup_system.installer.default_config_path",
-        lambda root=None: tmp_path / "etc/config.env",
-    )
-    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", fake_exists)
 
 
 def test_install_rejects_control_char_calendar(tmp_path: Path, monkeypatch, capsys) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="daily\nOnActiveSec=1"),
@@ -71,6 +29,7 @@ def test_install_rejects_empty_calendar(tmp_path: Path, monkeypatch, capsys) -> 
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="  "),
@@ -88,6 +47,7 @@ def test_install_rejects_flag_shaped_calendar(tmp_path: Path, monkeypatch, capsy
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), calendar="--help"),
@@ -102,6 +62,7 @@ def test_install_rejects_non_positive_command_timeout(tmp_path: Path, monkeypatc
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(backup_dir), timeout_seconds="0"),
@@ -141,6 +102,7 @@ def test_install_validates_calendar_with_systemd_analyze(tmp_path: Path, monkeyp
 def test_install_rejects_calendar_when_systemd_analyze_fails(tmp_path: Path, monkeypatch, capsys) -> None:
     _fake_systemd_root(tmp_path, monkeypatch)
     write_kopia_password_file(tmp_path)
+    stub_ensure_kopia_repo(monkeypatch)
     monkeypatch.setattr(
         "libvirt_backup_system.installer.Config.load",
         _fake_config_factory(tmp_path, backup_path=str(tmp_path / "backups"), calendar="not-a-calendar"),

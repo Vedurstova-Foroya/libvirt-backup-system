@@ -110,7 +110,8 @@ class LibvirtSnapshotter:
         """
         snapshot_name = f"lbs-{secrets.token_hex(6)}-{int(time.time())}"
         runtime = self.socket_root / f"domain-libvirt-backup-{vm_name}"
-        runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
+        runtime.mkdir(parents=True, exist_ok=True, mode=0o755)
+        runtime.chmod(0o755)
         diskspecs: list[str] = []
         overlays: dict[str, Path] = {}
         for disk in disks:

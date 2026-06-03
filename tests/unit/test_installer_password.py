@@ -259,13 +259,6 @@ def test_change_password_requires_a_password_spec(tmp_path: Path, capsys: pytest
     assert "--new-kopia-password" in err
 
 
-def test_change_password_requires_argv_acknowledgement(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    cfg = _make_config(tmp_path)
-    assert installer_password.change_password(cfg, kopia_password.PasswordSpec(literal="rotated-pw")) == 1
-    err = capsys.readouterr().err
-    assert "--acknowledge-password-argv-exposure" in err
-
-
 def test_change_password_reports_resolution_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cfg = _make_config(tmp_path)
     spec = kopia_password.PasswordSpec(literal="bad\nvalue")
@@ -286,7 +279,7 @@ def test_change_password_delegates_to_kopia_password(
         return 0
 
     monkeypatch.setattr(installer_password.kopia_password, "change_local_password", fake_change)
-    spec = kopia_password.PasswordSpec(literal="rotated-pw", acknowledge_argv_exposure=True)
+    spec = kopia_password.PasswordSpec(literal="rotated-pw")
     assert installer_password.change_password(cfg, spec) == 0
     assert captured["value"] == "rotated-pw"
     assert captured["config"] is cfg

@@ -83,3 +83,19 @@ def test_inspect_policy_logs_policy_show_failure(
     monkeypatch.setattr(kopia_client, "policy_show_global", fail_show)
     assert retention.inspect_policy(backup_config) is None
     assert "kopia policy inspection failed" in capsys.readouterr().err
+
+
+def test_inspect_policy_logs_value_error(
+    backup_config: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``policy_show_global`` raises ValueError when the JSON shape is wrong."""
+    monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: Path("/tmp/kopia.config"))
+
+    def fail_show(**_kwargs: object) -> dict[str, object]:
+        raise ValueError("expected object")
+
+    monkeypatch.setattr(kopia_client, "policy_show_global", fail_show)
+    assert retention.inspect_policy(backup_config) is None
+    err = capsys.readouterr().err
+    assert "kopia policy inspection failed" in err
+    assert "expected object" in err

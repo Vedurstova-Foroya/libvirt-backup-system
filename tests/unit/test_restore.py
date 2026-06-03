@@ -31,8 +31,9 @@ def test_restore_rejects_invalid_uuid(tmp_path: Path) -> None:
     assert restore.restore(make_config(tmp_path), "not-a-uuid", TIMESTAMP) == 1
 
 
-def test_restore_rejects_malformed_timestamp(tmp_path: Path) -> None:
-    assert restore.restore(make_config(tmp_path), ALPHA_UUID, "..") == 1
+@pytest.mark.parametrize("timestamp", ["..", "chain-1", "2026-05-20T12:34:56"])
+def test_restore_rejects_malformed_timestamp(tmp_path: Path, timestamp: str) -> None:
+    assert restore.restore(make_config(tmp_path), ALPHA_UUID, timestamp) == 1
 
 
 def test_restore_fails_when_backup_path_not_mount(tmp_path: Path) -> None:

@@ -67,9 +67,8 @@ def install(
             )
             if password_required and _host_id_preflight(cfg) != 0:
                 return 1
-            binary_code = _install_pinned_binaries(root)
-            if binary_code != 0:
-                return binary_code
+            if password_required and _repo_preflight(cfg) != 0:
+                return 1
             resolved_password_spec = password_spec or kopia_password.PasswordSpec()
             password_supplied = any(
                 value is not None
@@ -83,6 +82,9 @@ def install(
                 password_code = _install_password(cfg, resolved_password_spec)
                 if password_code != 0:
                     return password_code
+            binary_code = _install_pinned_binaries(root)
+            if binary_code != 0:
+                return binary_code
             install_code = _install_locked(root, resolved_config, cfg)
             if install_code != 0:
                 return install_code

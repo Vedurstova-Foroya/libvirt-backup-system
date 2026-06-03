@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.installer import _ensure_kopia_repo, install
 from tests.unit.conftest import write_kopia_password_file
@@ -23,6 +25,31 @@ def test_install_returns_password_failure_code(tmp_path: Path, monkeypatch, caps
     assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
 
 
+def test_install_missing_password_short_circuits_before_binary_install(tmp_path: Path, monkeypatch, capsys) -> None:
+    backup_path = tmp_path / "backups"
+    backup_path.mkdir()
+    machine_id = tmp_path / "etc/machine-id"
+    machine_id.parent.mkdir(parents=True)
+    machine_id.write_text("11111111111111111111111111111111\n", encoding="utf-8")
+    monkeypatch.setenv("BACKUP_PATH", str(backup_path))
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    monkeypatch.setattr("libvirt_backup_system.installer.preflight.repo_creation_failures", lambda _cfg: [])
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.install_kopia",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("binary install must not run")),
+    )
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.install_nbdcopy",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("binary install must not run")),
+    )
+
+    assert install(str(tmp_path)) == 1
+
+    err = capsys.readouterr().err
+    assert "kopia password missing" in err
+    assert not (tmp_path / "usr/local/bin/libvirt-backup-system").exists()
+
+
 def test_install_reinstall_reports_insecure_password_file_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:
     password = write_kopia_password_file(tmp_path, value="existing")
     password.chmod(0o644)
@@ -30,6 +57,8 @@ def test_install_reinstall_reports_insecure_password_file_cleanly(tmp_path: Path
     backup_path = tmp_path / "backups"
     backup_path.mkdir()
     monkeypatch.setenv("BACKUP_PATH", str(backup_path))
+    monkeypatch.setenv("HOST_ID", "host-a")
+    monkeypatch.setattr("libvirt_backup_system.installer.preflight.repo_creation_failures", lambda _cfg: [])
 
     assert install(str(tmp_path)) == 1
 
@@ -97,13 +126,14 @@ def test_install_rejects_backticked_config_path(tmp_path: Path, capsys) -> None:
 
 def test_install_rejects_relative_backup_path(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("BACKUP_PATH", "relative/backups")
+    monkeypatch.setenv("HOST_ID", "host-a")
     write_kopia_password_file(tmp_path)
 
     assert install(str(tmp_path)) == 1
 
     assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
     err = capsys.readouterr().err
-    assert "BACKUP_PATH must be an absolute path for systemd units" in err
+    assert "BACKUP_PATH must be an absolute path" in err
 
 
 def test_install_reports_stale_systemd_unit_removal_failure(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -151,3 +181,24 @@ def test_ensure_kopia_repo_returns_zero_when_backup_path_empty(tmp_path: Path) -
     cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
     cfg.values["BACKUP_PATH"] = "  "
     assert _ensure_kopia_repo(cfg) == 0
+
+
+def test_ensure_kopia_repo_returns_one_when_repo_preflight_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``_ensure_kopia_repo`` defensively re-runs the preflight after password write.
+
+    ``install`` already runs ``_repo_preflight`` earlier, but the helper is
+    public-by-call-graph and must surface non-zero when the preflight rejects
+    the configured layout (e.g., a concurrent operator change between the
+    two checks).
+    """
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    cfg.values["BACKUP_PATH"] = str(tmp_path / "backups")
+    cfg.values["HOST_ID"] = "host-a"
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer.preflight.repo_creation_failures",
+        lambda _cfg: ["BACKUP_PATH must exist"],
+    )
+    assert _ensure_kopia_repo(cfg) == 1
+    assert "kopia repo preflight failed" in capsys.readouterr().err

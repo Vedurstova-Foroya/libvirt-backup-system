@@ -105,11 +105,6 @@ def build_parser() -> argparse.ArgumentParser:
         description=cli_help.CHANGE_PASSWORD_DESCRIPTION,
     )
     _add_password_flags(change_password_parser, prefix="new-")
-    change_password_parser.add_argument(
-        "--acknowledge-password-argv-exposure",
-        action="store_true",
-        help="Required for rotation: confirms Kopia receives the new password in its subprocess argv.",
-    )
 
     uninstall_parser = _add_subparser(
         sub, "uninstall", help_text=cli_help.UNINSTALL_HELP, description=cli_help.UNINSTALL_DESCRIPTION

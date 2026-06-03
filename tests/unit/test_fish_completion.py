@@ -75,7 +75,6 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
                 "new-kopia-password",
                 "new-kopia-password-file",
                 "new-kopia-password-env",
-                "acknowledge-password-argv-exposure",
             },
         ),
         ("uninstall", {"purge-config", "purge-state", "purge-logs"}),

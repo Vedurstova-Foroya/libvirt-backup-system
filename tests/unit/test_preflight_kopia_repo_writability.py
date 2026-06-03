@@ -58,3 +58,23 @@ def test_validate_local_kopia_repo_requires_existing_repo_when_locked(tmp_path: 
     cfg = make_config(tmp_path)
     failures = preflight._validate_local_kopia_repo(cfg, require_existing=True)
     assert failures == ["local kopia repo could not be connected with the shared password"]
+
+
+def test_validate_local_kopia_repo_writable_reports_path_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ValueError from ``local_repo_path`` surfaces as a "path rejected" failure.
+
+    The probe path is reached only after ``local_repo_exists`` /
+    ``ensure_local_connected`` succeed, so the cleanest way to exercise the
+    handler is to call ``_validate_local_kopia_repo_writable`` directly with
+    ``local_repo_path`` monkeypatched to raise.
+    """
+    cfg = make_config(tmp_path)
+
+    def boom(_cfg: Config) -> Path:
+        raise ValueError("KOPIA_REPO_PATH must be an absolute path")
+
+    monkeypatch.setattr(preflight.kopia_repo, "local_repo_path", boom)
+    failures = preflight._validate_local_kopia_repo_writable(cfg)
+    assert failures == ["local kopia repo path rejected: KOPIA_REPO_PATH must be an absolute path"]

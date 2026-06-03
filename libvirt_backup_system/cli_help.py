@@ -249,10 +249,6 @@ Pick one of:
   --new-kopia-password-file=PATH     read from file; '-' means stdin
   --new-kopia-password-env=VAR       read from the named environment variable
 
-Required acknowledgement:
-  --acknowledge-password-argv-exposure
-      confirms Kopia receives the new password in its subprocess argv
-
 Behavior:
   1. Validate the current password file decrypts the local repo.
   2. ``kopia repository change-password`` rewraps the master key.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -30,6 +31,7 @@ from .storage import subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid
 
 RESTORE_STAGING_DIR = Path("/var/lib/libvirt-backup-system/restore")
+RESTORE_TIMESTAMP_RE = re.compile(r"^\d{8}T\d{6}$")
 
 
 @dataclass(frozen=True)
@@ -269,7 +271,7 @@ def restore(
     if not is_safe_vm_uuid(vm_uuid):
         event("error", "restore vm_uuid is not a valid UUID", vm_uuid=vm_uuid)
         return 1
-    if not stamp_is_safe(timestamp):
+    if not stamp_is_safe(timestamp) or RESTORE_TIMESTAMP_RE.fullmatch(timestamp) is None:
         event("error", "restore timestamp is malformed", timestamp=timestamp)
         return 1
     if not runtime_backup_path_ok(config):

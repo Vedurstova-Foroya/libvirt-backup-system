@@ -22,6 +22,10 @@ def write_kopia_password_file(tmp_path: Path, value: str = "test-pw") -> Path:
     "existing file" branch by dropping a mode-600 password file at the
     prefixed default path before invoking ``install``.
     """
+    machine_id = tmp_path / "etc/machine-id"
+    machine_id.parent.mkdir(parents=True, exist_ok=True)
+    if not machine_id.exists():
+        machine_id.write_text("11111111111111111111111111111111\n", encoding="utf-8")
     pw_path = tmp_path / "etc/libvirt-backup-system/kopia.pw"
     pw_path.parent.mkdir(parents=True, exist_ok=True)
     pw_path.write_text(f"{value}\n", encoding="utf-8")

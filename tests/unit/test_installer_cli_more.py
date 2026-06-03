@@ -88,6 +88,38 @@ def test_cli_list_restore_points_json_allows_peer_rows_when_local_missing(tmp_pa
     assert '"source_host_id": "host-b"' in capsys.readouterr().out
 
 
+def test_cli_restore_forwards_disambiguators(tmp_path: Path, monkeypatch) -> None:
+    cfg = _fake_config(tmp_path)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+
+    @contextlib.contextmanager
+    def fake_lock(config: object):
+        assert config is cfg
+        yield Path("/tmp/fake.lock")
+
+    def fake_restore(config: object, vm_uuid: str, timestamp: str, **kwargs: object) -> int:
+        captured.update({"config": config, "vm_uuid": vm_uuid, "timestamp": timestamp, **kwargs})
+        return 0
+
+    monkeypatch.setattr("libvirt_backup_system.cli.acquire_run_lock", fake_lock)
+    monkeypatch.setattr("libvirt_backup_system.cli.restore", fake_restore)
+    assert main(["restore", "--host-id", "host-b", "--run-id", "run-2", row_uuid(), "20260507T101112"]) == 0
+    assert captured == {
+        "config": cfg,
+        "vm_uuid": row_uuid(),
+        "timestamp": "20260507T101112",
+        "host_id": "host-b",
+        "run_id": "run-2",
+        "verbose": False,
+    }
+
+
+def row_uuid() -> str:
+    return "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
 def test_cli_change_password_delegates_to_installer_password(tmp_path: Path, monkeypatch) -> None:
     # ``main(["change-password", ...])`` must build a ``PasswordSpec`` from the
     # ``--new-kopia-password*`` flags and hand it to ``installer_password``
@@ -115,7 +147,6 @@ def test_cli_change_password_delegates_to_installer_password(tmp_path: Path, mon
                 "change-password",
                 "--new-kopia-password",
                 "rotated",
-                "--acknowledge-password-argv-exposure",
             ]
         )
         == 0
@@ -125,7 +156,7 @@ def test_cli_change_password_delegates_to_installer_password(tmp_path: Path, mon
     assert spec.literal == "rotated"
     assert spec.file is None
     assert spec.env_var is None
-    assert spec.acknowledge_argv_exposure is True
+    assert spec.acknowledge_argv_exposure is False
 
 
 def test_cli_change_password_help_documents_kopia_argv_limitation(capsys) -> None:
@@ -135,7 +166,6 @@ def test_cli_change_password_help_documents_kopia_argv_limitation(capsys) -> Non
     out = capsys.readouterr().out
     assert "Kopia's documented noninteractive rotation interface" in out
     assert "Kopia's argv" in out
-    assert "--acknowledge-password-argv-exposure" in out
 
 
 def test_cli_change_password_reports_lock_busy(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -183,7 +213,6 @@ def test_cli_change_password_missing_current_password_file_reports_operator_erro
                 "change-password",
                 "--new-kopia-password",
                 "rotated",
-                "--acknowledge-password-argv-exposure",
             ]
         )
         == 1
@@ -218,7 +247,6 @@ def test_cli_change_password_insecure_current_password_file_reports_operator_err
                 "change-password",
                 "--new-kopia-password",
                 "rotated",
-                "--acknowledge-password-argv-exposure",
             ]
         )
         == 1

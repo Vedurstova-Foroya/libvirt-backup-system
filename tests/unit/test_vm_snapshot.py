@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,7 @@ def test_freeze_attempts_quiesce_then_records_overlays(monkeypatch: pytest.Monke
     assert "--no-metadata" in calls[0]
     assert set(result.overlays) == {"vda", "vdb"}
     assert all(path.parent.is_dir() for path in result.overlays.values())
+    assert {stat.S_IMODE(path.parent.stat().st_mode) for path in result.overlays.values()} == {0o755}
 
 
 def test_freeze_retries_without_quiesce_on_qga_failure(
