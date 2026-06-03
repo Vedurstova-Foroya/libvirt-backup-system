@@ -66,9 +66,7 @@ def test_inspect_policy_returns_global_policy(backup_config: Config, monkeypatch
     assert captured["cache_dir"] == kopia_repo.cache_dir(backup_config)
 
 
-def test_inspect_policy_returns_none_when_connect_fails(
-    backup_config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_inspect_policy_returns_none_when_connect_fails(backup_config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kopia_repo, "ensure_local_connected", lambda _cfg: None)
     monkeypatch.setattr(kopia_client, "policy_show_global", lambda **_kw: pytest.fail("must not inspect"))
     assert retention.inspect_policy(backup_config) is None

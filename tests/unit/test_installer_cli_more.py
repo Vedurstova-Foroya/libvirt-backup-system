@@ -7,7 +7,7 @@ import pytest
 
 from libvirt_backup_system.cli import build_parser, main
 from libvirt_backup_system.config import DEFAULTS, Config
-from libvirt_backup_system.list_restore_points import BackupEnumeration
+from libvirt_backup_system.list_restore_points import BackupEnumeration, BackupRow
 
 
 def _fake_config(tmp_path: Path) -> Config:
@@ -59,6 +59,33 @@ def test_cli_list_restore_points_json_keeps_logs_off_stdout(tmp_path: Path, monk
     captured = capsys.readouterr()
     assert captured.out == "[]\n"
     assert "config log" in captured.err
+
+
+def test_cli_list_restore_points_json_allows_peer_rows_when_local_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+    cfg = _fake_config(tmp_path)
+    backup_path = tmp_path / "backups"
+    backup_path.mkdir()
+    cfg.values["BACKUP_PATH"] = str(backup_path)
+    cfg.values["BACKUP_REQUIRE_NFS_MOUNT"] = "false"
+    cfg.values["HOST_ID"] = "host-a"
+    row = BackupRow(
+        vm_uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        timestamp="20260101T010101",
+        host_id="host-b",
+        vm_name="peer-vm",
+        run_id="run-1",
+        snapshot_id="snap",
+        config_file=tmp_path / "peer.config",
+    )
+    monkeypatch.setattr("libvirt_backup_system.cli.Config.load", lambda config_path=None, prefix=None: cfg)
+    monkeypatch.setattr("libvirt_backup_system.cli.validate_config", lambda config: 0)
+    monkeypatch.setattr(
+        "libvirt_backup_system.cli.enumerate_backups_result",
+        lambda config: BackupEnumeration([row], ok=False, failed_host_ids=("host-a",)),
+    )
+
+    assert main(["list-restore-points", "--json"]) == 0
+    assert '"source_host_id": "host-b"' in capsys.readouterr().out
 
 
 def test_cli_change_password_delegates_to_installer_password(tmp_path: Path, monkeypatch) -> None:

@@ -64,16 +64,15 @@ def estimate_required_kb(config: Config, vms: list[VM]) -> int:
         return 0
     try:
         fallback_per_vm_gb = float_value(config.values, "BACKUP_ESTIMATE_GB_PER_VM")
-        multiplier = float_value(config.values, "BACKUP_INCREMENTAL_MULTIPLIER")
         margin = 1 + int_value(config.values, "SPACE_MARGIN_PERCENT") / 100
     except ValueError:
         return 0
-    if not math.isfinite(fallback_per_vm_gb) or not math.isfinite(multiplier):
+    if not math.isfinite(fallback_per_vm_gb):
         return 0
     fallback_per_vm_bytes = int(fallback_per_vm_gb * 1024 * 1024 * 1024)
     uri = config.get("LIBVIRT_URI")
     total_bytes = sum(vm_estimated_bytes(uri, vm, fallback_per_vm_bytes) for vm in estimated_vms)
-    return int(total_bytes * multiplier * margin / 1024)
+    return int(total_bytes * margin / 1024)
 
 
 def _vms_needing_first_backup_estimate(config: Config, vms: list[VM]) -> list[VM]:

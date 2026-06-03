@@ -35,6 +35,7 @@ class BackupRow:
 class BackupEnumeration:
     rows: list[BackupRow]
     ok: bool
+    failed_host_ids: tuple[str, ...] = ()
 
 
 def local_rows(config: Config) -> list[BackupRow]:
@@ -45,7 +46,7 @@ def local_rows(config: Config) -> list[BackupRow]:
 def _local_rows_result(config: Config) -> BackupEnumeration:
     cfg_file = kopia_repo.ensure_local_connected(config)
     if cfg_file is None:
-        return BackupEnumeration([], ok=False)
+        return BackupEnumeration([], ok=False, failed_host_ids=(config.get("HOST_ID"),))
     return _rows_from_repo_result(config, host_id=config.get("HOST_ID"), config_file=cfg_file)
 
 
@@ -55,6 +56,7 @@ def peer_rows(config: Config) -> list[BackupRow]:
 
 def _peer_rows_result(config: Config) -> BackupEnumeration:
     rows: list[BackupRow] = []
+    failed_host_ids: list[str] = []
     ok = True
     try:
         peers = kopia_repo.discover_peer_repos(config)
@@ -66,11 +68,13 @@ def _peer_rows_result(config: Config) -> BackupEnumeration:
         config_file = kopia_repo.ensure_peer_connected(config, peer.host_id)
         if config_file is None:
             ok = False
+            failed_host_ids.append(peer.host_id)
             continue
         result = _rows_from_repo_result(config, host_id=peer.host_id, config_file=config_file)
         rows.extend(result.rows)
         ok = ok and result.ok
-    return BackupEnumeration(rows, ok)
+        failed_host_ids.extend(result.failed_host_ids)
+    return BackupEnumeration(rows, ok, failed_host_ids=tuple(dict.fromkeys(failed_host_ids)))
 
 
 def rows_from_repo(config: Config, *, host_id: str, config_file: Path) -> list[BackupRow]:
@@ -87,10 +91,10 @@ def _rows_from_repo_result(config: Config, *, host_id: str, config_file: Path) -
         )
     except CommandError as exc:
         event("error", "kopia snapshot list failed", host_id=host_id, stderr=exc.result.stderr.strip())
-        return BackupEnumeration([], ok=False)
+        return BackupEnumeration([], ok=False, failed_host_ids=(host_id,))
     except ValueError as exc:
         event("error", "kopia snapshot list returned bad data", host_id=host_id, error=str(exc))
-        return BackupEnumeration([], ok=False)
+        return BackupEnumeration([], ok=False, failed_host_ids=(host_id,))
     rows: list[BackupRow] = []
     for snap in snapshots:
         vm_uuid = snap.tags.get("vm-uuid", "")
@@ -126,7 +130,12 @@ def enumerate_backups_result(config: Config, *, vm_uuid: str | None = None) -> B
         rows = [row for row in rows if row.vm_uuid == vm_uuid]
     rows.sort(key=lambda row: row.timestamp, reverse=True)
     rows.sort(key=lambda row: (row.host_id, row.vm_uuid))
-    return BackupEnumeration(rows, local.ok and peers.ok)
+    failed_host_ids = tuple(dict.fromkeys((*local.failed_host_ids, *peers.failed_host_ids)))
+    return BackupEnumeration(rows, local.ok and peers.ok, failed_host_ids=failed_host_ids)
+
+
+def only_local_repo_failed(config: Config, result: BackupEnumeration) -> bool:
+    return bool(result.rows) and set(result.failed_host_ids) == {config.get("HOST_ID")}
 
 
 _HEADERS = ("source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name")
@@ -162,7 +171,7 @@ def list_restore_points(config: Config, *, json_output: bool = False) -> int:
     if not runtime_backup_path_ok(config):
         return 1
     result = enumerate_backups_result(config)
-    if not result.ok:
+    if not result.ok and not only_local_repo_failed(config, result):
         return 1
     rows = result.rows
     if not rows:

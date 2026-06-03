@@ -204,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--host-id",
         metavar="HOST_ID",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Target a discovered peer host repo instead of this host's local repo.",
     )
     kopia_parser.add_argument(
         "kopia_args",

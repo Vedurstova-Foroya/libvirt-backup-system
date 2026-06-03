@@ -22,6 +22,7 @@ def _fake_config_factory(
         apply_env_overrides: bool = True,
     ) -> Config:
         values = dict(DEFAULTS)
+        values["HOST_ID"] = "host-a"
         if backup_path is not None:
             values["BACKUP_PATH"] = backup_path
         if calendar is not None:

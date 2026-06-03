@@ -16,12 +16,7 @@ from .installer_helpers import print_install_next_steps as _print_install_next_s
 from .installer_helpers import write_initial_config as _write_initial_config
 from .installer_helpers import write_wrapper as _write_wrapper
 from .installer_password import install_password as _install_password
-from .installer_uninstall import (
-    purge_paths,
-    remove_installed_files,
-    resolve_purge_paths,
-    resolve_purge_preserve_paths,
-)
+from .installer_uninstall import uninstall_locked as _uninstall_locked
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .shell import configure_default_timeout
@@ -64,6 +59,14 @@ def install(
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
     try:
         with acquire_run_lock(cfg):
+            if not resolved_config.exists():
+                _apply_install_time_env(cfg)
+            password_required = _install_backup_path_configured(
+                cfg.get("BACKUP_PATH"),
+                config_exists=resolved_config.exists(),
+            )
+            if password_required and _host_id_preflight(cfg) != 0:
+                return 1
             binary_code = _install_pinned_binaries(root)
             if binary_code != 0:
                 return binary_code
@@ -75,10 +78,6 @@ def install(
                     resolved_password_spec.file,
                     resolved_password_spec.env_var,
                 )
-            )
-            password_required = _install_backup_path_configured(
-                cfg.get("BACKUP_PATH"),
-                config_exists=resolved_config.exists(),
             )
             if password_required or password_supplied:
                 password_code = _install_password(cfg, resolved_password_spec)
@@ -106,20 +105,38 @@ def _install_pinned_binaries(root: Path) -> int:
 def _ensure_kopia_repo(cfg: Config) -> int:
     if not cfg.get("BACKUP_PATH").strip():
         return 0
-    failures = preflight.repo_creation_failures(cfg)
-    for failure in failures:
-        event("error", "kopia repo preflight failed", reason=failure)
-    if failures:
+    if _repo_preflight(cfg) != 0:
         return 1
     return kopia_repo.ensure_local_repo(cfg, apply_global_policy=True)
 
 
+def _repo_preflight(cfg: Config) -> int:
+    failures = preflight.repo_creation_failures(cfg)
+    for failure in failures:
+        event("error", "kopia repo preflight failed", reason=failure)
+    return 1 if failures else 0
+
+
+def _host_id_preflight(cfg: Config) -> int:
+    from . import preflight_host_id
+
+    failure = preflight_host_id.validation_failure(cfg.get("HOST_ID"))
+    if failure is None:
+        return 0
+    event("error", "kopia repo preflight failed", reason=failure)
+    return 1
+
+
+def _apply_install_time_env(cfg: Config) -> None:
+    for env_key in INSTALL_TIME_ENV_KEYS:
+        env_value = os.environ.get(env_key)
+        if env_value is not None:
+            cfg.values[env_key] = env_value
+
+
 def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     if not resolved_config.exists():
-        for env_key in INSTALL_TIME_ENV_KEYS:
-            env_value = os.environ.get(env_key)
-            if env_value is not None:
-                cfg.values[env_key] = env_value
+        _apply_install_time_env(cfg)
     try:
         configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
     except ValueError as exc:
@@ -242,58 +259,3 @@ def uninstall(
     except LockBusyError as exc:
         event("error", "another run in progress", lock_path=str(exc.path))
         return 1
-
-
-def _uninstall_locked(
-    root: Path,
-    cfg: Config,
-    *,
-    purge_config: bool,
-    purge_state: bool,
-    purge_logs: bool,
-) -> int:
-    try:
-        configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
-    except ValueError as exc:
-        event("warning", "invalid command timeout; uninstall continuing with default", error=str(exc))
-    ok = run_systemctl(
-        root,
-        [
-            ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
-            ["systemctl", "stop", "libvirt-backup-system.service"],
-            ["systemctl", "disable", "--now", MAINTENANCE_TIMER_NAME],
-            ["systemctl", "stop", MAINTENANCE_UNIT_NAME],
-            ["systemctl", "disable", "--now", MAINTENANCE_FULL_TIMER_NAME],
-            ["systemctl", "stop", MAINTENANCE_FULL_UNIT_NAME],
-            ["systemctl", "disable", "--now", VERIFY_TIMER_NAME],
-            ["systemctl", "stop", VERIFY_UNIT_NAME],
-        ],
-    )
-    ok = remove_installed_files(root) and ok
-    flags = {"config": purge_config, "state": purge_state, "logs": purge_logs}
-    ok = (
-        purge_paths(
-            resolve_purge_paths(root, cfg, flags),
-            preserve_paths=resolve_purge_preserve_paths(root, cfg, flags),
-        )
-        and ok
-    )
-    ok = run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
-    _print_kopia_repo_retention_hint(cfg)
-    return 0 if ok else 1
-
-
-def _print_kopia_repo_retention_hint(cfg: Config) -> None:
-    backup_path = cfg.get("BACKUP_PATH").strip()
-    if not backup_path:
-        return
-    try:
-        repo_path = kopia_repo.local_repo_path(cfg)
-    except ValueError:
-        return
-    event(
-        "info",
-        "kopia repo retained",
-        path=str(repo_path),
-        hint=f"rm -rf {repo_path} to delete backups",
-    )

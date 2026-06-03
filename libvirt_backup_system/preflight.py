@@ -27,7 +27,7 @@ BOOLEAN_KEYS = frozenset(("BACKUP_REQUIRE_NFS_MOUNT", "REQUIRE_ROOT"))
 INTEGER_KEYS = frozenset(
     "COMMAND_TIMEOUT_SECONDS KEEP_ANNUAL KEEP_DAILY KEEP_HOURLY KEEP_LATEST KEEP_MONTHLY KEEP_WEEKLY KOPIA_PARALLELISM SPACE_MARGIN_PERCENT".split()  # noqa: E501
 )
-FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM", "BACKUP_INCREMENTAL_MULTIPLIER"))
+FLOAT_KEYS = frozenset(("BACKUP_ESTIMATE_GB_PER_VM",))
 ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+unix:// test:// test:///".split())
 REMOTE_LIBVIRT_URI_PREFIXES = tuple("qemu+ssh:// qemu+tcp:// qemu+tls://".split())
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
@@ -86,9 +86,7 @@ def _validate_floats(config: Config) -> list[str]:
         if not math.isfinite(value):
             failures.append(f"{key} must be a finite number")
             continue
-        if key == "BACKUP_INCREMENTAL_MULTIPLIER" and value <= 0:
-            failures.append("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0")  # zero collapses estimate
-        elif key != "BACKUP_INCREMENTAL_MULTIPLIER" and value < 0:
+        if value < 0:
             failures.append(f"{key} must be greater than or equal to 0")
     return failures
 
@@ -195,8 +193,13 @@ def validate_config(config: Config) -> int:
 
 
 def repo_creation_failures(config: Config) -> list[str]:
-    failures = _validate_booleans(config)
-    failures.extend([] if failures else validate_backup_path_writable(config))
+    failures: list[str] = []
+    host_failure = preflight_host_id.validation_failure(config.get("HOST_ID"))
+    if host_failure is not None:
+        failures.append(host_failure)
+    bool_failures = _validate_booleans(config)
+    failures.extend(bool_failures)
+    failures.extend([] if bool_failures else validate_backup_path_writable(config))
     failures.extend(_validate_kopia_repo_path(config))
     return failures
 
@@ -210,7 +213,7 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     failures.extend(f"missing binary: {binary}" for binary in REQUIRED_BINARIES if not shutil.which(binary))
     failures.extend(_validate_scratch_dir())
     failures.extend(_validate_kopia_password_file(config))
-    failures.extend(_validate_local_kopia_repo(config, require_existing=lock_held))
+    failures.extend(_validate_local_kopia_repo(config, require_existing=True))
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
     try:

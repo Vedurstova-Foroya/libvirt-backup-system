@@ -166,10 +166,10 @@ not scheduled by default.
 ```
 SPACE_MARGIN_PERCENT=20
 BACKUP_ESTIMATE_GB_PER_VM=1
-BACKUP_INCREMENTAL_MULTIPLIER=1.2
 ```
 
-Free-space margin, per-VM fallback estimate (in GB) used when disk
-introspection fails, and multiplier applied to the sum of VM disk virtual
-sizes. The estimate is a worst-case bound on first-run space; later runs
-generally need far less because Kopia dedup absorbs unchanged chunks.
+Free-space margin and per-VM fallback estimate (in GB) used when disk
+introspection fails. The estimate is the sum of virtual disk sizes for VMs
+that do not already have Kopia meta snapshots, plus the configured margin.
+VMs with prior Kopia snapshots add 0 because Kopia dedup absorbs unchanged
+chunks.

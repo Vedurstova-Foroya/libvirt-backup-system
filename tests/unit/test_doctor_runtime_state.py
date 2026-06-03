@@ -14,6 +14,7 @@ from libvirt_backup_system.systemd_units import (
     MAINTENANCE_TIMER_NAME,
     RUN_UNIT_NAME,
     TIMER_UNIT_NAME,
+    VERIFY_UNIT_NAME,
     VERIFY_TIMER_NAME,
 )
 from tests.unit._doctor_helpers import stub_systemctl_values
@@ -96,6 +97,15 @@ def test_check_runtime_state_needs_daemon_reload(monkeypatch: pytest.MonkeyPatch
     )
     failures = doctor._check_runtime_state(Path("/"))
     assert any("daemon-reload" in failure for failure in failures)
+
+
+def test_check_runtime_state_checks_kopia_units_for_daemon_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_systemctl_values(
+        monkeypatch,
+        _healthy_values() | {(VERIFY_UNIT_NAME, "NeedDaemonReload"): "yes"},
+    )
+    failures = doctor._check_runtime_state(Path("/"))
+    assert any(VERIFY_UNIT_NAME in failure and "daemon-reload" in failure for failure in failures)
 
 
 def test_check_runtime_state_timer_never_fired(monkeypatch: pytest.MonkeyPatch) -> None:

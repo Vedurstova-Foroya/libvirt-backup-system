@@ -73,8 +73,8 @@ def make_row(tmp_path: Path, *, host_id: str = "host-a", run_id: str = "run-1") 
     )
 
 
-def rows_result(rows: list[BackupRow], *, ok: bool = True) -> BackupEnumeration:
-    return BackupEnumeration(rows, ok=ok)
+def rows_result(rows: list[BackupRow], *, ok: bool = True, failed_host_ids: tuple[str, ...] = ()) -> BackupEnumeration:
+    return BackupEnumeration(rows, ok=ok, failed_host_ids=failed_host_ids)
 
 
 def ok_result(args: list[str], stdout: str = "") -> CommandResult:

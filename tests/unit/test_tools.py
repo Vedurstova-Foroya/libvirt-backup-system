@@ -68,6 +68,14 @@ def test_main_runs_fix_and_check_paths(monkeypatch) -> None:
     assert calls[-1][-2:] == ["-m", "tests.e2e"]
 
 
+def test_main_can_require_real_kvm(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("tools.gates.check_max_loc", lambda: 0)
+    monkeypatch.setattr("tools.gates.run", lambda args, env=None: calls.append(args) or 0)
+    assert gates.main(["--require-real-kvm"]) == 0
+    assert calls[-1][-3:] == ["-m", "tests.e2e", "--require-real-kvm"]
+
+
 def test_main_stops_on_failed_command(monkeypatch) -> None:
     monkeypatch.setattr("tools.gates.check_max_loc", lambda: (_ for _ in ()).throw(AssertionError("unreached")))
     monkeypatch.setattr("tools.gates.run", lambda args, env=None: 9)

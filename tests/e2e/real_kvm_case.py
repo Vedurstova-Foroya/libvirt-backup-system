@@ -258,7 +258,9 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     ctx.kopia("policy", "set", "--global", "--keep-latest=1")
     ctx.kopia("maintenance", "run", "--safety=none", "--full")
     after_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "meta"})
+    after_disk_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "disk", "disk": "vda"})
     assert after_prune <= 2, f"retention should prune older meta snapshots; got {after_prune}"
+    assert after_disk_prune <= 2, f"retention should prune older disk snapshots; got {after_disk_prune}"
 
     args = [sys.executable, "-m", "libvirt_backup_system", "--prefix", str(prefix), "uninstall"]
     _run(args, env=_install_env(prefix))

@@ -149,6 +149,11 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
     rendered = _render_installed_units(root, config_path)
     if rendered is None:
         return 1
+    failures = preflight.repo_creation_failures(rendered.config)
+    for failure in failures:
+        event("error", "kopia repo preflight failed", reason=failure)
+    if failures or kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
+        return 1
     systemd_dir = prefixed("/etc/systemd/system", root)
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / RUN_UNIT_NAME).write_text(rendered.service_text, encoding="utf-8")
@@ -166,11 +171,6 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
         config_path=str(rendered.resolved_config),
         systemd_dir=str(systemd_dir),
     )
-    failures = preflight.repo_creation_failures(rendered.config)
-    for failure in failures:
-        event("error", "kopia repo preflight failed", reason=failure)
-    if failures or kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
-        return 1
     commands: list[list[str]] = [["systemctl", "daemon-reload"]]
     for timer in (TIMER_UNIT_NAME, MAINTENANCE_TIMER_NAME, MAINTENANCE_FULL_TIMER_NAME, VERIFY_TIMER_NAME):
         commands.append(["systemctl", "enable", timer])

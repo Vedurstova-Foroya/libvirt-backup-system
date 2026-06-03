@@ -76,6 +76,11 @@ def check_max_loc() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run repository quality gates.")
     parser.add_argument("--fix", action="store_true", help="Apply formatter/linter fixes before checking.")
+    parser.add_argument(
+        "--require-real-kvm",
+        action="store_true",
+        help="Fail the e2e gate instead of skipping when real KVM/libvirt/kopia capability is missing.",
+    )
     args = parser.parse_args(argv)
 
     commands: list[list[str]] = []
@@ -95,7 +100,12 @@ def main(argv: list[str] | None = None) -> int:
             [sys.executable, "-m", "pyright", "--verifytypes", "libvirt_backup_system"],
             [sys.executable, "-m", "coverage", "run", "-m", "pytest"],
             [sys.executable, "-m", "coverage", "report"],
-            [sys.executable, "-m", "tests.e2e"],
+            [
+                sys.executable,
+                "-m",
+                "tests.e2e",
+                *(["--require-real-kvm"] if args.require_real_kvm else []),
+            ],
         ]
     )
 

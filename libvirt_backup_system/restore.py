@@ -1,5 +1,3 @@
-"""Restore a backup run identified by ``(vm-uuid, timestamp)``."""
-
 from __future__ import annotations
 
 import shutil
@@ -46,19 +44,27 @@ def _match_row(
     config: Config, vm_uuid: str, timestamp: str, host_id: str | None = None, run_id: str | None = None
 ) -> BackupRow | None:
     result = enumerate_backups_result(config, vm_uuid=vm_uuid)
-    if not result.ok:
-        event("error", "restore backup enumeration incomplete", vm_uuid=vm_uuid, timestamp=timestamp)
+    matches = [
+        row
+        for row in result.rows
+        if row.timestamp == timestamp
+        and (host_id is None or row.host_id == host_id)
+        and (run_id is None or row.run_id == run_id)
+    ]
+    log_context = {"vm_uuid": vm_uuid, "timestamp": timestamp}
+    if host_id is not None and host_id in result.failed_host_ids:
+        event("error", "selected restore source repo unavailable", host_id=host_id, **log_context)
         return None
-    matches = [row for row in result.rows if row.timestamp == timestamp]
-    if host_id is not None:
-        matches = [row for row in matches if row.host_id == host_id]
-    if run_id is not None:
-        matches = [row for row in matches if row.run_id == run_id]
+    if not result.ok and not result.failed_host_ids:
+        event("error", "restore backup enumeration incomplete", **log_context)
+        return None
     if len(matches) == 1:
         return matches[0]
     if not matches:
+        if not result.ok:
+            event("error", "restore backup enumeration incomplete", **log_context)
         return None
-    event("error", "restore timestamp matched multiple backups", vm_uuid=vm_uuid, timestamp=timestamp)
+    event("error", "restore timestamp matched multiple backups", **log_context)
     return None
 
 
@@ -163,15 +169,12 @@ def _materialize_disks(ctx: _RestoreContext, config: Config, dest_map: dict[str,
 
 
 def _turnkey_dest_map(manifest: Manifest, staging: Path) -> dict[str, Path]:
-    """Per-disk destination paths for the turnkey branch: under ``staging``."""
     return {disk.target: staging / _turnkey_disk_filename(disk.target) for disk in manifest.disks}
 
 
 def _turnkey_disk_filename(target: str) -> str:
     safe_target = target.replace("/", "_")
-    if safe_target in {"", ".", ".."}:
-        safe_target = "disk"
-    return f"{safe_target}.qcow2"
+    return f"{'disk' if safe_target in {'', '.', '..'} else safe_target}.qcow2"
 
 
 def _rewrite_domain_disk_sources(domain_xml: str, dest_map: dict[str, Path]) -> str:
@@ -275,14 +278,11 @@ def restore(
     if row is None:
         event("error", "restore found no backup matching uuid and timestamp", vm_uuid=vm_uuid, timestamp=timestamp)
         return 1
-    staging_root = _ensure_staging_root(config)
-    if staging_root is None:
+    if (staging_root := _ensure_staging_root(config)) is None:
         return 1
-    staging = _prepare_staging(staging_root, vm_uuid, timestamp)
-    if staging is None:
+    if (staging := _prepare_staging(staging_root, vm_uuid, timestamp)) is None:
         return 1
-    manifest = _restore_manifest(config, row, staging)
-    if manifest is None:
+    if (manifest := _restore_manifest(config, row, staging)) is None:
         return 1
     if not _manifest_matches_request(manifest, row, vm_uuid, timestamp):
         return 1
@@ -290,11 +290,9 @@ def restore(
         event("error", "manifest carries unsafe vm name", vm_name=manifest.vm_name)
         return 1
     ctx = _RestoreContext(row=row, manifest=manifest, staging=staging, verbose=verbose)
-    local_name = _local_domain_name_for_uuid(config, vm_uuid)
-    same_host = row.host_id == config.get("HOST_ID")
-    if same_host and local_name is not None:
+    if (
+        row.host_id == config.get("HOST_ID")
+        and (local_name := _local_domain_name_for_uuid(config, vm_uuid)) is not None
+    ):
         return _restore_overwrite(config, ctx, local_name)
     return _restore_turnkey(config, ctx)
-
-
-__all__ = ["RESTORE_STAGING_DIR", "restore"]

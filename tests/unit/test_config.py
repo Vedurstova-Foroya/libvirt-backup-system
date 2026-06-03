@@ -52,6 +52,7 @@ BROKEN
     assert "BACKUP_COMPRESS" not in rendered
     assert "BACKUP_RETENTION_MONTHS" not in rendered
     assert "BACKUP_CLEANUP_ON_RUN" not in rendered
+    assert "BACKUP_INCREMENTAL_MULTIPLIER" not in rendered
 
 
 def test_config_helpers(tmp_path: Path, monkeypatch) -> None:

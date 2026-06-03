@@ -92,8 +92,9 @@ def _check_runtime_state(root: Path) -> list[str]:
         active = _systemctl_value(timer, "ActiveState")
         if active != "active":
             failures.append(f"timer not active: {timer} ActiveState={active or 'unknown'}")
-    if _systemctl_value(RUN_UNIT_NAME, "NeedDaemonReload") == "yes":
-        failures.append(f"systemd needs daemon-reload: {RUN_UNIT_NAME} cached unit is stale; run start")
+    for unit in DOCTOR_UNIT_NAMES:
+        if _systemctl_value(unit, "NeedDaemonReload") == "yes":
+            failures.append(f"systemd needs daemon-reload: {unit} cached unit is stale; run start")
     last_result = _systemctl_value(RUN_UNIT_NAME, "Result")
     last_trigger = _systemctl_value(TIMER_UNIT_NAME, "LastTriggerUSec")
     next_elapse = _systemctl_value(TIMER_UNIT_NAME, "NextElapseUSecRealtime")

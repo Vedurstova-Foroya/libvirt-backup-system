@@ -156,13 +156,6 @@ def test_validate_floats_flags_non_finite_value(tmp_path: Path) -> None:
     assert any("must be a finite number" in failure for failure in failures)
 
 
-def test_validate_floats_flags_zero_multiplier(tmp_path: Path) -> None:
-    cfg = make_config(tmp_path)
-    cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = "0"
-    failures = preflight._validate_floats(cfg)
-    assert any("BACKUP_INCREMENTAL_MULTIPLIER must be greater than 0" in failure for failure in failures)
-
-
 def test_validate_floats_flags_negative_other(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "-1"

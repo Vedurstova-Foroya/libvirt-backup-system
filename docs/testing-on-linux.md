@@ -222,6 +222,12 @@ hosted or nightly CI gate that runs the suite with `--require-real-kvm`:
 uv run --locked --extra dev python -m tests.e2e --require-real-kvm
 ```
 
+The repository gate has the same hard-fail mode for the real-KVM lane:
+
+```bash
+uv run --locked --extra dev python -m tools.gates --require-real-kvm
+```
+
 That flag turns SKIP-on-missing-capability into a hard failure, so a CI host
 that lost `/dev/kvm` or its libvirt/kopia tooling cannot silently pass a build
 that depends on real backup-engine behavior. Once the capability probe succeeds

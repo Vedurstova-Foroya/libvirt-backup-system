@@ -20,7 +20,6 @@ def _cfg(tmp_path: Path) -> Config:
             "BACKUP_PATH": str(tmp_path / "b"),
             "HOST_ID": "h",
             "BACKUP_ESTIMATE_GB_PER_VM": "1",
-            "BACKUP_INCREMENTAL_MULTIPLIER": "1.2",
             "SPACE_MARGIN_PERCENT": "20",
             "LIBVIRT_URI": "qemu:///system",
         }
@@ -102,13 +101,15 @@ def test_vm_estimated_bytes_uses_fallback_when_qemu_img_fails(
 def test_estimate_required_kb_handles_invalid_floats(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = "not-a-float"
-    assert preflight_estimate.estimate_required_kb(cfg, []) == 0
+    vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    assert preflight_estimate.estimate_required_kb(cfg, [vm]) == 0
 
 
 def test_estimate_required_kb_handles_nonfinite(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    cfg.values["BACKUP_INCREMENTAL_MULTIPLIER"] = str(math.inf)
-    assert preflight_estimate.estimate_required_kb(cfg, []) == 0
+    cfg.values["BACKUP_ESTIMATE_GB_PER_VM"] = str(math.inf)
+    vm = VM("a", "running", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    assert preflight_estimate.estimate_required_kb(cfg, [vm]) == 0
 
 
 def test_estimate_required_kb_zero_when_no_vms(tmp_path: Path) -> None:
@@ -139,7 +140,7 @@ def test_estimate_required_kb_counts_selected_vms_without_meta_snapshots(
         lambda uri, vm, fb: seen.append(vm.name) or 1024 * 1024 * 1024,
     )
     out = preflight_estimate.estimate_required_kb(cfg, [new_vm, old_vm])
-    assert out > 1_000_000
+    assert out == 1_258_291
     assert seen == ["new"]
 
 
@@ -166,5 +167,5 @@ def test_estimate_required_kb_scales_with_vms(monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr(preflight_estimate.kopia_repo, "local_repo_exists", lambda _cfg: False)
     monkeypatch.setattr(preflight_estimate, "vm_estimated_bytes", lambda uri, vm, fb: 1024 * 1024 * 1024)
     out = preflight_estimate.estimate_required_kb(cfg, [VM("a", "running", "a" * 8 + "-aaaa-aaaa-aaaa-aaaaaaaaaaaa")])
-    # 1 GiB * 1.2 * 1.20 = 1.44 GiB → 1509949.44 KiB → int() = 1509949 + margin
-    assert out > 1_000_000
+    # 1 GiB plus the default 20% SPACE_MARGIN_PERCENT, with no chain-era multiplier.
+    assert out == 1_258_291

@@ -3,9 +3,20 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from . import kopia_repo
 from .config import Config, prefixed
 from .fish_completion import remove_fish_completion
 from .logging_json import event
+from .shell import configure_default_timeout
+from .systemd_units import (
+    MAINTENANCE_FULL_TIMER_NAME,
+    MAINTENANCE_FULL_UNIT_NAME,
+    MAINTENANCE_TIMER_NAME,
+    MAINTENANCE_UNIT_NAME,
+    VERIFY_TIMER_NAME,
+    VERIFY_UNIT_NAME,
+    run_systemctl,
+)
 
 KOPIA_SYSTEMD_UNITS = (
     "libvirt-backup-system-maintenance.service",
@@ -60,6 +71,61 @@ def remove_stale_kopia_units(systemd_dir: Path) -> bool:
             event("error", "failed to remove stale systemd unit", path=str(path), error=str(exc))
             ok = False
     return ok
+
+
+def uninstall_locked(
+    root: Path,
+    cfg: Config,
+    *,
+    purge_config: bool,
+    purge_state: bool,
+    purge_logs: bool,
+) -> int:
+    try:
+        configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
+    except ValueError as exc:
+        event("warning", "invalid command timeout; uninstall continuing with default", error=str(exc))
+    ok = run_systemctl(
+        root,
+        [
+            ["systemctl", "disable", "--now", "libvirt-backup-system.timer"],
+            ["systemctl", "stop", "libvirt-backup-system.service"],
+            ["systemctl", "disable", "--now", MAINTENANCE_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_UNIT_NAME],
+            ["systemctl", "disable", "--now", MAINTENANCE_FULL_TIMER_NAME],
+            ["systemctl", "stop", MAINTENANCE_FULL_UNIT_NAME],
+            ["systemctl", "disable", "--now", VERIFY_TIMER_NAME],
+            ["systemctl", "stop", VERIFY_UNIT_NAME],
+        ],
+    )
+    ok = remove_installed_files(root) and ok
+    flags = {"config": purge_config, "state": purge_state, "logs": purge_logs}
+    ok = (
+        purge_paths(
+            resolve_purge_paths(root, cfg, flags),
+            preserve_paths=resolve_purge_preserve_paths(root, cfg, flags),
+        )
+        and ok
+    )
+    ok = run_systemctl(root, [["systemctl", "daemon-reload"]]) and ok
+    print_kopia_repo_retention_hint(cfg)
+    return 0 if ok else 1
+
+
+def print_kopia_repo_retention_hint(cfg: Config) -> None:
+    backup_path = cfg.get("BACKUP_PATH").strip()
+    if not backup_path:
+        return
+    try:
+        repo_path = kopia_repo.local_repo_path(cfg)
+    except ValueError:
+        return
+    event(
+        "info",
+        "kopia repo retained",
+        path=str(repo_path),
+        hint=f"rm -rf {repo_path} to delete backups",
+    )
 
 
 def resolve_purge_paths(root: Path, cfg: Config, flags: dict[str, bool]) -> list[Path]:

@@ -197,7 +197,6 @@ def _cfg(tmp_path: Path) -> Config:
             "BACKUP_PATH": str(tmp_path / "b"),
             "HOST_ID": "h",
             "BACKUP_ESTIMATE_GB_PER_VM": "1",
-            "BACKUP_INCREMENTAL_MULTIPLIER": "1.2",
             "SPACE_MARGIN_PERCENT": "20",
             "LIBVIRT_URI": "qemu:///system",
         }

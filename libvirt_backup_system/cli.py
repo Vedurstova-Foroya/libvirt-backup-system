@@ -17,7 +17,7 @@ from .doctor import doctor
 from .installer import install, uninstall
 from .installer_password import change_password as _change_password_impl
 from .kopia_client import KOPIA_BINARY, build_kopia_env
-from .list_restore_points import enumerate_backups_result, format_json, list_restore_points
+from .list_restore_points import enumerate_backups_result, format_json, list_restore_points, only_local_repo_failed
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
 from .paths import runtime_backup_path_ok
@@ -75,7 +75,7 @@ def _list_restore_points_command(config: Config, *, json_output: bool = False) -
             if not runtime_backup_path_ok(config):
                 return 1
             result = enumerate_backups_result(config)
-            if not result.ok:
+            if not result.ok and not only_local_repo_failed(config, result):
                 return 1
         print(format_json(result.rows))
         return 0
