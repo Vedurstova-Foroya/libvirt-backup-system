@@ -7,13 +7,14 @@ construction boilerplate. Importable from the ``tests.unit`` package.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import Any
 
 from libvirt_backup_system.config import Config
 from libvirt_backup_system.list_restore_points import BackupEnumeration, BackupRow
 from libvirt_backup_system.manifest import Manifest, ManifestDisk
-from libvirt_backup_system.shell import CommandResult
+from libvirt_backup_system.shell import CommandError, CommandResult
 
 from .conftest import ALPHA_UUID
 
@@ -93,18 +94,17 @@ class KopiaProc:
         self.returncode = returncode
         self.waited = False
 
-        class _Stdout:
+        class _Stdout(io.BytesIO):
             def __init__(self) -> None:
-                self.closed = False
-
-            def close(self) -> None:
-                self.closed = True
+                super().__init__(b"raw")
 
         self.stdout: Any = _Stdout() if with_stdout else None
 
     def wait(self, timeout: float | None = None) -> None:
         _ = timeout
         self.waited = True
+        if self.returncode is None:
+            self.returncode = 0
 
     def poll(self) -> int | None:
         return self.returncode
@@ -174,13 +174,15 @@ def run_stream(
     """Wire up ``_stream_disk_to_qcow2`` with stub kopia + qemu processes."""
     from libvirt_backup_system import kopia_snapshots, restore_io
 
-    def fake_restore_to_stdout(**kwargs: Any) -> KopiaProc:
-        stderr = kwargs.get("stderr")
-        if stderr is not None:
-            stderr.write(b"kopia stderr")
-        return kopia
+    def fake_restore_to_path(**kwargs: Any) -> None:
+        kopia.wait()
+        if kopia.stdout is not None:
+            kopia.stdout.close()
+        if kopia.returncode:
+            raise CommandError(CommandResult(["kopia"], kopia.returncode, "", "kopia stderr"))
+        kwargs["dest"].write_bytes(b"raw")
 
-    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_stdout", fake_restore_to_stdout)
+    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_path", fake_restore_to_path)
     monkeypatch.setattr(restore_io.subprocess, "Popen", popen)
     return restore_module._stream_disk_to_qcow2(
         make_config(tmp_path), make_row(tmp_path), "s", "vda.raw", tmp_path / "vda.qcow2"

@@ -25,17 +25,20 @@ sudo apt install -y libvirt-clients qemu-utils
 
 ### Bundled binary install
 
-On first install the orchestrator fetches a pinned `kopia` tarball from
-the upstream GitHub release page and a pinned `libnbd-bin` (plus
-`libnbd0`) `.deb` from the Debian archive, sha256-verifies each artifact
-against a constant baked into `libvirt_backup_system/installer_binaries.py`,
-and installs them via an atomic move (`kopia` to `/usr/local/bin/kopia`)
-and `dpkg -i` (with `apt-get install -f` fallback for `libnbd-bin`). The
-step is idempotent: if `kopia --version` already reports the pinned
-version and `nbdcopy --version` runs successfully, the install skips the
-network round-trip entirely. Bumping the pinned versions is a deliberate
-operator action — the matching sha256 must be refreshed in the same
-commit.
+On first install the orchestrator uses the vendored pinned `kopia` tarball
+under `libvirt_backup_system/vendor/kopia/`, sha256-verifies it against the
+constant in `libvirt_backup_system/kopia_vendor.py`, and installs it via an
+atomic move to `/usr/local/bin/kopia`. If the vendored tarball is absent, it
+falls back to downloading the same pinned upstream release asset.
+
+The installer also fetches pinned `libnbd-bin` and `libnbd0` `.deb` artifacts
+from the Debian archive, sha256-verifies them against constants baked into
+`libvirt_backup_system/installer_binaries.py`, and installs them with
+`dpkg -i` (with `apt-get install -f` fallback). The step is idempotent: if
+`kopia --version` already reports the pinned version and `nbdcopy --version`
+runs successfully, the install skips unnecessary work. Bumping the pinned
+versions is a deliberate operator action — the matching sha256 and vendored
+artifact must be refreshed in the same commit.
 
 After installing this project, run `sudo libvirt-backup-system check` to
 confirm every required binary resolves before relying on scheduled backups.
@@ -71,6 +74,23 @@ every host. The exact same install command runs everywhere:
 ```sh
 export KOPIA_PW='<shared-password-from-vault>'
 sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
+     python3 -m libvirt_backup_system install \
+     --kopia-password-env KOPIA_PW \
+     --acknowledge-password-loss
+```
+
+For a local or lab path that is not a mounted filesystem, write
+`BACKUP_REQUIRE_NFS_MOUNT=false` to the env file before running `install`.
+Passing it only through `sudo env ... install` is ignored at install time.
+
+```sh
+export BACKUP_PATH=/home/admin/pro/vms/backups
+export KOPIA_PW='<shared-password-from-vault>'
+sudo install -d -m 0755 /etc/libvirt-backup-system
+sudo sh -c \
+     'printf "BACKUP_PATH=%s\nBACKUP_REQUIRE_NFS_MOUNT=false\n" "$1" > /etc/libvirt-backup-system/libvirt-backup.env' \
+     sh "$BACKUP_PATH"
+sudo env KOPIA_PW="$KOPIA_PW" \
      python3 -m libvirt_backup_system install \
      --kopia-password-env KOPIA_PW \
      --acknowledge-password-loss

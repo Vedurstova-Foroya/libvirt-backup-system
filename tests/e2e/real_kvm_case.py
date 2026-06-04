@@ -11,6 +11,8 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
+from libvirt_backup_system.kopia_vendor import KopiaVendorError, ensure_vendored_kopia_on_path
+
 ROOT = Path(__file__).resolve().parents[2]
 SESSION_URI = "qemu:///session"
 PROBE_BINARIES = ("virsh", "qemu-img", "qemu-nbd", "nbdcopy", "kopia")
@@ -26,6 +28,10 @@ def real_kvm_skip_reason() -> str | None:
         return "/dev/kvm is missing"
     if not os.access("/dev/kvm", os.R_OK | os.W_OK):
         return "/dev/kvm is not readable+writable by the current user"
+    try:
+        ensure_vendored_kopia_on_path()
+    except KopiaVendorError as exc:
+        return f"vendored kopia is unusable: {exc}"
     for binary in PROBE_BINARIES:
         if not shutil.which(binary):
             return f"required binary missing: {binary}"
@@ -136,7 +142,7 @@ class _KopiaCtx:
         if proc.returncode != 0:
             raise AssertionError(f"kopia snapshot list failed: {proc.stderr}")
         parsed = json.loads(proc.stdout or "[]")
-        return sum(1 for r in parsed if all(r.get("tags", {}).get(k) == v for k, v in tags.items()))
+        return sum(1 for r in parsed if all(r.get("tags", {}).get(f"tag:{k}") == v for k, v in tags.items()))
 
 
 def _assert_repo_layout(backup_path: Path) -> Path:
@@ -256,6 +262,7 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
 
     # Retention pruning must evict older snapshots after maintenance.
     ctx.kopia("policy", "set", "--global", "--keep-latest=1")
+    ctx.kopia("snapshot", "expire", "--all", "--delete")
     ctx.kopia("maintenance", "run", "--safety=none", "--full")
     after_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "meta"})
     after_disk_prune = ctx.snapshot_count({"vm-uuid": running_uuid, "kind": "disk", "disk": "vda"})

@@ -11,10 +11,10 @@ import pytest
 
 from libvirt_backup_system import installer_binaries
 from libvirt_backup_system.installer_binaries import (
-    KOPIA_TAR_ROOT,
     BinaryInstallError,
     install_kopia,
 )
+from libvirt_backup_system.kopia_vendor import KOPIA_TAR_ROOT
 from libvirt_backup_system.shell import CommandError, CommandResult
 
 
@@ -60,6 +60,11 @@ def _pin_kopia_sha256(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
 def _pin_libnbd_sha256(monkeypatch: pytest.MonkeyPatch, libnbd0: bytes, libnbd_bin: bytes) -> None:
     monkeypatch.setattr(installer_binaries, "LIBNBD0_SHA256", hashlib.sha256(libnbd0).hexdigest())
     monkeypatch.setattr(installer_binaries, "LIBNBD_BIN_SHA256", hashlib.sha256(libnbd_bin).hexdigest())
+
+
+@pytest.fixture(autouse=True)
+def _disable_vendored_kopia(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(installer_binaries, "vendored_kopia_tarball_bytes", lambda: None)
 
 
 # --- install_kopia ----------------------------------------------------------
@@ -133,6 +138,19 @@ def test_install_kopia_reinstalls_when_version_mismatches(tmp_path: Path, monkey
     install_kopia(prefix=tmp_path)
 
     assert kopia_path.read_text(encoding="utf-8").startswith("#!/bin/sh")
+
+
+def test_fetch_pinned_prefers_vendored_kopia(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = b"vendored"
+    monkeypatch.setattr(installer_binaries, "vendored_kopia_tarball_bytes", lambda: payload)
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer_binaries.urllib.request.urlopen",
+        lambda _url: pytest.fail("download must not run when vendored kopia exists"),
+    )
+
+    pin = installer_binaries._BinaryPin(name="kopia", url="https://example.invalid/kopia.tgz", sha256="sha")
+
+    assert installer_binaries._fetch_pinned(pin) == payload
 
 
 def test_install_kopia_treats_failed_version_probe_as_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

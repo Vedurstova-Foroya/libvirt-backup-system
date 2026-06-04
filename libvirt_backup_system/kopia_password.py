@@ -2,9 +2,9 @@
 
 The same shared password lives on every host that participates in the
 backup tree, written atomically to ``$KOPIA_PASSWORD_FILE`` (mode 600,
-root-owned). Operators supply it on install via one of three flag forms
-so the secret can either be passed inline or fed in via stdin (the path
-config-management uses).
+root-owned in production root installs). Operators supply it on install
+via one of three flag forms so the secret can either be passed inline or
+fed in via stdin (the path config-management uses).
 """
 
 from __future__ import annotations
@@ -101,9 +101,16 @@ def password_file_security_failure(path: Path, *, label: str = "kopia password f
     if mode != 0o600:
         return f"{label} must be mode 600 (is {oct(mode)}): {path}"
     uid = getattr(info, "st_uid", None)
-    if uid is not None and uid != 0:
-        return f"{label} must be owned by root (is uid {uid}): {path}"
+    if uid is not None and uid not in _allowed_password_owner_uids():
+        return f"{label} must be owned by root or the current user (is uid {uid}): {path}"
     return None
+
+
+def _allowed_password_owner_uids() -> set[int]:
+    if not hasattr(os, "geteuid"):
+        return {0}
+    euid = os.geteuid()
+    return {0} if euid == 0 else {0, euid}
 
 
 def read_secure_password_file(path: Path) -> str:
@@ -124,7 +131,7 @@ def read_secure_password_file(path: Path) -> str:
 
 
 def write_password_file(config: Config, value: str) -> None:
-    """Atomically write the password file mode 600, root-owned."""
+    """Atomically write the password file mode 600 with a trusted owner."""
     from . import kopia_repo
 
     if not value:

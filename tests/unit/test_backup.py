@@ -272,11 +272,11 @@ def test_backup_vm_commits_when_stream_spawn_raises_oserror(
 
 def test_backup_vm_uses_default_snapper_when_none(monkeypatch: pytest.MonkeyPatch, backup_config: Config) -> None:
     _install_stubs(monkeypatch)
-    instantiated: list[str] = []
+    instantiated: list[tuple[str, object]] = []
 
     class FakeDefault(FakeSnapper):
-        def __init__(self, libvirt_uri: str, **_: object) -> None:
-            instantiated.append(libvirt_uri)
+        def __init__(self, libvirt_uri: str, **kwargs: object) -> None:
+            instantiated.append((libvirt_uri, kwargs["socket_root"]))
             super().__init__(disks=[_disk_target()])
 
     # When no snapper is injected, ``backup_vm`` constructs one from
@@ -284,7 +284,7 @@ def test_backup_vm_uses_default_snapper_when_none(monkeypatch: pytest.MonkeyPatc
     # that fallback while keeping the streaming path off virsh/qemu-nbd.
     monkeypatch.setattr(backup, "LibvirtSnapshotter", FakeDefault)
     assert backup.backup_vm(backup_config, _vm()) is True
-    assert instantiated  # at least the orchestrator's fallback used the default
+    assert instantiated == [(backup_config.get("LIBVIRT_URI"), backup_config.prefix / "var/lib/libvirt/qemu")]
 
 
 def test_backup_vm_rejects_disk_info_failure_before_manifest(

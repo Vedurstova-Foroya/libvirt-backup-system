@@ -137,13 +137,11 @@ def test_policy_set_global_emits_only_supplied_flags(tmp_path: Path, monkeypatch
         keep_latest=8,
         keep_daily=30,
         compression="zstd-fastest",
-        splitter="FIXED-4M",
     )
     args, _ = captured[0]
     assert "--keep-latest" in args and "8" in args
     assert "--keep-daily" in args and "30" in args
     assert "--compression" in args and "zstd-fastest" in args
-    assert "--splitter" in args and "FIXED-4M" in args
     assert "--keep-hourly" not in args
 
 

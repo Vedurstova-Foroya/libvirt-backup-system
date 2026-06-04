@@ -18,6 +18,22 @@ sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
      --acknowledge-password-loss
 ```
 
+For a local or lab path that is not a mounted filesystem, put the mount-check
+setting in the env file before running `install`:
+
+```sh
+export BACKUP_PATH=/home/admin/pro/vms/backups
+export KOPIA_PW='<shared-password-from-vault>'
+sudo install -d -m 0755 /etc/libvirt-backup-system
+sudo sh -c \
+     'printf "BACKUP_PATH=%s\nBACKUP_REQUIRE_NFS_MOUNT=false\n" "$1" > /etc/libvirt-backup-system/libvirt-backup.env' \
+     sh "$BACKUP_PATH"
+sudo env KOPIA_PW="$KOPIA_PW" \
+     python3 -m libvirt_backup_system install \
+     --kopia-password-env KOPIA_PW \
+     --acknowledge-password-loss
+```
+
 Then verify the install, activate the schedules, and run a health check:
 
 ```sh
@@ -87,6 +103,7 @@ default `7d`) checks the local repo on its own cadence.
 - [Install and prerequisites](docs/install.md)
 - [Configuration reference](docs/env-vars.md)
 - [Command reference](docs/commands.md)
-- [Kopia repo layout, password recovery, manual operations](docs/kopia.md)
+- [Kopia repo layout, manual operations](docs/kopia.md)
+- [Kopia password handling, rotation, and recovery](docs/kopia-password.md)
 - [Manual restore process](docs/manual-restore.md)
 - [Testing on Linux](docs/testing-on-linux.md)

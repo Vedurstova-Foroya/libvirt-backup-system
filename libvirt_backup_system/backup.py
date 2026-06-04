@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import cast
 
 from . import backup_cleanup, kopia_repo, kopia_snapshots
-from .config import Config
+from .config import Config, prefixed
 from .logging_json import event
 from .manifest import Manifest, ManifestDisk, snapshot_filename_for_target, utc_timestamp
 from .paths import backup_root, runtime_backup_path_ok
@@ -154,7 +154,9 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
     if not runtime_backup_path_ok(config):
         return False
     snapper_obj: VmSnapshotter = snapper or LibvirtSnapshotter(
-        config.get("LIBVIRT_URI"), command_timeout_seconds=int(config.get("COMMAND_TIMEOUT_SECONDS"))
+        config.get("LIBVIRT_URI"),
+        socket_root=prefixed("/var/lib/libvirt/qemu", config.prefix),
+        command_timeout_seconds=int(config.get("COMMAND_TIMEOUT_SECONDS")),
     )
     run_id = str(uuid.uuid4())
     stamp = utc_timestamp()

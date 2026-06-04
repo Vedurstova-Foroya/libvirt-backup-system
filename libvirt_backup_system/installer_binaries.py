@@ -33,6 +33,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import prefixed
+from .kopia_vendor import (
+    KOPIA_SHA256,
+    KOPIA_URL,
+    KOPIA_VERSION,
+    KopiaVendorError,
+    vendored_kopia_tarball_bytes,
+)
+from .kopia_vendor import extract_kopia_binary as _extract_kopia_binary
 from .logging_json import event
 from .shell import CommandError, run
 
@@ -41,19 +49,6 @@ from .shell import CommandError, run
 # Bumping any of these constants is a deliberate operator action — the
 # matching sha256 MUST be refreshed in the same commit. The doc comment on
 # each block names the upstream source so the next bump knows where to look.
-
-# Kopia tarball, published as a GitHub release asset.
-# Source: https://github.com/kopia/kopia/releases/tag/v0.17.0
-KOPIA_VERSION = "0.17.0"
-KOPIA_URL = (
-    f"https://github.com/kopia/kopia/releases/download/v{KOPIA_VERSION}/" f"kopia-{KOPIA_VERSION}-linux-x64.tar.gz"
-)
-# sha256 pulled from the upstream checksums.txt for v0.17.0
-# (https://github.com/kopia/kopia/releases/download/v0.17.0/checksums.txt).
-# Refresh in the same commit as any KOPIA_VERSION bump.
-KOPIA_SHA256 = "6851bba9f49c2ca2cabc5bec85a813149a180472d1e338fad42a8285dad047ee"
-# Top-level directory inside the tarball.
-KOPIA_TAR_ROOT = f"kopia-{KOPIA_VERSION}-linux-x64"
 
 # libnbd-bin .deb from the Debian "bookworm" archive (the OS the system
 # targets per docs/install.md). Version 1.14.2-1 is the bookworm pin
@@ -108,6 +103,11 @@ def _verify_sha256(data: bytes, expected: str, *, source: str) -> None:
 
 
 def _fetch_pinned(pin: _BinaryPin) -> bytes:
+    if pin.name == "kopia":
+        vendored = vendored_kopia_tarball_bytes()
+        if vendored is not None:
+            event("info", "using vendored pinned binary", name=pin.name, sha256=pin.sha256)
+            return vendored
     event("info", "downloading pinned binary", name=pin.name, url=pin.url)
     data = _download(pin.url)
     _verify_sha256(data, pin.sha256, source=pin.url)
@@ -128,39 +128,6 @@ def _kopia_installed_version(kopia_path: Path) -> str | None:
     # ``kopia --version`` prints e.g. "0.17.0 build: abcd from: ...".
     parts = result.stdout.strip().split()
     return parts[0] if parts else None
-
-
-def _extract_kopia_binary(tarball_bytes: bytes, dest: Path) -> None:
-    """Extract the ``kopia`` binary from the in-memory tarball into ``dest``.
-
-    Writes through a tempfile + atomic rename so a crash mid-extract cannot
-    leave a half-written binary in place.
-    """
-    member_name = f"{KOPIA_TAR_ROOT}/kopia"
-    with tempfile.TemporaryDirectory(prefix="kopia-install-") as tmp_dir:
-        tmp_dir_path = Path(tmp_dir)
-        tarball_path = tmp_dir_path / "kopia.tar.gz"
-        tarball_path.write_bytes(tarball_bytes)
-        with tarfile.open(tarball_path, "r:gz") as tar:
-            try:
-                member = tar.getmember(member_name)
-            except KeyError as exc:
-                raise BinaryInstallError(
-                    f"kopia tarball does not contain {member_name}; the upstream layout changed"
-                ) from exc
-            extracted = tmp_dir_path / "kopia"
-            src = tar.extractfile(member)
-            if src is None:  # pragma: no cover - defensive: kopia is a regular file
-                raise BinaryInstallError(f"could not read {member_name} from kopia tarball")
-            try:
-                extracted.write_bytes(src.read())
-            finally:
-                src.close()
-        extracted.chmod(0o755)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        # Move into place atomically. shutil.move handles the cross-fs case
-        # by falling back to copy+unlink.
-        shutil.move(str(extracted), str(dest))
 
 
 def install_kopia(prefix: Path | None = None) -> None:
@@ -184,7 +151,7 @@ def install_kopia(prefix: Path | None = None) -> None:
     tarball_bytes = _fetch_pinned(pin)
     try:
         _extract_kopia_binary(tarball_bytes, kopia_path)
-    except (OSError, tarfile.TarError) as exc:
+    except (OSError, tarfile.TarError, KopiaVendorError) as exc:
         raise BinaryInstallError(f"failed to extract kopia tarball: {exc}") from exc
     event("info", "installed kopia", path=str(kopia_path), version=KOPIA_VERSION)
 

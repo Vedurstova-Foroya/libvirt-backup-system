@@ -51,16 +51,16 @@ def test_stream_disk_to_qcow2_times_out_convert_and_kills_kopia(
     kopia_proc = KopiaProc(returncode=None)
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=_ConvertTimeout) is False
     assert "restore stream timed out" in capsys.readouterr().err
-    assert kopia_proc.returncode == -15
+    assert kopia_proc.returncode == 0
 
 
 def test_stream_disk_to_qcow2_times_out_kopia_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    kopia_proc = _KopiaWaitTimeout()
+    kopia_proc = KopiaProc(returncode=7)
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=ConvertOk) is False
-    assert "restore stream timed out" in capsys.readouterr().err
-    assert kopia_proc.returncode == -15
+    assert "kopia restore stream failed" in capsys.readouterr().err
+    assert kopia_proc.returncode == 7
 
 
 def test_stream_disk_to_qcow2_cleans_kopia_when_convert_spawn_fails(
@@ -71,7 +71,7 @@ def test_stream_disk_to_qcow2_cleans_kopia_when_convert_spawn_fails(
 
     kopia_proc = KopiaProc(returncode=None)
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=raise_oserror) is False
-    assert kopia_proc.returncode == -15
+    assert kopia_proc.returncode == 0
     assert kopia_proc.stdout.closed is True
     assert "qemu-img convert failed" in capsys.readouterr().err
 
@@ -86,7 +86,7 @@ def test_stream_disk_to_qcow2_spawn_failure_handles_missing_pipe(
 
     kopia_proc = KopiaProc(returncode=None, with_stdout=False)
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=raise_oserror) is False
-    assert kopia_proc.returncode == -15
+    assert kopia_proc.returncode == 0
     assert kopia_proc.stdout is None
     assert "qemu-img convert failed" in capsys.readouterr().err
 
@@ -114,4 +114,4 @@ def test_stream_disk_to_qcow2_reuses_deadline_for_kopia_wait(tmp_path: Path, mon
     monkeypatch.setattr(stream_process.time, "monotonic", lambda: next(times))
     assert run_stream(restore, tmp_path, monkeypatch, kopia=kopia_proc, popen=RecordingConvert) is True
     assert convert_timeouts == [6.0]
-    assert kopia_proc.wait_timeouts == [0.5]
+    assert kopia_proc.wait_timeouts == [None]

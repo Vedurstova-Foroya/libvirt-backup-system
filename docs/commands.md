@@ -50,8 +50,8 @@ sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-pass
 
 Run the same command on every host. Order does not matter; each host rotates
 its own local repo independently. `doctor` flags any host still holding the
-old value. See [Kopia operations](kopia.md#password-rotation) for the full
-recovery procedure.
+old value. See [Kopia password handling](kopia-password.md#password-rotation)
+for the full recovery procedure.
 
 Kopia's documented noninteractive rotation flag is
 `repository change-password --new-password=...`. The wrapper can read the

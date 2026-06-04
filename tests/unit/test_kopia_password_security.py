@@ -87,6 +87,12 @@ def test_read_secure_password_file_oserror_on_lstat_then_security_failure(
         kopia_password.read_secure_password_file(pw)
 
 
+def test_allowed_password_owner_uids_without_geteuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(kopia_password.os, "geteuid")
+
+    assert kopia_password._allowed_password_owner_uids() == {0}
+
+
 # --- write_password_file: security-failure cleanup (lines 151-152) ----------
 
 

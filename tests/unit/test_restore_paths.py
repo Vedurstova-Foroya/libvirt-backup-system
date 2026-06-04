@@ -21,7 +21,6 @@ from .conftest import ALPHA_UUID
 from .restore_helpers import (
     TIMESTAMP,
     ConvertFail,
-    KopiaProc,
     Snap,
     make_config,
     make_manifest,
@@ -32,7 +31,11 @@ from .restore_helpers import (
 
 def _install_meta_writer(monkeypatch: pytest.MonkeyPatch, manifest: Manifest) -> None:
     def writer(**kwargs: Any) -> None:
-        (kwargs["dest"] / MANIFEST_FILENAME).write_text(manifest.to_json(), encoding="utf-8")
+        dest = kwargs["dest"]
+        if dest.suffix == ".raw":
+            dest.write_bytes(b"raw")
+            return
+        (dest / MANIFEST_FILENAME).write_text(manifest.to_json(), encoding="utf-8")
 
     monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_path", writer)
 
@@ -42,7 +45,6 @@ def _install_disk_snapshot(monkeypatch: pytest.MonkeyPatch, *, present: bool = T
 
 
 def _install_stream(monkeypatch: pytest.MonkeyPatch, *, popen: type) -> None:
-    monkeypatch.setattr(kopia_snapshots, "snapshot_restore_to_stdout", lambda **_: KopiaProc())
     monkeypatch.setattr(restore_io.subprocess, "Popen", popen)
 
 

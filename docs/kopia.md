@@ -67,66 +67,8 @@ exists on every participating host. The wrapper reads it via
 `KOPIA_PASSWORD` env-var (not `--password-file`) so the file path never
 appears in `ps` or journald.
 
-### Install-time write
-
-`install --kopia-password*` resolves the value from one of:
-
-```sh
---kopia-password=VALUE              # literal (visible in ps/journald)
---kopia-password-file=/path         # path on disk
---kopia-password-file=-             # stdin (preferred for config-management)
---kopia-password-env=VARNAME        # named env var
---acknowledge-password-loss         # required when writing the password first time
-```
-
-Atomic write + chmod 600 + chown root. Idempotent if the file already
-matches; hard-fails on a mismatch.
-
-### Password rotation
-
-```sh
-sudo libvirt-backup-system change-password --new-kopia-password=<value>
-sudo libvirt-backup-system change-password --new-kopia-password-file=/path
-echo -n "$PW" | sudo libvirt-backup-system change-password --new-kopia-password-file=-
-sudo env NEW_KOPIA_PW=... libvirt-backup-system change-password --new-kopia-password-env=NEW_KOPIA_PW
-```
-
-Per host:
-
-1. Validate the current password file decrypts the local repo.
-2. `kopia repository change-password` rewraps the master key.
-3. Atomically replace the password file with the new value.
-
-Kopia currently documents `--new-password` as the noninteractive input for
-`repository change-password`; it does not document a `--new-password-file`
-or stdin equivalent. The wrapper therefore keeps its own CLI safer for
-operators by accepting `--new-kopia-password-file=-` and env/file sources,
-but the final Kopia subprocess still receives the resolved new password in
-its argv. Avoid running rotation on hosts where untrusted users can inspect
-process arguments.
-
-Run the same command on every host with the same new value. Order does not
-matter — each host rotates its local repo independently. `doctor` flags
-hosts that are out of step (local repo decrypts with the file's password but
-a peer's does not), so partial rotations are visible.
-
-### Recovery from a half-rotated host
-
-If step 3 fails after step 2 succeeds (full disk, etc), the repo decrypts
-only with the new value but the file still holds the old one. The emergency
-recovery log includes the actual old and new password values; treat that log
-line as a secret. Recover by hand:
-
-```sh
-sudo install -m 600 -o root -g root /dev/null /etc/libvirt-backup-system/kopia.pw
-echo -n "<new-password>" | sudo tee /etc/libvirt-backup-system/kopia.pw > /dev/null
-sudo libvirt-backup-system doctor
-```
-
-### Total-loss scenario
-
-If the password is lost on every host, the backups become unreadable. Kopia
-does not have a backdoor. Keep an offsite copy in a secrets vault.
+See [kopia-password.md](kopia-password.md) for install-time write, rotation,
+half-rotation recovery, single-host password loss, and total-loss scenarios.
 
 ## Multi-host cutover
 
@@ -138,7 +80,9 @@ When migrating an existing fleet from the previous (non-kopia) install:
 3. On every host: delete (or move aside) the pre-kopia chain trees under
    `BACKUP_PATH/<host>/<vm-uuid>/<yyyy-mm>/...`. These are leftover artifacts
    from the previous (non-kopia) install and are not read by the new code;
-   leaving them in place only wastes space on the backup share.
+   leaving them in place only wastes space on the backup share. See
+   "Removing pre-kopia chain backups" below for the safe listing / delete
+   commands.
 4. On every host (identical command line):
    ```sh
    sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
@@ -153,6 +97,27 @@ When migrating an existing fleet from the previous (non-kopia) install:
 8. The first scheduled run on each host is a full backup into its own
    fresh repo. Subsequent runs are deduplicated against the existing
    chunks.
+
+### Removing pre-kopia chain backups
+
+The old chain layout was
+`$BACKUP_PATH/<host>/<vm-uuid>/<yyyy-mm>/<chain>/`. The new kopia repo lives
+beside it at `$BACKUP_PATH/<host>/kopia-repo/` — do NOT delete that
+directory. List the legacy trees first, confirm the listing matches your
+expectation, then delete:
+
+```sh
+# dry-run: enumerate legacy chain dirs without touching them
+sudo find "$BACKUP_PATH" -mindepth 3 -maxdepth 3 -type d \
+     -not -path "*/kopia-repo/*" -not -name kopia-repo
+
+# delete after the listing looks right
+sudo find "$BACKUP_PATH" -mindepth 2 -maxdepth 2 -type d \
+     -not -name kopia-repo -exec rm -rf {} +
+```
+
+The `kopia-repo` directories survive both commands because the prune
+clauses exclude them by name.
 
 ## Manual kopia operations
 

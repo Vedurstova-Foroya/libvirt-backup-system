@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-from contextlib import suppress
 from pathlib import Path
 
 from . import kopia_repo, kopia_snapshots
@@ -84,38 +83,33 @@ def _command_timeout(config: Config) -> int:
 def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_in_snap: str, dest: Path) -> bool:
     timeout = _command_timeout(config)
     deadline = command_deadline(timeout)
-    with tempfile.TemporaryFile() as kopia_stderr:
-        kopia_proc = kopia_snapshots.snapshot_restore_to_stdout(
-            config_file=row.config_file,
-            password_file=kopia_repo.password_file_path(config),
-            cache_dir=kopia_repo.cache_dir(config),
-            snapshot_id=snapshot_id,
-            file_in_snapshot=file_in_snap,
-            stderr=kopia_stderr,
-        )
+    with tempfile.TemporaryDirectory(prefix="lbs-restore-") as tmp_dir:
+        raw_path = Path(tmp_dir) / "disk.raw"
+        try:
+            kopia_snapshots.snapshot_restore_to_path(
+                config_file=row.config_file,
+                password_file=kopia_repo.password_file_path(config),
+                cache_dir=kopia_repo.cache_dir(config),
+                snapshot_id=f"{snapshot_id}/{file_in_snap}",
+                dest=raw_path,
+            )
+        except CommandError as exc:
+            event("error", "kopia restore stream failed", target=dest.name, stderr=exc.result.stderr.strip())
+            return False
         try:
             convert = subprocess.Popen(
-                ["qemu-img", "convert", "-f", "raw", "-O", "qcow2", "-S", "4096", "-", str(dest)],
-                stdin=kopia_proc.stdout,
+                ["qemu-img", "convert", "-f", "raw", "-O", "qcow2", "-S", "4096", str(raw_path), str(dest)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
         except OSError as exc:
-            if kopia_proc.stdout is not None:
-                with suppress(OSError):
-                    kopia_proc.stdout.close()
-            terminate_processes(kopia_proc)
             event("error", "qemu-img convert failed", target=dest.name, stderr=str(exc))
             return False
-        if kopia_proc.stdout is not None:
-            with suppress(OSError):
-                kopia_proc.stdout.close()
         try:
             stdout, stderr = convert.communicate(timeout=remaining_timeout(deadline))
-            kopia_proc.wait(timeout=remaining_timeout(deadline))
         except subprocess.TimeoutExpired:
-            terminate_processes(convert, kopia_proc)
+            terminate_processes(convert)
             event(
                 "error",
                 "restore stream timed out",
@@ -124,8 +118,6 @@ def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_
                 stderr=timeout_message("kopia restore/qemu-img convert", timeout),
             )
             return False
-        kopia_stderr.seek(0)
-        kopia_err = kopia_stderr.read()
     if convert.returncode != 0:
         event(
             "error",
@@ -133,15 +125,6 @@ def stream_disk_to_qcow2(config: Config, row: BackupRow, snapshot_id: str, file_
             target=dest.name,
             returncode=convert.returncode,
             stderr=(stderr or b"").decode("utf-8", errors="replace"),
-        )
-        return False
-    if kopia_proc.returncode != 0:
-        event(
-            "error",
-            "kopia restore stream failed",
-            target=dest.name,
-            returncode=kopia_proc.returncode,
-            stderr=(kopia_err or b"").decode("utf-8", errors="replace"),
         )
         return False
     _ = stdout

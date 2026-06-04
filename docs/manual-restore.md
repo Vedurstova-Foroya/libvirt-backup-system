@@ -118,6 +118,23 @@ storage location, edit the manifest's domain XML to point at the new paths
 (or to renumber NIC MACs / change the network if you are running this side-
 by-side with the original), and `virsh define` the XML.
 
+## Overwrite vs turnkey selection
+
+`restore` picks "overwrite" (replace the existing domain's disks in place,
+keep the original XML) iff both:
+
+- the snapshot's `host` tag matches the local `HOST_ID`, and
+- `virsh domname <vm-uuid>` returns a name (the domain is currently defined
+  on this host).
+
+Otherwise it picks "turnkey" (write disks under `RESTORE_STAGING_DIR` and
+define a fresh domain from the manifest XML). The VM's run state is
+irrelevant — an offline-but-still-defined domain takes the overwrite path
+just like a running one. `restore` destroys the domain if it is running and
+refuses to proceed if the post-destroy `domstate` is not `shut off`, so
+overwriting a live VM is safe (it is shut down first) and overwriting an
+offline VM is the no-op part of that same path.
+
 ## When the wrapper is faster
 
 The `restore` subcommand does exactly the steps above with safety rails:

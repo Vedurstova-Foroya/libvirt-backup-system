@@ -78,7 +78,7 @@ def _snapshot_from_json(record: dict[str, object]) -> KopiaSnapshot | None:
         source_path=raw_path,
         start_time=_as_str(record.get("startTime")),
         end_time=_as_str(record.get("endTime")),
-        tags=as_string_string(record.get("tags")),
+        tags={key.removeprefix("tag:"): value for key, value in as_string_string(record.get("tags")).items()},
         root_entry_id=root_id,
     )
 

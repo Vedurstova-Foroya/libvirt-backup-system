@@ -27,7 +27,7 @@ libvirt-backup-system = "libvirt_backup_system.cli:main"
 packages = ["libvirt_backup_system"]
 
 [tool.setuptools.package-data]
-libvirt_backup_system = ["py.typed", "data/*.fish"]
+libvirt_backup_system = ["py.typed", "data/*.fish", "vendor/kopia/*.tar.gz"]
 
 [tool.ruff]
 line-length = 120

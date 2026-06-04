@@ -169,7 +169,6 @@ def policy_set_global(
     keep_monthly: int | None = None,
     keep_annual: int | None = None,
     compression: str | None = None,
-    splitter: str | None = None,
 ) -> None:
     args = [*build_config_args(config_file), "policy", "set", "--global"]
     baseline = len(args)
@@ -185,8 +184,6 @@ def policy_set_global(
             args.extend([flag, str(value)])
     if compression is not None:
         args.extend(["--compression", compression])
-    if splitter is not None:
-        args.extend(["--splitter", splitter])
     if len(args) <= baseline:
         return
     run_kopia(args, password_file=password_file, cache_dir=cache_dir)
