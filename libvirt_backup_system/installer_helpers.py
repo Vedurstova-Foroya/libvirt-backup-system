@@ -18,9 +18,9 @@ from .systemd_units import (
     run_systemctl,
 )
 
-# Only BACKUP_PATH is honored from the process env on first install: other
-# keys render as commented defaults and would desync from the systemd unit.
-INSTALL_TIME_ENV_KEYS = ("BACKUP_PATH",)
+# First-install env keys that must be persisted into libvirt-backup.env so the
+# same values are used by the rendered systemd units and immediate repo setup.
+INSTALL_TIME_ENV_KEYS = ("BACKUP_PATH", "BACKUP_REQUIRE_NFS_MOUNT")
 
 
 def install_time_env_keys_present() -> list[str]:
@@ -147,14 +147,14 @@ def print_install_next_steps(config_path: Path, bin_path: Path) -> None:
         "Next steps:",
         f"  sudoedit {config_path}",
         "",
-        "Set the required backup path, then run start so the systemd mount dependency matches it:",
+        "Set the required backup path, then run start so the systemd unit matches it:",
         "  BACKUP_PATH=/mnt/qnap-backups",
         "",
-        "NFS/QNAP mounts are required by default. For an intentionally local backup directory, uncomment:",
-        "  BACKUP_REQUIRE_NFS_MOUNT=false",
+        "Local directories are allowed by default. To require a shared/NFS mount, uncomment:",
+        "  BACKUP_REQUIRE_NFS_MOUNT=true",
         "",
-        "Retention is governed by Kopia's policy keys. Tune via KEEP_DAILY / KEEP_MONTHLY /",
-        "KEEP_ANNUAL (and the other KEEP_* keys) in the env file; expired snapshots are pruned by",
+        "Retention is governed by Kopia's policy keys. Defaults keep latest snapshots plus one year.",
+        "Tune KEEP_DAILY (and the other KEEP_* keys) in the env file; expired snapshots are pruned by",
         "the kopia maintenance timer in the background.",
         "",
         "Then validate and activate the schedules:",

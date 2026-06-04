@@ -80,6 +80,7 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
         ("uninstall", {"purge-config", "purge-state", "purge-logs"}),
         ("list-vms", {"json", "include-blacklisted"}),
         ("list-restore-points", {"json"}),
+        ("du", {"json", "host-id", "vm-uuid"}),
         ("verify", {"include-hosts"}),
         ("restore", {"verbose", "host-id", "run-id"}),
     ],
@@ -95,7 +96,7 @@ def test_completion_drops_legacy_virtnbd_chain_surface() -> None:
     text = _completion_text().lower()
     assert "virtnbd" not in text
     assert "chain" not in text
-    assert "-l vm" not in text
+    assert "-l vm " not in text
 
 
 def test_fish_completion_target_lands_under_prefix(tmp_path: Path) -> None:

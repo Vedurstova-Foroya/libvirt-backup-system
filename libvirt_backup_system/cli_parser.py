@@ -152,6 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restore_points_parser.add_argument("--json", action="store_true", help="Emit JSON array instead of table rows.")
 
+    du_parser = _add_subparser(sub, "du", help_text=cli_help.DU_HELP)
+    du_parser.add_argument("--json", action="store_true", help="Emit JSON object instead of table rows.")
+    du_parser.add_argument("--host-id", metavar="HOST_ID", help="Drill into one source host repo.")
+    du_parser.add_argument("--vm-uuid", metavar="VM_UUID", help="Drill into one VM across matching host repos.")
+
     restore_parser = _add_subparser(
         sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION
     )

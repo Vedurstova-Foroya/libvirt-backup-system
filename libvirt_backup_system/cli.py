@@ -8,7 +8,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import kopia_repo
+from . import backup_usage, kopia_repo
 from .backup import run_backups
 from .cli_parser import build_parser
 from .cli_parser import password_spec_from_args as _password_spec_from_args
@@ -85,6 +85,20 @@ def _list_restore_points_command(config: Config, *, json_output: bool = False) -
     return list_restore_points(config, json_output=json_output)
 
 
+def _du_command(config: Config, args: argparse.Namespace) -> int:
+    config_code = validate_config(config)
+    if config_code != 0:
+        return config_code
+    if not runtime_backup_path_ok(config):
+        return 1
+    return backup_usage.backup_usage(
+        config,
+        host_id=args.host_id,
+        vm_uuid=args.vm_uuid,
+        json_output=args.json,
+    )
+
+
 def _change_password_command(args: argparse.Namespace) -> int:
     config = Config.load(config_path=args.config, prefix=args.prefix)
     spec = _password_spec_from_args(args, prefix="new_")
@@ -143,31 +157,38 @@ def _kopia_passthrough_command(args: argparse.Namespace, config: Config) -> int:
     return completed.returncode
 
 
+def _command_before_config(args: argparse.Namespace) -> int | None:
+    if args.command == "install":
+        return install(
+            args.prefix,
+            config_path=args.config,
+            password_spec=_password_spec_from_args(args, prefix=""),
+        )
+    if args.command == "change-password":
+        return _change_password_command(args)
+    if args.command == "start":
+        return start(args.prefix, config_path=args.config)
+    if args.command == "status":
+        return status(args.prefix)
+    if args.command == "uninstall":
+        return uninstall(
+            args.prefix,
+            config_path=args.config,
+            purge_config=args.purge_config,
+            purge_state=args.purge_state,
+            purge_logs=args.purge_logs,
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "install":
-            return install(
-                args.prefix,
-                config_path=args.config,
-                password_spec=_password_spec_from_args(args, prefix=""),
-            )
-        if args.command == "change-password":
-            return _change_password_command(args)
-        if args.command == "start":
-            return start(args.prefix, config_path=args.config)
-        if args.command == "status":
-            return status(args.prefix)
-        if args.command == "uninstall":
-            return uninstall(
-                args.prefix,
-                config_path=args.config,
-                purge_config=args.purge_config,
-                purge_state=args.purge_state,
-                purge_logs=args.purge_logs,
-            )
+        early_code = _command_before_config(args)
+        if early_code is not None:
+            return early_code
 
         # Route ``run``/``check`` through the installed systemd unit so the
         # operator's ad-hoc invocation runs in the same environment the
@@ -181,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             if dispatched is not None:
                 return dispatched
 
-        if args.command in {"list-vms", "list-restore-points"} and args.json:
+        if args.command in {"list-vms", "list-restore-points", "du"} and args.json:
             with contextlib.redirect_stdout(sys.stderr):
                 config = Config.load(config_path=args.config, prefix=args.prefix)
         else:
@@ -234,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
             return _restore_command(config, args)
         if args.command == "list-restore-points":
             return _list_restore_points_command(config, json_output=args.json)
+        if args.command == "du":
+            return _du_command(config, args)
         if args.command == "kopia-passthrough":
             return _kopia_passthrough_command(args, config)
     except KeyboardInterrupt:

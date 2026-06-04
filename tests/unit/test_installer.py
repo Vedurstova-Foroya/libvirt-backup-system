@@ -171,10 +171,13 @@ def test_first_install_applies_env_overrides_then_subsequent_install_locks_to_fi
     env_path = tmp_path / "from-env"
     env_path.mkdir()
     monkeypatch.setenv("BACKUP_PATH", str(env_path))
+    monkeypatch.setenv("BACKUP_REQUIRE_NFS_MOUNT", "false")
     assert install(str(tmp_path)) == 0
     config_path = tmp_path / "etc/libvirt-backup-system/libvirt-backup.env"
     service_path = tmp_path / "etc/systemd/system/libvirt-backup-system.service"
-    assert f"BACKUP_PATH={env_path}" in config_path.read_text(encoding="utf-8")
+    config_text = config_path.read_text(encoding="utf-8")
+    assert f"BACKUP_PATH={env_path}" in config_text
+    assert "BACKUP_REQUIRE_NFS_MOUNT=false" in config_text
     assert f"RequiresMountsFor={_escaped_systemd_path(env_path)}\n" in service_path.read_text(encoding="utf-8")
 
     file_path = tmp_path / "from-file"

@@ -46,8 +46,9 @@ BROKEN
     # New kopia keys are rendered as commented defaults so operators see them.
     assert "# KOPIA_REPO_PATH=" in rendered
     assert "# KOPIA_PASSWORD_FILE=/etc/libvirt-backup-system/kopia.pw" in rendered
-    assert "# KEEP_DAILY=30" in rendered
+    assert "# KEEP_DAILY=365" in rendered
     assert "# KOPIA_MAINTENANCE_INTERVAL=24h" in rendered
+    assert "# BACKUP_REQUIRE_NFS_MOUNT=false" in rendered
     # Legacy chain-era keys must not appear anywhere in the rendered env.
     assert "BACKUP_COMPRESS" not in rendered
     assert "BACKUP_RETENTION_MONTHS" not in rendered
@@ -66,6 +67,12 @@ def test_config_helpers(tmp_path: Path, monkeypatch) -> None:
     assert int_value({"x": "3"}, "x") == 3
     assert float_value({"x": "1.5"}, "x") == 1.5
     assert split_words("one,two three") == ["one", "two", "three"]
+    default_cfg = Config.load(
+        config_path=str(tmp_path / "missing.env"),
+        prefix=str(tmp_path),
+        apply_env_overrides=False,
+    )
+    assert not default_cfg.enabled("BACKUP_REQUIRE_NFS_MOUNT")
 
 
 def test_load_uses_default_config_environment(tmp_path: Path, monkeypatch) -> None:

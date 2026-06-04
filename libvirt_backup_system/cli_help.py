@@ -120,7 +120,9 @@ For a one-shot first install with BACKUP_PATH and a kopia password:
        --acknowledge-password-loss
 
 The same shared kopia password must be used on every participating host so
-each peer can read every peer's repo. If the config file already exists the
+each peer can read every peer's repo. Local backup directories are allowed by
+default; first install also honors BACKUP_REQUIRE_NFS_MOUNT=true for operators
+who want mount-point preflight. If the config file already exists the
 install-time environment is ignored, so re-running ``install`` never
 overwrites operator edits."""
 
@@ -232,6 +234,9 @@ Connect read-only to every per-host kopia repo discovered under
 TIMESTAMP columns straight into ``restore``. Rows include source host, VM
 name, and RUN_ID, and are grouped by source host so backups taken on a
 different KVM host are visible alongside the local ones."""
+
+
+DU_HELP = "Show backup disk usage by host or VM."
 
 
 RESTORE_HELP = "Restore a backup run identified by VM_UUID and TIMESTAMP."

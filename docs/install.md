@@ -72,29 +72,12 @@ Pick a shared password once, store it in your secrets vault, and use it on
 every host. The exact same install command runs everywhere:
 
 ```sh
-export KOPIA_PW='<shared-password-from-vault>'
-sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
-     python3 -m libvirt_backup_system install \
-     --kopia-password-env KOPIA_PW \
-     --acknowledge-password-loss
+export KOPIA_PW='<shared-password-from-vault>'; sudo env BACKUP_PATH=/home/admin/pro/vms/backups KOPIA_PW="$KOPIA_PW" python3 -m libvirt_backup_system install --kopia-password-env KOPIA_PW --acknowledge-password-loss
 ```
 
-For a local or lab path that is not a mounted filesystem, write
-`BACKUP_REQUIRE_NFS_MOUNT=false` to the env file before running `install`.
-Passing it only through `sudo env ... install` is ignored at install time.
-
-```sh
-export BACKUP_PATH=/home/admin/pro/vms/backups
-export KOPIA_PW='<shared-password-from-vault>'
-sudo install -d -m 0755 /etc/libvirt-backup-system
-sudo sh -c \
-     'printf "BACKUP_PATH=%s\nBACKUP_REQUIRE_NFS_MOUNT=false\n" "$1" > /etc/libvirt-backup-system/libvirt-backup.env' \
-     sh "$BACKUP_PATH"
-sudo env KOPIA_PW="$KOPIA_PW" \
-     python3 -m libvirt_backup_system install \
-     --kopia-password-env KOPIA_PW \
-     --acknowledge-password-loss
-```
+Local backup directories are allowed by default. To require `BACKUP_PATH` to be
+a mounted filesystem, set `BACKUP_REQUIRE_NFS_MOUNT=true` in
+`/etc/libvirt-backup-system/libvirt-backup.env`.
 
 For operators who do not want the password in `ps`/journald, pipe it in:
 
@@ -138,17 +121,17 @@ sudo libvirt-backup-system doctor
 ```
 
 The first install leaves `BACKUP_PATH` blank unless it is supplied in the
-environment. When `BACKUP_PATH` is blank, systemd unit installation is
-skipped. Run `start` after setting it so the service gets the matching
-`RequiresMountsFor=` dependency and the timers are activated.
-
-Only `BACKUP_PATH` is honored from the process environment during a first
-install — other keys (for example `HOST_ID`, `BACKUP_REQUIRE_NFS_MOUNT`,
-`KOPIA_COMPRESSION`) are written as commented defaults in
-`libvirt-backup.env` and are silently ignored at install time, because the
-systemd unit only reads the env file. Set those by editing
+environment. `BACKUP_REQUIRE_NFS_MOUNT` is also honored during first install
+so operators can opt into mount-point preflight in the same copy-paste command.
+Other keys (for example `HOST_ID` and `KOPIA_COMPRESSION`) are written as
+commented defaults in `libvirt-backup.env` and are silently ignored at install
+time, because the systemd unit only reads the env file. Set those by editing
 `libvirt-backup.env`; run `start` after changing values that affect unit
 rendering, such as `BACKUP_PATH` or `SYSTEMD_ON_CALENDAR`.
+
+When `BACKUP_PATH` is blank, systemd unit installation is skipped. Run `start`
+after setting it so the service gets the matching `RequiresMountsFor=`
+dependency and the timers are activated.
 
 The installer creates:
 
@@ -187,19 +170,22 @@ the operator installs fish.
 
 #### Dynamic restore completion
 
-`sudo libvirt-backup-system restore <TAB>` queries `list-restore-points` and
-suggests the available VM UUIDs with the source host and restore-point count
-in the description. After picking a UUID, a second `<TAB>` lists the
-timestamps recorded for that VM so the operator can pick the right run from
-the menu.
+`sudo libvirt-backup-system restore <TAB>` suggests the available VM UUIDs
+with VM name, source host, and restore-point count in the description. After
+picking a UUID, a second `<TAB>` lists the timestamps recorded for that VM so
+the operator can pick the right run from the menu.
 
-The query runs `sudo -n libvirt-backup-system list-restore-points` so the
-completion never prompts for a password mid-TAB: it relies on the sysadmin's
-active sudo token. When the token has lapsed the completion silently falls
-back to a non-sudo invocation; on a default install where the env file is
-mode `0600 root:root` that fallback produces no rows, and the operator
-either re-runs `sudo true` to refresh the token or copy-pastes from a
-`sudo libvirt-backup-system list-restore-points` run instead.
+Completion caches `list-restore-points` output under
+`$XDG_CACHE_HOME/libvirt-backup-system/restore-points.tsv` or
+`~/.cache/libvirt-backup-system/restore-points.tsv`. The first cache fill runs
+`sudo -n libvirt-backup-system list-restore-points`, so completion never
+prompts for a password mid-TAB: it relies on the sysadmin's active sudo token.
+Cache younger than five seconds is reused immediately; older cache refreshes
+synchronously so a just-finished backup appears in the next completion menu.
+If refresh fails, the last cache is used. When the token has lapsed and no
+cache exists, completion falls back to a non-sudo invocation; on a default
+install where the env file is mode `0600 root:root` that fallback produces no
+rows.
 
 The default backup timer is controlled by `SYSTEMD_ON_CALENDAR=*-*-* 02:30:00`.
 `install` writes the units when `BACKUP_PATH` is already configured, but

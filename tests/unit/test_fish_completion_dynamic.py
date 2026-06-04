@@ -10,8 +10,10 @@ before running the gate).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,7 @@ def _run_fish(fish: str, bindir: Path, completion_line: str, *, cwd: Path | None
     # (often under ~/.local/bin via fish_user_paths) cannot shadow the fake.
     script = (
         f"set -gx PATH {bindir} /usr/bin /bin\n"
+        f"set -gx XDG_CACHE_HOME {bindir.parent / 'cache'}\n"
         "source /usr/share/fish/completions/sudo.fish 2>/dev/null; or true\n"
         f"source {COMPLETION_FILE}\n"
         f"complete -C '{completion_line}'\n"
@@ -90,10 +93,9 @@ def test_uuid_completion_lists_distinct_uuids_with_host_id(tmp_path: Path) -> No
     assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in values
     assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" in values
     assert values.count("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") == 1
-    # Description carries the source host plus a restore-point count from the
-    # Kopia table's source-host-id column.
-    assert "host1 (2 restore points)" in out
-    assert "host2 (1 restore points)" in out
+    # Description carries VM name, source host, and restore-point count.
+    assert "alpha vm - host1 (2 restore points)" in out
+    assert "beta - host2 (1 restore points)" in out
 
 
 def test_uuid_completion_ignores_verbose_flag_before_uuid(tmp_path: Path) -> None:
@@ -157,8 +159,39 @@ def test_timestamp_completion_carries_host_and_run_id_description(tmp_path: Path
     # The description carries source host and RUN_ID from list-restore-points for
     # diagnostics while the completion value stays copy-pasteable TIMESTAMP.
     rows = {line.split("\t", 1)[0]: line.split("\t", 1)[1] for line in out.splitlines() if "\t" in line}
-    assert rows["20260101T000000"] == "host1 11111111-1111-1111-1111-111111111111"
-    assert rows["20260102T030000"] == "host1 22222222-2222-2222-2222-222222222222"
+    assert rows["20260101T000000"] == "host1 11111111-1111-1111-1111-111111111111 alpha vm"
+    assert rows["20260102T030000"] == "host1 22222222-2222-2222-2222-222222222222 alpha vm"
+
+
+def test_restore_completion_uses_cached_restore_points(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    first = _run_fish(fish, bindir, "libvirt-backup-system restore ")
+    (bindir / "libvirt-backup-system").write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+
+    second = _run_fish(fish, bindir, "libvirt-backup-system restore ")
+
+    assert "alpha vm - host1 (2 restore points)" in first
+    assert "alpha vm - host1 (2 restore points)" in second
+
+
+def test_restore_completion_refreshes_stale_cache(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    out = _run_fish(fish, bindir, "libvirt-backup-system restore ")
+    assert "alpha vm - host1 (2 restore points)" in out
+    cache = tmp_path / "cache/libvirt-backup-system/restore-points.tsv"
+    old = time.time() - 10
+    os.utime(cache, (old, old))
+    (tmp_path / "fixture.txt").write_text(
+        FIXTURE_OUTPUT + "host3           cccccccc-cccc-cccc-cccc-cccccccccccc  20260106T000000  "
+        "44444444-4444-4444-4444-444444444444  gamma\n",
+        encoding="utf-8",
+    )
+
+    refreshed = _run_fish(fish, bindir, "libvirt-backup-system restore ")
+
+    assert "gamma - host3 (1 restore points)" in refreshed
 
 
 def test_timestamp_completion_orders_newest_first(tmp_path: Path) -> None:

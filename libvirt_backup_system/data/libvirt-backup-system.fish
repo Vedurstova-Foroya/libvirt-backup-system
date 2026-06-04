@@ -13,7 +13,7 @@
 # the few flags that accept paths.
 complete -c libvirt-backup-system -f
 
-set -l __lbs_subcommands install change-password uninstall check preflight doctor run start status list-vms verify list-restore-points restore
+set -l __lbs_subcommands install change-password uninstall check preflight doctor run start status list-vms verify list-restore-points du restore
 
 # Top-level subcommand suggestions (only before any subcommand has been chosen).
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a install -d "Install wrapper, config, package, and systemd units"
@@ -28,6 +28,7 @@ complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_sub
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a list-vms -d "List selected VMs after VM_BLACKLIST is applied"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a verify -d "Run kopia snapshot verify against discovered repos"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a list-restore-points -d "List every restorable backup run across all hosts and VMs"
+complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a du -d "Show backup disk usage by host or VM"
 complete -c libvirt-backup-system -n "not __fish_seen_subcommand_from $__lbs_subcommands" -a restore -d "Restore a backup run identified by VM_UUID and TIMESTAMP"
 
 # Global flags (available at every position).
@@ -58,6 +59,11 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-vms" -l i
 # list-restore-points flag.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-restore-points" -l json -d "Emit a JSON array instead of table rows"
 
+# du flags.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from du" -l json -d "Emit a JSON object instead of table rows"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from du" -l host-id -r -f -d "Drill into one source host repo"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from du" -l vm-uuid -r -f -d "Drill into one VM across matching host repos"
+
 # verify flag.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from verify" -l include-hosts -r -d "Comma-separated peer host_ids to verify in addition to the local repo"
 
@@ -69,9 +75,8 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -l ru
 # --- Dynamic restore completion ---------------------------------------------
 #
 # `restore` takes (VM_UUID, TIMESTAMP) — both copy-pasted from the
-# `list-restore-points` output by the operator. Querying the binary on every
-# TAB shows the actual available restore points so the operator does not have
-# to keep two terminals open.
+# `list-restore-points` output by the operator. Completion keeps a short-lived
+# cache so TAB does not rescan Kopia on every keypress.
 #
 # list-restore-points needs root to read /etc/libvirt-backup-system/ and the
 # backup tree. Use ``sudo -n`` so completion never prompts for a password
@@ -80,9 +85,53 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from restore" -l ru
 # user-readable, and silently produces no rows otherwise). stderr is dropped
 # so partial failures do not pollute the completion menu.
 
-function __lbs_query_restore_points
+function __lbs_query_restore_points_uncached
     sudo -n libvirt-backup-system list-restore-points 2>/dev/null
     or libvirt-backup-system list-restore-points 2>/dev/null
+end
+
+function __lbs_restore_cache_file
+    set -l root
+    if set -q XDG_CACHE_HOME; and test -n "$XDG_CACHE_HOME"
+        set root "$XDG_CACHE_HOME"
+    else if set -q HOME; and test -n "$HOME"
+        set root "$HOME/.cache"
+    else
+        set root /tmp
+    end
+    echo "$root/libvirt-backup-system/restore-points.tsv"
+end
+
+function __lbs_refresh_restore_points_cache
+    set -l cache (__lbs_restore_cache_file)
+    set -l tmp "$cache."(date +%s).(random)
+    command mkdir -p (dirname "$cache") 2>/dev/null; or return 1
+    __lbs_query_restore_points_uncached >"$tmp"
+    if test $status -eq 0; and test -s "$tmp"
+        command mv -f "$tmp" "$cache"
+    else
+        command rm -f "$tmp"
+        return 1
+    end
+end
+
+function __lbs_restore_cache_is_fresh
+    set -l cache "$argv[1]"
+    test -f "$cache"; or return 1
+    set -l mtime (command stat -c %Y "$cache" 2>/dev/null); or return 1
+    test (math (command date +%s) - $mtime) -lt 5
+end
+
+function __lbs_query_restore_points
+    set -l cache (__lbs_restore_cache_file)
+    if test -f "$cache"
+        if not __lbs_restore_cache_is_fresh "$cache"
+            __lbs_refresh_restore_points_cache >/dev/null 2>/dev/null
+        end
+        command cat "$cache"
+        return 0
+    end
+    __lbs_refresh_restore_points_cache >/dev/null 2>/dev/null; and command cat "$cache"
 end
 
 function __lbs_restore_is_option
@@ -136,8 +185,8 @@ function __lbs_restore_uuids
     # Deduplicate by UUID so a VM with many restore points appears once in the
     # menu. The Kopia-era list-restore-points table is:
     # source-host-id vm-uuid timestamp run-id vm-name. The description shows
-    # the first host seen plus the count of restore points for that UUID.
-    __lbs_query_restore_points | awk 'NR > 1 { c[$2]++; if (!s[$2]++) h[$2] = $1 } END { for (u in c) printf "%s\t%s (%d restore points)\n", u, h[u], c[u] }' | sort
+    # the VM name, first host seen, and restore point count for that UUID.
+    __lbs_query_restore_points | awk 'function vmname(i, n) { n=$5; for (i=6; i<=NF; i++) n=n" "$i; return n } NR > 1 { c[$2]++; if (!s[$2]++) { h[$2]=$1; n[$2]=vmname() } } END { for (u in c) printf "%s\t%s - %s (%d restore points)\n", u, n[u], h[u], c[u] }' | sort
 end
 
 function __lbs_restore_timestamps_for_uuid
@@ -169,7 +218,7 @@ function __lbs_restore_timestamps_for_uuid
     # the operator's typical "restore to the latest point" intent lands a
     # single arrow-down away. The description shows source host and RUN_ID for
     # diagnostics without requiring the operator to keep the table visible.
-    __lbs_query_restore_points | awk -v u="$uuid" 'NR > 1 && $2 == u {print $3"\t"$1" "$4}' | sort -r
+    __lbs_query_restore_points | awk -v u="$uuid" 'function vmname(i, n) { n=$5; for (i=6; i<=NF; i++) n=n" "$i; return n } NR > 1 && $2 == u {print $3"\t"$1" "$4" "vmname()}' | sort -r
 end
 
 complete -c libvirt-backup-system \

@@ -210,6 +210,21 @@ source-host-id  vm-uuid  timestamp  run-id  vm-name
 snapshot to its disk snapshots for diagnostics and manual operations (see
 [Kopia operations](kopia.md)).
 
+## `du`
+
+Shows backup usage. With no filters it reports actual filesystem usage for
+each `BACKUP_PATH/<host>/kopia-repo/` and a total.
+
+```sh
+sudo libvirt-backup-system du
+sudo libvirt-backup-system du --host-id=host-a
+sudo libvirt-backup-system du --vm-uuid=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+```
+
+`--host-id` and `--vm-uuid` drill into VM rows and report retained logical
+snapshot bytes. Those rows do not add up to repo bytes because Kopia dedupes
+chunks across snapshots and VMs. Add `--json` for machine-readable output.
+
 ## `restore`
 
 Restores a single backup run identified by the `(vm_uuid, timestamp)` pair
@@ -276,7 +291,8 @@ See [Kopia operations](kopia.md#tag-schema) for the full tag schema.
 
 Retention is enforced by the kopia global policy
 (`KEEP_LATEST/HOURLY/DAILY/WEEKLY/MONTHLY/ANNUAL`), refreshed from the env
-file on every `start`. The maintenance timer
+file on every `start`. Defaults keep the latest 8 snapshots plus hourly points
+for 24h and daily points for one year. The maintenance timer
 (`KOPIA_MAINTENANCE_INTERVAL`, default `24h`) prunes expired snapshots and
 compacts the repo. See [Kopia operations](kopia.md#maintenance) for manual
 maintenance commands.

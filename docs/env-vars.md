@@ -56,11 +56,11 @@ systemd `OnCalendar` value used when the backup timer is installed. Run
 `start` after changing this so the backup timer is refreshed and reloaded.
 
 ```
-BACKUP_REQUIRE_NFS_MOUNT=true
+BACKUP_REQUIRE_NFS_MOUNT=false
 ```
 
-Require `BACKUP_PATH` to be a mounted filesystem. Set false when backing up
-to an intentionally local directory.
+Require `BACKUP_PATH` to be a mounted filesystem. Disabled by default so
+intentionally local backup directories work.
 
 ```
 REQUIRE_ROOT=true
@@ -128,16 +128,16 @@ Repo-wide compression. Applied via the global Kopia policy on `start`.
 
 ## Retention
 
-Mapped onto `kopia policy set --global --keep-*`. Defaults are tuned for a
-single year of hourly granularity:
+Mapped onto `kopia policy set --global --keep-*`. Defaults keep the latest 8
+snapshots plus hourly points for 24h and daily points for one year:
 
 ```
 KEEP_LATEST=8
 KEEP_HOURLY=24
-KEEP_DAILY=30
-KEEP_WEEKLY=12
-KEEP_MONTHLY=24
-KEEP_ANNUAL=5
+KEEP_DAILY=365
+KEEP_WEEKLY=0
+KEEP_MONTHLY=0
+KEEP_ANNUAL=0
 ```
 
 The Kopia maintenance timer (see below) prunes expired snapshots in the

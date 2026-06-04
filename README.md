@@ -1,9 +1,8 @@
 # libvirt-backup-system
 
 Python CLI for backing up libvirt VMs into a per-host [Kopia](https://kopia.io)
-repository on a shared NFS mount. Content-addressed, deduplicated, encrypted at
-rest. One shared password protects every host's repo, so cross-host restore is
-a single command.
+repository. Content-addressed, deduplicated, encrypted at rest. One shared
+password protects every host's repo, so cross-host restore is a single command.
 
 ## One-command install
 
@@ -11,28 +10,12 @@ From a checkout on the KVM host, pick a shared password once, store it in your
 secrets vault, and use the same value on every host:
 
 ```sh
-export KOPIA_PW='<shared-password-from-vault>'
-sudo env BACKUP_PATH=/mnt/qnap-backups KOPIA_PW="$KOPIA_PW" \
-     python3 -m libvirt_backup_system install \
-     --kopia-password-env KOPIA_PW \
-     --acknowledge-password-loss
+export KOPIA_PW='<shared-password-from-vault>'; sudo env BACKUP_PATH=/home/admin/pro/vms/backups KOPIA_PW="$KOPIA_PW" python3 -m libvirt_backup_system install --kopia-password-env KOPIA_PW --acknowledge-password-loss
 ```
 
-For a local or lab path that is not a mounted filesystem, put the mount-check
-setting in the env file before running `install`:
-
-```sh
-export BACKUP_PATH=/home/admin/pro/vms/backups
-export KOPIA_PW='<shared-password-from-vault>'
-sudo install -d -m 0755 /etc/libvirt-backup-system
-sudo sh -c \
-     'printf "BACKUP_PATH=%s\nBACKUP_REQUIRE_NFS_MOUNT=false\n" "$1" > /etc/libvirt-backup-system/libvirt-backup.env' \
-     sh "$BACKUP_PATH"
-sudo env KOPIA_PW="$KOPIA_PW" \
-     python3 -m libvirt_backup_system install \
-     --kopia-password-env KOPIA_PW \
-     --acknowledge-password-loss
-```
+Local backup directories are allowed by default. To require `BACKUP_PATH` to be
+a mounted filesystem, set `BACKUP_REQUIRE_NFS_MOUNT=true` in
+`/etc/libvirt-backup-system/libvirt-backup.env`.
 
 Then verify the install, activate the schedules, and run a health check:
 
@@ -92,8 +75,9 @@ without materializing the manifest.
 ## Retention
 
 Retention is enforced by Kopia's global policy, refreshed from the env file on
-every `start`. Defaults: `KEEP_LATEST=8`, `KEEP_HOURLY=24`, `KEEP_DAILY=30`,
-`KEEP_WEEKLY=12`, `KEEP_MONTHLY=24`, `KEEP_ANNUAL=5`. The maintenance timer
+every `start`. Defaults keep the latest 8 snapshots plus hourly points for 24h
+and daily points for one year: `KEEP_LATEST=8`, `KEEP_HOURLY=24`,
+`KEEP_DAILY=365`, `KEEP_WEEKLY=0`, `KEEP_MONTHLY=0`, `KEEP_ANNUAL=0`. The maintenance timer
 (`KOPIA_MAINTENANCE_INTERVAL`, default `24h`) prunes and compacts the repo
 independently of the backup loop. The verify timer (`KOPIA_VERIFY_INTERVAL`,
 default `7d`) checks the local repo on its own cadence.
