@@ -217,11 +217,13 @@ each `BACKUP_PATH/<host>/kopia-repo/` and a total.
 
 ```sh
 sudo libvirt-backup-system du
-sudo libvirt-backup-system du --host-id=host-a
-sudo libvirt-backup-system du --vm-uuid=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+sudo libvirt-backup-system du host-a
+sudo libvirt-backup-system du aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+sudo libvirt-backup-system du host-a aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
 ```
 
-`--host-id` and `--vm-uuid` drill into VM rows and report retained logical
+One drilldown argument can be either a host id or VM UUID; two arguments are
+host id then VM UUID. Drilldowns report retained logical
 snapshot bytes. Those rows do not add up to repo bytes because Kopia dedupes
 chunks across snapshots and VMs. Add `--json` for machine-readable output.
 

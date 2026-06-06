@@ -118,6 +118,57 @@ def test_restore_disambiguation_options_do_not_complete_cwd_files(tmp_path: Path
     assert "cwd-file-should-not-complete" not in out
 
 
+@pytest.mark.parametrize("command_line", ["libvirt-backup-system du ", "sudo libvirt-backup-system du "])
+def test_du_first_arg_completion_lists_hosts_and_uuids(tmp_path: Path, command_line: str) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    out = _run_fish(fish, bindir, command_line)
+    values = [line.split("\t", 1)[0] for line in out.splitlines()]
+
+    assert {"host1", "host2"} <= set(values)
+    assert {"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"} <= set(values)
+    assert values.count("host1") == 1
+    assert "alpha vm - host1 (2 restore points)" in out
+
+
+def test_du_second_arg_completion_filters_vms_to_host(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    out = _run_fish(fish, bindir, "libvirt-backup-system du host1 ")
+    values = [line.split("\t", 1)[0] for line in out.splitlines()]
+
+    assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in values
+    assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" not in values
+    assert "alpha vm (2 restore points)" in out
+
+
+@pytest.mark.parametrize(
+    "command_line",
+    [
+        "libvirt-backup-system du aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa ",
+        "sudo libvirt-backup-system du aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa ",
+    ],
+)
+def test_du_completion_after_vm_uuid_hides_subcommands(tmp_path: Path, command_line: str) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+
+    out = _run_fish(fish, bindir, command_line)
+    values = {line.split("\t", 1)[0] for line in out.splitlines()}
+
+    assert values.isdisjoint({"change-password", "install", "restore", "run", "verify"})
+
+
+def test_du_positional_completion_does_not_complete_cwd_files(tmp_path: Path) -> None:
+    fish = _require_fish()
+    bindir = _seed_fakes(tmp_path)
+    (tmp_path / "cwd-file-should-not-complete").write_text("", encoding="utf-8")
+
+    out = _run_fish(fish, bindir, "libvirt-backup-system du host1 ", cwd=tmp_path)
+
+    assert "cwd-file-should-not-complete" not in out
+
+
 def test_timestamp_completion_filters_to_chosen_uuid(tmp_path: Path) -> None:
     fish = _require_fish()
     bindir = _seed_fakes(tmp_path)
@@ -209,12 +260,6 @@ def test_timestamp_completion_orders_newest_first(tmp_path: Path) -> None:
 
 
 def test_timestamp_completion_orders_newest_first_under_sudo(tmp_path: Path) -> None:
-    # fish's stock sudo completion dispatcher re-sorts the candidate list
-    # alphabetically (its own ``complete -c sudo`` registration carries no
-    # ``-k`` flag), which silently reversed our newest-first order to
-    # oldest-first for any operator typing ``sudo libvirt-backup-system
-    # restore <uuid> <TAB>``. The completion file mirrors the two restore-
-    # stage registrations directly under ``sudo`` so our ``-k`` flag wins.
     fish = _require_fish()
     bindir = _seed_fakes(tmp_path)
     out = _run_fish(

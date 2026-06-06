@@ -14,6 +14,7 @@ from .cli_parser import build_parser
 from .cli_parser import password_spec_from_args as _password_spec_from_args
 from .config import Config
 from .doctor import doctor
+from .du_args import resolve_du_filters
 from .installer import install, uninstall
 from .installer_password import change_password as _change_password_impl
 from .kopia_client import KOPIA_BINARY, build_kopia_env
@@ -86,6 +87,9 @@ def _list_restore_points_command(config: Config, *, json_output: bool = False) -
 
 
 def _du_command(config: Config, args: argparse.Namespace) -> int:
+    filters = resolve_du_filters(args)
+    if filters is None:
+        return 2
     config_code = validate_config(config)
     if config_code != 0:
         return config_code
@@ -93,8 +97,8 @@ def _du_command(config: Config, args: argparse.Namespace) -> int:
         return 1
     return backup_usage.backup_usage(
         config,
-        host_id=args.host_id,
-        vm_uuid=args.vm_uuid,
+        host_id=filters.host_id,
+        vm_uuid=filters.vm_uuid,
         json_output=args.json,
     )
 

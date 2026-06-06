@@ -154,8 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     du_parser = _add_subparser(sub, "du", help_text=cli_help.DU_HELP)
     du_parser.add_argument("--json", action="store_true", help="Emit JSON object instead of table rows.")
-    du_parser.add_argument("--host-id", metavar="HOST_ID", help="Drill into one source host repo.")
-    du_parser.add_argument("--vm-uuid", metavar="VM_UUID", help="Drill into one VM across matching host repos.")
+    du_parser.add_argument("--host-id", metavar="HOST_ID", help=argparse.SUPPRESS)
+    du_parser.add_argument("--vm-uuid", metavar="VM_UUID", help=argparse.SUPPRESS)
+    du_parser.add_argument(
+        "drilldown",
+        nargs="*",
+        metavar="HOST_ID|VM_UUID",
+        help="Optional host id, VM UUID, or host id followed by VM UUID.",
+    )
 
     restore_parser = _add_subparser(
         sub, "restore", help_text=cli_help.RESTORE_HELP, description=cli_help.RESTORE_DESCRIPTION

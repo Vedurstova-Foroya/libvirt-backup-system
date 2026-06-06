@@ -80,7 +80,7 @@ def test_completion_mentions_visible_argparse_subcommands() -> None:
         ("uninstall", {"purge-config", "purge-state", "purge-logs"}),
         ("list-vms", {"json", "include-blacklisted"}),
         ("list-restore-points", {"json"}),
-        ("du", {"json", "host-id", "vm-uuid"}),
+        ("du", {"json"}),
         ("verify", {"include-hosts"}),
         ("restore", {"verbose", "host-id", "run-id"}),
     ],
