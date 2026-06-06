@@ -28,8 +28,9 @@ class VmUsage:
     host_id: str
     vm_uuid: str
     vm_name: str
-    snapshot_count: int
-    logical_bytes: int
+    restore_points: int
+    latest_logical_bytes: int
+    backup_bytes: int
 
 
 def _entry_size(path: Path) -> int:
@@ -98,9 +99,18 @@ def _snapshot_logical_bytes(record: dict[str, object]) -> int:
     return 0
 
 
+def _snapshot_storage_bytes(record: dict[str, object]) -> int:
+    storage = as_string_keyed(record.get("storageStats"))
+    new_data = as_string_keyed(storage.get("newData"))
+    packed_bytes = new_data.get("packedContentBytes")
+    if isinstance(packed_bytes, int) and not isinstance(packed_bytes, bool) and packed_bytes >= 0:
+        return packed_bytes
+    return 0
+
+
 def _disk_usage_from_repo(
     config: Config, *, host_id: str, config_file: Path, vm_uuid: str | None
-) -> list[tuple[str, str, int]]:
+) -> list[tuple[str, str, int, int]]:
     tags = {"kind": "disk"}
     if vm_uuid is not None:
         tags["vm-uuid"] = vm_uuid
@@ -122,7 +132,7 @@ def _disk_usage_from_repo(
     parsed: object = json.loads(result.stdout or "[]")
     if not isinstance(parsed, list):
         raise ValueError("kopia snapshot list returned a non-array JSON document")
-    usage: list[tuple[str, str, int]] = []
+    usage: list[tuple[str, str, int, int]] = []
     for raw in cast("list[object]", parsed):
         if not isinstance(raw, dict):
             continue
@@ -136,13 +146,14 @@ def _disk_usage_from_repo(
             continue
         if vm_uuid is not None and snap_vm_uuid != vm_uuid:
             continue
-        usage.append((snap_vm_uuid, run_id, _snapshot_logical_bytes(record)))
+        usage.append((snap_vm_uuid, run_id, _snapshot_logical_bytes(record), _snapshot_storage_bytes(record)))
     return usage
 
 
 def _vm_rows(config: Config, repos: list[kopia_repo.PeerRepo], vm_uuid: str | None) -> tuple[list[VmUsage], bool]:
-    grouped: dict[tuple[str, str], list[int]] = {}
+    grouped: dict[tuple[str, str], dict[str, tuple[int, int]]] = {}
     names: dict[tuple[str, str], str] = {}
+    latest_runs: dict[tuple[str, str], tuple[str, str]] = {}
     ok = True
     for repo in repos:
         config_file = _connect_repo(config, repo.host_id)
@@ -151,20 +162,30 @@ def _vm_rows(config: Config, repos: list[kopia_repo.PeerRepo], vm_uuid: str | No
             continue
         for row in rows_from_repo(config, host_id=repo.host_id, config_file=config_file):
             if vm_uuid is None or row.vm_uuid == vm_uuid:
-                names[(repo.host_id, row.vm_uuid)] = row.vm_name
+                key = (repo.host_id, row.vm_uuid)
+                names[key] = row.vm_name
+                if key not in latest_runs or row.timestamp > latest_runs[key][0]:
+                    latest_runs[key] = (row.timestamp, row.run_id)
         try:
-            for snap_vm_uuid, _run_id, logical_bytes in _disk_usage_from_repo(
+            for snap_vm_uuid, _run_id, logical_bytes, backup_bytes in _disk_usage_from_repo(
                 config, host_id=repo.host_id, config_file=config_file, vm_uuid=vm_uuid
             ):
-                grouped.setdefault((repo.host_id, snap_vm_uuid), []).append(logical_bytes)
+                by_run = grouped.setdefault((repo.host_id, snap_vm_uuid), {})
+                old_logical, old_backup = by_run.get(_run_id, (0, 0))
+                by_run[_run_id] = (old_logical + logical_bytes, old_backup + backup_bytes)
         except (CommandError, json.JSONDecodeError, ValueError) as exc:
             detail = exc.result.stderr.strip() if isinstance(exc, CommandError) else str(exc)
             event("error", "kopia disk usage list failed", host_id=repo.host_id, error=detail)
             ok = False
-    rows = [
-        VmUsage(host, uuid, names.get((host, uuid), ""), len(values), sum(values))
-        for (host, uuid), values in grouped.items()
-    ]
+    rows: list[VmUsage] = []
+    for (host, uuid), by_run in grouped.items():
+        latest = latest_runs.get((host, uuid))
+        if latest is not None and latest[1] in by_run:
+            latest_bytes = by_run[latest[1]][0]
+        else:
+            latest_bytes = max((values[0] for values in by_run.values()), default=0)
+        backup_bytes = sum(values[1] for values in by_run.values())
+        rows.append(VmUsage(host, uuid, names.get((host, uuid), ""), len(by_run), latest_bytes, backup_bytes))
     rows.sort(key=lambda row: (row.host_id, row.vm_name, row.vm_uuid))
     return rows, ok
 
@@ -192,18 +213,21 @@ def _print_host_usage(rows: list[HostUsage], *, json_output: bool) -> None:
 
 
 def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
-    total = sum(row.logical_bytes for row in rows)
+    total_disk = sum(row.latest_logical_bytes for row in rows)
+    total_backup = sum(row.backup_bytes for row in rows)
     if json_output:
         print(
             json.dumps(
                 {
                     "mode": "vms",
-                    "total_logical_bytes": total,
+                    "total_backup_bytes": total_backup,
+                    "total_latest_logical_bytes": total_disk,
                     "vms": [
                         {
+                            "backup_bytes": row.backup_bytes,
                             "host_id": row.host_id,
-                            "logical_bytes": row.logical_bytes,
-                            "snapshot_count": row.snapshot_count,
+                            "latest_logical_bytes": row.latest_logical_bytes,
+                            "restore_point_count": row.restore_points,
                             "vm_name": row.vm_name,
                             "vm_uuid": row.vm_uuid,
                         }
@@ -219,14 +243,34 @@ def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
             row.host_id,
             row.vm_uuid,
             row.vm_name or "-",
-            str(row.snapshot_count),
-            str(row.logical_bytes),
-            _human_bytes(row.logical_bytes),
+            str(row.restore_points),
+            str(row.latest_logical_bytes),
+            _human_bytes(row.latest_logical_bytes),
+            _human_bytes(row.backup_bytes),
         )
         for row in rows
     ]
-    table_rows.append(("TOTAL", "", "", str(sum(row.snapshot_count for row in rows)), str(total), _human_bytes(total)))
-    print(_format_table(("host-id", "vm-uuid", "vm-name", "snapshots", "logical-bytes", "human"), table_rows))
+    table_rows.append(
+        (
+            "TOTAL",
+            "",
+            "",
+            str(sum(row.restore_points for row in rows)),
+            str(total_disk),
+            _human_bytes(total_disk),
+            _human_bytes(total_backup),
+        )
+    )
+    headers = (
+        "host-id",
+        "vm-uuid",
+        "vm-name",
+        "restore-points",
+        "disk-bytes",
+        "disk-size",
+        "backup-size",
+    )
+    print(_format_table(headers, table_rows))
 
 
 def backup_usage(

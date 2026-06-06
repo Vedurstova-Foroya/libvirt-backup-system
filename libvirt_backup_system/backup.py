@@ -53,6 +53,7 @@ def _build_manifest(config: Config, vm: VM, run_id: str, stamp: str, disks: list
     return Manifest(
         vm_name=vm.name,
         vm_uuid=vm.uuid,
+        vm_state=vm.state,
         host_id=config.get("HOST_ID"),
         run_id=run_id,
         timestamp=stamp,

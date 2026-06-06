@@ -128,6 +128,7 @@ def test_missing_snapshot_base_logs_and_returns_false(
     manifest = manifest_module.Manifest(
         vm_name="alpha",
         vm_uuid=ALPHA_UUID,
+        vm_state="running",
         host_id="host-a",
         run_id="run-1",
         timestamp="20260101T010101",
@@ -219,6 +220,15 @@ def test_read_domain_xml_invokes_virsh_dumpxml(monkeypatch: pytest.MonkeyPatch) 
     xml = backup._read_domain_xml("qemu:///system", "alpha")
     assert xml == "<domain/>"
     assert captured == [["virsh", "-c", "qemu:///system", "dumpxml", "--inactive", "--", "alpha"]]
+
+
+def test_build_manifest_records_vm_state(monkeypatch: pytest.MonkeyPatch, backup_config: Config) -> None:
+    _install_stubs(monkeypatch)
+    manifest = backup._build_manifest(
+        backup_config, _vm(state="shut off"), "run-1", "20260101T010101", [_disk_target()]
+    )
+    assert manifest is not None
+    assert manifest.vm_state == "shut off"
 
 
 def test_override_source_format(backup_config: Config) -> None:

@@ -37,6 +37,7 @@ class ManifestDisk:
 class Manifest:
     vm_name: str
     vm_uuid: str
+    vm_state: str
     host_id: str
     run_id: str
     timestamp: str
@@ -93,6 +94,7 @@ def parse_manifest(text: str) -> Manifest:
     return Manifest(
         vm_name=_require_str(data, "vm_name"),
         vm_uuid=_require_str(data, "vm_uuid"),
+        vm_state=_require_str(data, "vm_state") if "vm_state" in data else "running",
         host_id=_require_str(data, "host_id"),
         run_id=_require_str(data, "run_id"),
         timestamp=_require_str(data, "timestamp"),

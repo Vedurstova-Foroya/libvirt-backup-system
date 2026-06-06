@@ -103,6 +103,7 @@ def test_restore_overwrite_path_success(
     assert "restore overwrite completed" in out
     assert "restored disk" in out
     assert captured["xml"] == manifest.domain_xml
+    assert ["virsh", "-c", "qemu:///system", "start", "--", "myvm"] in calls
 
 
 def test_restore_overwrite_writes_each_disk_to_its_own_source_path(
@@ -158,6 +159,7 @@ def test_restore_turnkey_different_host(
     manifest = Manifest(
         vm_name="myvm",
         vm_uuid=ALPHA_UUID,
+        vm_state="running",
         host_id="host-b",
         run_id="run-1",
         timestamp=TIMESTAMP,
@@ -186,7 +188,8 @@ def test_restore_turnkey_different_host(
     _install_meta_writer(monkeypatch, manifest)
     _install_disk_snapshot(monkeypatch)
     streamed = _record_stream_dests(monkeypatch)
-    monkeypatch.setattr(restore, "run", lambda args, **_: CommandResult(args, 0, "", ""))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(restore, "run", lambda args, **_: calls.append(args) or CommandResult(args, 0, "", ""))
     captured: dict[str, Any] = {}
 
     def fake_define(_cfg: Config, path: Path, vm_uuid: str, name: str | None) -> bool:
@@ -209,6 +212,7 @@ def test_restore_turnkey_different_host(
     assert source is not None
     assert source.get("file") == str(streamed[0])
     assert "/var/lib/libvirt/images" not in (source.get("file") or "")
+    assert ["virsh", "-c", "qemu:///system", "start", "--", "myvm"] in calls
 
 
 def test_restore_turnkey_same_host_when_local_uuid_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,3 +242,18 @@ def test_restore_turnkey_same_host_when_local_uuid_absent(tmp_path: Path, monkey
     assert captured["name"] == "myvm"
     assert streamed == [captured["path"].parent / "vda.qcow2"]
     assert "destroy" not in {token for args in calls for token in args}
+
+
+def test_restore_does_not_start_vm_when_manifest_state_is_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    row = make_row(tmp_path, host_id="host-b")
+    manifest = make_manifest(vm_state="shut off", host_id="host-b")
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
+    _install_meta_writer(monkeypatch, manifest)
+    _install_disk_snapshot(monkeypatch)
+    _record_stream_dests(monkeypatch)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(restore, "run", lambda args, **_: calls.append(args) or CommandResult(args, 0, "", ""))
+    monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP, verbose=False) == 0
+    assert "start" not in {token for args in calls for token in args}

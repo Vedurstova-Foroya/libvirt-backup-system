@@ -251,7 +251,7 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
     _virsh(["destroy", running_name], check=False)
     _virsh(["undefine", running_name], check=False)
     _run([str(bin_path), "restore", running_uuid, timestamp])
-    _virsh(["start", running_name])
+    assert _virsh(["domstate", running_name]).stdout.strip() == "running"
     _run([str(bin_path), "run"])
     growth = _repo_size_bytes(repo) - size_before
     assert growth < POST_RESTORE_BLOAT_LIMIT, (

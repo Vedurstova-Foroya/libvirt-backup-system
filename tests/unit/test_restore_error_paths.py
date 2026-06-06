@@ -182,3 +182,44 @@ def test_restore_overwrite_exits_when_shutdown_fails_after_dumpxml(
     # Temp file should have been cleaned up.
     temp = src_dir / ".myvm-vda.qcow2.vda.restore.tmp"
     assert not temp.exists()
+
+
+def test_restore_overwrite_exits_when_post_define_start_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    row = make_row(tmp_path)
+    manifest, _src_dir = _manifest_with_local_disks(tmp_path)
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
+    _install_meta_writer(monkeypatch, manifest)
+    _install_disk_snapshot(monkeypatch)
+
+    def fake_stream(_cfg: Any, _row: Any, _snap: str, _file: str, dest: Path) -> bool:
+        dest.write_bytes(b"new-disk")
+        return True
+
+    monkeypatch.setattr(restore, "_stream_disk_to_qcow2", fake_stream)
+
+    def fake_run(args: list[str], **_: Any) -> CommandResult:
+        if "domname" in args:
+            return CommandResult(args, 0, "myvm\n", "")
+        if "dumpxml" in args:
+            return CommandResult(args, 0, "<domain><name>myvm</name></domain>", "")
+        if "domstate" in args:
+            return CommandResult(args, 0, "shut off\n", "")
+        return CommandResult(args, 0, "", "")
+
+    monkeypatch.setattr(restore, "run", fake_run)
+    monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
+    monkeypatch.setattr(restore, "restore_vm_power", lambda *_a, **_kw: False)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1
+
+
+def test_restore_turnkey_exits_when_post_define_start_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = make_config(tmp_path)
+    row = make_row(tmp_path, host_id="host-b")
+    manifest = make_manifest(host_id="host-b")
+    monkeypatch.setattr(restore, "enumerate_backups_result", lambda _c, *, vm_uuid=None: rows_result([row]))
+    _install_meta_writer(monkeypatch, manifest)
+    monkeypatch.setattr(restore, "_materialize_disks", lambda *_a, **_kw: True)
+    monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
+    monkeypatch.setattr(restore, "restore_vm_power", lambda *_a, **_kw: False)
+    assert restore.restore(cfg, ALPHA_UUID, TIMESTAMP) == 1

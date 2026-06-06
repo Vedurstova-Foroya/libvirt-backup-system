@@ -38,6 +38,7 @@ def make_config(tmp_path: Path, *, host_id: str = "host-a") -> Config:
 def make_manifest(
     *,
     vm_name: str = "myvm",
+    vm_state: str = "running",
     host_id: str = "host-a",
     disks: tuple[ManifestDisk, ...] | None = None,
 ) -> Manifest:
@@ -53,6 +54,7 @@ def make_manifest(
     return Manifest(
         vm_name=vm_name,
         vm_uuid=ALPHA_UUID,
+        vm_state=vm_state,
         host_id=host_id,
         run_id="run-1",
         timestamp=TIMESTAMP,

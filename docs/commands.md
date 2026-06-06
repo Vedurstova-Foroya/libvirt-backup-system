@@ -223,9 +223,8 @@ sudo libvirt-backup-system du host-a aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
 ```
 
 One drilldown argument can be either a host id or VM UUID; two arguments are
-host id then VM UUID. Drilldowns report retained logical
-snapshot bytes. Those rows do not add up to repo bytes because Kopia dedupes
-chunks across snapshots and VMs. Add `--json` for machine-readable output.
+host id then VM UUID. Drilldowns report restore-point count, latest logical
+VM size, and Kopia packed backup size. Top-level remains physical repo usage.
 
 ## `restore`
 

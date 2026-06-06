@@ -70,7 +70,11 @@ def test_restore_uses_peer_match_when_local_repo_missing(tmp_path: Path, monkeyp
         "enumerate_backups_result",
         lambda _cfg, *, vm_uuid=None: rows_result([peer_row], ok=False, failed_host_ids=("host-a",)),
     )
-    monkeypatch.setattr(restore, "_restore_manifest", lambda *_a, **_kw: make_manifest(host_id="host-b"))
+    monkeypatch.setattr(
+        restore,
+        "_restore_manifest",
+        lambda *_a, **_kw: make_manifest(host_id="host-b", vm_state="shut off"),
+    )
     monkeypatch.setattr(restore, "_materialize_disks", lambda *_a, **_kw: True)
     monkeypatch.setattr(restore, "define_restored_domain", lambda *_a, **_kw: True)
 

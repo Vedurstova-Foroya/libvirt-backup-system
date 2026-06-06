@@ -26,6 +26,7 @@ from .restore_overwrite import (
     replace_overwrite_disks_with_backups,
     rollback_overwrite_disks,
 )
+from .restore_state import restore_vm_power
 from .shell import CommandError, run
 from .storage import subpath_is_safe
 from .vms import is_safe_vm_name, is_safe_vm_uuid
@@ -105,7 +106,6 @@ def _local_domain_name_for_uuid(config: Config, vm_uuid: str) -> str | None:
 
 
 def _shutdown_and_undefine(config: Config, vm_name: str) -> bool:
-    """Tear down the existing local domain before overwriting its disks."""
     try:
         run(["virsh", "-c", config.get("LIBVIRT_URI"), "destroy", "--", vm_name])
     except CommandError as exc:
@@ -200,14 +200,8 @@ def _rewrite_domain_disk_sources(domain_xml: str, dest_map: dict[str, Path]) -> 
     return ET.tostring(root, encoding="unicode")
 
 
-def _write_restored_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
-    path = ctx.staging / RESTORED_CONFIG_FILE
-    path.write_text(domain_xml, encoding="utf-8")
-    return path
-
-
-def _write_original_xml(ctx: _RestoreContext, domain_xml: str) -> Path:
-    path = ctx.staging / "libvirt-backup-system-original.xml"
+def _write_xml(ctx: _RestoreContext, filename: str, domain_xml: str) -> Path:
+    path = ctx.staging / filename
     path.write_text(domain_xml, encoding="utf-8")
     return path
 
@@ -222,7 +216,7 @@ def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> in
     if original_xml is None:
         cleanup_paths(temp_map)
         return 1
-    original_xml_path = _write_original_xml(ctx, original_xml)
+    original_xml_path = _write_xml(ctx, "libvirt-backup-system-original.xml", original_xml)
     if not _shutdown_and_undefine(config, vm_name):
         cleanup_paths(temp_map)
         return 1
@@ -231,12 +225,14 @@ def _restore_overwrite(config: Config, ctx: _RestoreContext, vm_name: str) -> in
         cleanup_paths(temp_map)
         _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
-    xml_path = _write_restored_xml(ctx, ctx.manifest.domain_xml)
+    xml_path = _write_xml(ctx, RESTORED_CONFIG_FILE, ctx.manifest.domain_xml)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, vm_name):
         rollback_overwrite_disks(backup_map, dest_map)
         _define_domain_xml(config, original_xml_path, log_context="original domain redefine")
         return 1
     cleanup_paths(backup_map)
+    if not restore_vm_power(config, vm_name, ctx.manifest.vm_state, runner=run):
+        return 1
     event("info", "restore overwrite completed", vm=vm_name, output=str(ctx.staging))
     return 0
 
@@ -246,8 +242,10 @@ def _restore_turnkey(config: Config, ctx: _RestoreContext) -> int:
     if not _materialize_disks(ctx, config, dest_map):
         return 1
     rewritten = _rewrite_domain_disk_sources(ctx.manifest.domain_xml, dest_map)
-    xml_path = _write_restored_xml(ctx, rewritten)
+    xml_path = _write_xml(ctx, RESTORED_CONFIG_FILE, rewritten)
     if not define_restored_domain(config, xml_path, ctx.manifest.vm_uuid, ctx.manifest.vm_name):
+        return 1
+    if not restore_vm_power(config, ctx.manifest.vm_name, ctx.manifest.vm_state, runner=run):
         return 1
     event(
         "info",

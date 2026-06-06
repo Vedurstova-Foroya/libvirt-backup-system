@@ -91,7 +91,7 @@ def test_du_rejects_bad_or_missing_host_id(
     assert "backup host repo not found" in capsys.readouterr().err
 
 
-def test_du_vm_rows_join_names_and_sum_logical_bytes(
+def test_du_vm_rows_join_names_and_report_latest_logical_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     cfg = _make_config(tmp_path)
@@ -103,7 +103,9 @@ def test_du_vm_rows_join_names_and_sum_logical_bytes(
         "rows_from_repo",
         lambda _config, *, host_id, config_file: [
             BackupRow(ALPHA_UUID, "20260101T000000", host_id, "alpha", "run-1", "meta-1", config_file),
-            BackupRow(BETA_UUID, "20260101T000000", host_id, "beta", "run-2", "meta-2", config_file),
+            BackupRow(ALPHA_UUID, "20260102T000000", host_id, "alpha", "run-2", "meta-2", config_file),
+            BackupRow(ALPHA_UUID, "20251231T000000", host_id, "alpha", "run-old", "meta-old", config_file),
+            BackupRow(BETA_UUID, "20260101T000000", host_id, "beta", "run-3", "meta-3", config_file),
         ],
     )
 
@@ -112,6 +114,7 @@ def test_du_vm_rows_join_names_and_sum_logical_bytes(
         payload = [
             _disk_record(host_id, ALPHA_UUID, "run-1", 100),
             _disk_record(host_id, ALPHA_UUID, "run-2", 125),
+            _disk_record(host_id, ALPHA_UUID, "run-2", 25),
             _disk_record(host_id, BETA_UUID, "run-3", 999),
         ]
         return CommandResult(args=args, returncode=0, stdout=json.dumps(payload), stderr="")
@@ -124,7 +127,12 @@ def test_du_vm_rows_join_names_and_sum_logical_bytes(
     assert ALPHA_UUID in out
     assert BETA_UUID not in out
     assert "alpha" in out
-    assert "225" in out
+    assert "restore-points" in out
+    assert "backup-size" in out
+    assert "backup-bytes" not in out
+    assert "150" in out
+    assert "250" in out
+    assert "225" not in out
 
 
 def test_du_vm_rows_reports_connect_and_list_failures(
@@ -173,8 +181,12 @@ def test_du_vm_json_reports_filtered_logical_usage(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "vms"
-    assert payload["total_logical_bytes"] == 512
+    assert payload["total_backup_bytes"] == 512
+    assert payload["total_latest_logical_bytes"] == 512
     assert payload["vms"][0]["vm_uuid"] == BETA_UUID
+    assert payload["vms"][0]["backup_bytes"] == 512
+    assert payload["vms"][0]["latest_logical_bytes"] == 512
+    assert payload["vms"][0]["restore_point_count"] == 1
 
 
 def test_repo_bytes_and_human_sizes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -224,7 +236,7 @@ def test_disk_usage_from_repo_filters_bad_snapshot_records(tmp_path: Path, monke
 
     rows = backup_usage._disk_usage_from_repo(cfg, host_id="host-a", config_file=tmp_path / "cfg", vm_uuid=ALPHA_UUID)
 
-    assert rows == [(ALPHA_UUID, "run-3", 3), (ALPHA_UUID, "run-4", 0)]
+    assert rows == [(ALPHA_UUID, "run-3", 3, 3), (ALPHA_UUID, "run-4", 0, 0)]
 
 
 def test_disk_usage_rejects_non_array_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,6 +255,7 @@ def _disk_record(host_id: str, vm_uuid: str, run_id: str, size: int) -> dict[str
     return {
         "id": f"{host_id}-{run_id}",
         "stats": {"totalSize": size},
+        "storageStats": {"newData": {"packedContentBytes": size}},
         "tags": {
             "tag:host": host_id,
             "tag:kind": "disk",

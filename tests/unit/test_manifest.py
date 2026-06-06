@@ -22,6 +22,7 @@ def _make_manifest(**overrides: object) -> Manifest:
     defaults: dict[str, object] = {
         "vm_name": "alpha",
         "vm_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "vm_state": "running",
         "host_id": "host-a",
         "run_id": "run-1",
         "timestamp": "20260521T120000",
@@ -49,6 +50,7 @@ def test_to_json_round_trip_preserves_fields(backup_config: Config) -> None:
     assert parsed == manifest
     payload = json.loads(manifest.to_json())
     assert payload["vm_name"] == "alpha"
+    assert payload["vm_state"] == "running"
     assert isinstance(payload["disks"], list)
     assert payload["disks"][0]["target"] == "vda"
 
@@ -101,6 +103,12 @@ def test_parse_manifest_rejects_non_list_disks() -> None:
     )
     with pytest.raises(ValueError, match="disks field is not a list"):
         parse_manifest(body)
+
+
+def test_parse_manifest_defaults_missing_vm_state_to_running() -> None:
+    payload = json.loads(_make_manifest().to_json())
+    del payload["vm_state"]
+    assert parse_manifest(json.dumps(payload)).vm_state == "running"
 
 
 def test_parse_manifest_rejects_non_object_disk_row() -> None:
