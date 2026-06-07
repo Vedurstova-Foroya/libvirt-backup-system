@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .consistency import CRASH, FILESYSTEM
 from .logging_json import event
 from .shell import CommandError, CommandResult, run
 from .stream_process import terminate_process
@@ -48,7 +49,7 @@ class FrozenSnapshot:
     snapshot_name: str
     overlays: dict[str, Path]  # target -> overlay file produced by libvirt
     bases: tuple[DiskTarget, ...]
-    quiesced: bool
+    consistency: str
 
 
 class VmSnapshotter(Protocol):  # pragma: no cover - type-checker fiction at runtime
@@ -118,13 +119,13 @@ class LibvirtSnapshotter:
             overlay = runtime / f"{disk.target}.{snapshot_name}.overlay"
             overlays[disk.target] = overlay
             diskspecs.extend(["--diskspec", f"{disk.target},snapshot=external,file={overlay}"])
-        quiesced = self._snapshot_create(vm_name, snapshot_name, diskspecs)
+        consistency = FILESYSTEM if self._snapshot_create(vm_name, snapshot_name, diskspecs) else CRASH
         return FrozenSnapshot(
             vm_name=vm_name,
             snapshot_name=snapshot_name,
             overlays=overlays,
             bases=tuple(disks),
-            quiesced=quiesced,
+            consistency=consistency,
         )
 
     def _snapshot_create(self, vm_name: str, snapshot_name: str, diskspecs: list[str]) -> bool:

@@ -21,6 +21,7 @@ import pytest
 
 from libvirt_backup_system import backup, kopia_snapshots
 from libvirt_backup_system.config import Config
+from libvirt_backup_system.consistency import CRASH, FILESYSTEM
 from libvirt_backup_system.shell import CommandError, CommandResult
 from libvirt_backup_system.vm_snapshot import DiskTarget, FrozenSnapshot
 from libvirt_backup_system.vms import VM
@@ -48,13 +49,6 @@ def _find_event(captured: str, message: str) -> dict[str, Any]:
 
 @dataclass
 class _FakeUpstream:
-    """Stand-in for the ``Popen`` returned by ``stream_disk``.
-
-    ``snapshot_create_stdin`` is monkeypatched, so we never need to wire a
-    real ``stdout`` pipe; the attribute exists so ``backup`` can pass the
-    object straight through without raising.
-    """
-
     args: list[str]
     returncode: int = 0
     stdout: object = None
@@ -96,7 +90,7 @@ class FakeSnapper:
             snapshot_name="snap-1",
             overlays={d.target: Path(f"/tmp/{d.target}.overlay") for d in disks},
             bases=tuple(disks),
-            quiesced=self.quiesced,
+            consistency=FILESYSTEM if self.quiesced else CRASH,
         )
 
     @contextmanager
@@ -175,7 +169,11 @@ def _install_stubs(
         return f"snap-{kwargs['stdin_file']}"
 
     def default_create_path(**kwargs: Any) -> None:
-        captured["create_path"].append(kwargs)
+        captured_call = dict(kwargs)
+        manifest_path = Path(kwargs["path"]) / "manifest.json"
+        if manifest_path.exists():
+            captured_call["manifest_json"] = manifest_path.read_text(encoding="utf-8")
+        captured["create_path"].append(captured_call)
         if create_path is not None:
             create_path(**kwargs)
 
@@ -211,15 +209,17 @@ def test_backup_vm_happy_path_quiesces_and_streams_each_disk(
     assert sorted(p.name for p in snapper.stream_calls) == ["vda.qcow2", "vdb.qcow2"]
     stdin_targets = sorted(call["stdin_file"] for call in captured["create_stdin"])
     assert stdin_targets == ["vda.raw", "vdb.raw"]
-    # Two disk snapshots + one meta snapshot; the meta carries the kind tag.
+    # Two disk snapshots + one meta snapshot; the meta carries consistency.
     assert len(captured["create_path"]) == 1
     assert captured["create_path"][0]["tags"]["kind"] == "meta"
+    assert captured["create_path"][0]["tags"]["consistency"] == "filesystem"
+    assert json.loads(captured["create_path"][0]["manifest_json"])["consistency"] == "filesystem"
     # Mount check fires at preflight and again post-meta.
     assert len(captured["mount_checks"]) == 2
     # The completion event must surface the quiesce outcome so operators can
     # grep run logs for VMs that fell back to crash-consistent snapshots.
     completion = _find_event(capsys.readouterr().out, "backup completed")
-    assert completion["consistency"] == "quiesced"
+    assert completion["consistency"] == "filesystem"
 
 
 def test_backup_vm_rejects_unsafe_name(backup_config: Config) -> None:

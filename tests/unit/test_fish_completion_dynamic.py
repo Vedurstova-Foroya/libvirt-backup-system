@@ -22,13 +22,13 @@ import libvirt_backup_system
 
 COMPLETION_FILE = Path(libvirt_backup_system.__file__).resolve().parent / "data" / "libvirt-backup-system.fish"
 FIXTURE_OUTPUT = (
-    "source-host-id  vm-uuid  timestamp  run-id  vm-name\n"
+    "source-host-id  vm-uuid  timestamp  run-id  consistency  vm-name\n"
     "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260101T000000  "
-    "11111111-1111-1111-1111-111111111111  alpha vm\n"
+    "11111111-1111-1111-1111-111111111111  filesystem   alpha vm\n"
     "host1           aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa  20260102T030000  "
-    "22222222-2222-2222-2222-222222222222  alpha vm\n"
+    "22222222-2222-2222-2222-222222222222  crash        alpha vm\n"
     "host2           bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  20260105T000000  "
-    "33333333-3333-3333-3333-333333333333  beta\n"
+    "33333333-3333-3333-3333-333333333333  unknown      beta\n"
 )
 
 
@@ -236,7 +236,7 @@ def test_restore_completion_refreshes_stale_cache(tmp_path: Path) -> None:
     os.utime(cache, (old, old))
     (tmp_path / "fixture.txt").write_text(
         FIXTURE_OUTPUT + "host3           cccccccc-cccc-cccc-cccc-cccccccccccc  20260106T000000  "
-        "44444444-4444-4444-4444-444444444444  gamma\n",
+        "44444444-4444-4444-4444-444444444444  filesystem   gamma\n",
         encoding="utf-8",
     )
 

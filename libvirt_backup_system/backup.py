@@ -9,11 +9,13 @@ import tempfile
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 from . import backup_cleanup, kopia_repo, kopia_snapshots
 from .config import Config, prefixed
+from .consistency import parse_consistency
 from .logging_json import event
 from .manifest import Manifest, ManifestDisk, snapshot_filename_for_target, utc_timestamp
 from .paths import backup_root, runtime_backup_path_ok
@@ -113,7 +115,7 @@ def _disk_tags(config: Config, vm: VM, run_id: str, target: str) -> dict[str, st
     }
 
 
-def _meta_tags(config: Config, vm: VM, run_id: str, stamp: str) -> dict[str, str]:
+def _meta_tags(config: Config, vm: VM, run_id: str, stamp: str, consistency: str) -> dict[str, str]:
     return {
         "vm-uuid": vm.uuid,
         "vm-name": vm.name,
@@ -121,6 +123,7 @@ def _meta_tags(config: Config, vm: VM, run_id: str, stamp: str) -> dict[str, str
         "host": config.get("HOST_ID"),
         "run-id": run_id,
         "timestamp": stamp,
+        "consistency": consistency,
     }
 
 
@@ -194,14 +197,13 @@ def backup_vm(config: Config, vm: VM, snapper: VmSnapshotter | None = None) -> b
 def _stream_all_disks(
     config: Config, vm: VM, manifest: Manifest, run_id: str, snapper: VmSnapshotter, snapper_disks: list[DiskTarget]
 ) -> tuple[bool, str]:
-    """Drive freeze → stream each disk → commit, all through the same snapper."""
     try:
         frozen = snapper.freeze(vm.name, snapper_disks)
     except CommandError as exc:
         stderr = exc.result.stderr.strip()
         event("error", "snapshot freeze failed", vm=vm.name, run_id=run_id, stderr=stderr)
         return False, "failed"
-    consistency = "quiesced" if frozen.quiesced else "crash"
+    consistency = parse_consistency(frozen.consistency)
     created_disk_snapshot_ids: list[str] = []
     meta_written = False
     ok = True
@@ -218,7 +220,7 @@ def _stream_all_disks(
                 break
             created_disk_snapshot_ids.append(snapshot_id)
         if ok:
-            meta_written = _write_meta_snapshot(config, vm, manifest, run_id)
+            meta_written = _write_meta_snapshot(config, vm, manifest, run_id, consistency)
             ok = meta_written
     finally:
         if not meta_written and created_disk_snapshot_ids:
@@ -260,7 +262,8 @@ def _stream_single_disk(
         return None
 
 
-def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str) -> bool:
+def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str, consistency: str) -> bool:
+    manifest = replace(manifest, consistency=consistency)
     with _staging_dir() as staging:
         if not manifest.write(staging, vm_name=vm.name):
             return False
@@ -270,7 +273,7 @@ def _write_meta_snapshot(config: Config, vm: VM, manifest: Manifest, run_id: str
                 password_file=kopia_repo.password_file_path(config),
                 cache_dir=kopia_repo.cache_dir(config),
                 path=staging,
-                tags=_meta_tags(config, vm, run_id, manifest.timestamp),
+                tags=_meta_tags(config, vm, run_id, manifest.timestamp, consistency),
                 override_source=_override_source(config, vm.uuid, "meta"),
                 parallelism=_parallelism(config),
             )

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from libvirt_backup_system import vm_snapshot
+from libvirt_backup_system.consistency import CRASH, FILESYSTEM
 from libvirt_backup_system.shell import CommandError, CommandResult
 
 
@@ -70,7 +71,7 @@ def test_freeze_attempts_quiesce_then_records_overlays(monkeypatch: pytest.Monke
         vm_snapshot.DiskTarget(target="vdb", source=Path("/img/vdb.qcow2")),
     ]
     result = snap.freeze("alpha", disks)
-    assert result.quiesced is True
+    assert result.consistency == FILESYSTEM
     assert "--quiesce" in calls[0]
     assert "--atomic" in calls[0]
     assert "--no-metadata" in calls[0]
@@ -94,7 +95,7 @@ def test_freeze_retries_without_quiesce_on_qga_failure(
     snap = _make_snapper(tmp_path)
     disks = [vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2"))]
     result = snap.freeze("alpha", disks)
-    assert result.quiesced is False
+    assert result.consistency == CRASH
     assert len(attempts) == 2
     assert "QGA quiesce failed" in capsys.readouterr().err
 
@@ -112,7 +113,7 @@ def test_commit_pivots_all_disks_and_unlinks_overlays(monkeypatch: pytest.Monkey
     overlay.write_text("ov", encoding="utf-8")
     disks = (vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2")),)
     frozen = vm_snapshot.FrozenSnapshot(
-        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, quiesced=True
+        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, consistency=FILESYSTEM
     )
     snap.commit(frozen)
     assert any("blockcommit" in args for args in calls)
@@ -142,7 +143,7 @@ def test_commit_removes_empty_runtime_dir_after_pivot(monkeypatch: pytest.Monkey
     snap = _make_snapper(tmp_path)
     disks = (vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2")),)
     frozen = vm_snapshot.FrozenSnapshot(
-        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, quiesced=True
+        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, consistency=FILESYSTEM
     )
     snap.commit(frozen)
     assert not overlay.exists()
@@ -171,7 +172,7 @@ def test_commit_leaves_runtime_dir_alone_when_not_empty(monkeypatch: pytest.Monk
     snap = _make_snapper(tmp_path)
     disks = (vm_snapshot.DiskTarget(target="vda", source=Path("/img/vda.qcow2")),)
     frozen = vm_snapshot.FrozenSnapshot(
-        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, quiesced=True
+        vm_name="alpha", snapshot_name="snap-1", overlays={"vda": overlay}, bases=disks, consistency=FILESYSTEM
     )
     snap.commit(frozen)
     assert runtime.exists()
@@ -198,7 +199,7 @@ def test_commit_reraises_first_failure_but_continues_other_disks(
         vm_snapshot.DiskTarget(target="vdb", source=Path("/img/vdb.qcow2")),
     )
     frozen = vm_snapshot.FrozenSnapshot(
-        vm_name="alpha", snapshot_name="snap-1", overlays={}, bases=disks, quiesced=True
+        vm_name="alpha", snapshot_name="snap-1", overlays={}, bases=disks, consistency=FILESYSTEM
     )
     with pytest.raises(CommandError):
         snap.commit(frozen)

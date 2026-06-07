@@ -1,12 +1,3 @@
-"""Unit tests for :mod:`libvirt_backup_system.list_restore_points`.
-
-External surface (``kopia_repo.iter_connected_peers``,
-``kopia_repo.local_config_file``, ``kopia_repo.password_file_path``,
-``kopia_repo.cache_dir``, ``kopia_snapshots.snapshot_list``) is stubbed
-so each test exercises ``enumerate_backups`` / ``format_rows`` in
-isolation.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -45,6 +36,7 @@ def _snapshot(
     run_id: str = RUN_ID_A,
     timestamp_tag: str | None = "20260521T023001",
     host_tag: str = "host-a",
+    consistency: str | None = "filesystem",
 ) -> kopia_snapshots.KopiaSnapshot:
     tags = {}
     if vm_uuid:
@@ -57,6 +49,8 @@ def _snapshot(
         tags["timestamp"] = timestamp_tag
     if host_tag:
         tags["host"] = host_tag
+    if consistency is not None:
+        tags["consistency"] = consistency
     tags["kind"] = "meta"
     return kopia_snapshots.KopiaSnapshot(
         snapshot_id=snap_id,
@@ -153,6 +147,7 @@ def test_local_rows_emits_rows_for_meta_snapshots(tmp_path: Path, monkeypatch: p
     assert row.run_id == RUN_ID_A
     assert row.timestamp == "20260521T023001"
     assert row.config_file == local_cfg
+    assert row.consistency == "filesystem"
 
 
 def test_local_rows_uses_timestamp_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,6 +179,18 @@ def test_local_rows_allows_older_snapshots_without_vm_name_tag(tmp_path: Path, m
     rows = list_restore_points.local_rows(cfg)
     assert len(rows) == 1
     assert rows[0].vm_name == ""
+
+
+def test_local_rows_defaults_missing_or_bad_consistency_to_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_config(tmp_path)
+    local_cfg = _stub_repo_helpers(monkeypatch, cfg)
+    _stub_snapshot_list(
+        monkeypatch,
+        {local_cfg: [_snapshot(snap_id="missing", consistency=None), _snapshot(snap_id="bad", consistency="app")]},
+    )
+    assert [row.consistency for row in list_restore_points.local_rows(cfg)] == ["unknown", "unknown"]
 
 
 def test_rows_from_repo_returns_empty_on_command_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

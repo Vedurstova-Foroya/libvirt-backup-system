@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub, "check", help_text=cli_help.CHECK_HELP, description=cli_help.CHECK_DESCRIPTION, aliases=["preflight"]
     )
     _add_subparser(sub, "doctor", help_text=cli_help.DOCTOR_HELP, description=cli_help.DOCTOR_DESCRIPTION)
-    _add_subparser(sub, "run", help_text=cli_help.RUN_HELP, description=cli_help.RUN_DESCRIPTION)
+    _add_subparser(sub, "run", help_text=cli_help.RUN_HELP, description=cli_help.RUN_DESCRIPTION, aliases=["backup"])
     _add_subparser(sub, "start", help_text=cli_help.START_HELP, description=cli_help.START_DESCRIPTION)
     _add_subparser(sub, "status", help_text=cli_help.STATUS_HELP)
 

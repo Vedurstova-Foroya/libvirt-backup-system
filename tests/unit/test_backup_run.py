@@ -8,6 +8,7 @@ exercised with the same fakes the happy-path tests use.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -50,11 +51,13 @@ def test_backup_vm_completion_event_marks_crash_consistent_when_quiesce_fails(
     event must surface that fact so operators can grep run logs and tell
     which VMs need a guest-agent fix before the next backup window.
     """
-    _install_stubs(monkeypatch)
+    captured = _install_stubs(monkeypatch)
     snapper = FakeSnapper(disks=[_disk_target()], quiesced=False)
     assert backup.backup_vm(backup_config, _vm(), snapper=snapper) is True
     completion = _find_event(capsys.readouterr().out, "backup completed")
     assert completion["consistency"] == "crash"
+    assert json.loads(captured["create_path"][0]["manifest_json"])["consistency"] == "crash"
+    assert captured["create_path"][0]["tags"]["consistency"] == "crash"
 
 
 def test_backup_vm_runs_commit_even_when_streaming_fails(
@@ -241,7 +244,7 @@ def test_disk_and_meta_tags(backup_config: Config) -> None:
     vm = _vm(uuid=BETA_UUID)
     disk_tags = backup._disk_tags(backup_config, vm, "run-9", "vda")
     assert disk_tags == {"vm-uuid": BETA_UUID, "disk": "vda", "host": "host-a", "run-id": "run-9", "kind": "disk"}
-    meta_tags = backup._meta_tags(backup_config, vm, "run-9", "20260101T010101")
+    meta_tags = backup._meta_tags(backup_config, vm, "run-9", "20260101T010101", "filesystem")
     assert meta_tags == {
         "vm-uuid": BETA_UUID,
         "vm-name": vm.name,
@@ -249,6 +252,7 @@ def test_disk_and_meta_tags(backup_config: Config) -> None:
         "run-id": "run-9",
         "kind": "meta",
         "timestamp": "20260101T010101",
+        "consistency": "filesystem",
     }
 
 

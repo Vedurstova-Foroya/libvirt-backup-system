@@ -1,5 +1,3 @@
-"""Backup disk-usage reporting for managed kopia repositories."""
-
 from __future__ import annotations
 
 import json
@@ -10,6 +8,7 @@ from typing import cast
 
 from . import kopia_repo
 from .config import Config
+from .consistency import UNKNOWN
 from .kopia_client import as_string_keyed, as_string_string, build_config_args, run_kopia, tags_args
 from .list_restore_points import rows_from_repo
 from .logging_json import event
@@ -31,6 +30,7 @@ class VmUsage:
     restore_points: int
     latest_logical_bytes: int
     backup_bytes: int
+    latest_consistency: str = UNKNOWN
 
 
 def _entry_size(path: Path) -> int:
@@ -153,7 +153,7 @@ def _disk_usage_from_repo(
 def _vm_rows(config: Config, repos: list[kopia_repo.PeerRepo], vm_uuid: str | None) -> tuple[list[VmUsage], bool]:
     grouped: dict[tuple[str, str], dict[str, tuple[int, int]]] = {}
     names: dict[tuple[str, str], str] = {}
-    latest_runs: dict[tuple[str, str], tuple[str, str]] = {}
+    latest_runs: dict[tuple[str, str], tuple[str, str, str]] = {}
     ok = True
     for repo in repos:
         config_file = _connect_repo(config, repo.host_id)
@@ -165,7 +165,7 @@ def _vm_rows(config: Config, repos: list[kopia_repo.PeerRepo], vm_uuid: str | No
                 key = (repo.host_id, row.vm_uuid)
                 names[key] = row.vm_name
                 if key not in latest_runs or row.timestamp > latest_runs[key][0]:
-                    latest_runs[key] = (row.timestamp, row.run_id)
+                    latest_runs[key] = (row.timestamp, row.run_id, row.consistency)
         try:
             for snap_vm_uuid, _run_id, logical_bytes, backup_bytes in _disk_usage_from_repo(
                 config, host_id=repo.host_id, config_file=config_file, vm_uuid=vm_uuid
@@ -185,7 +185,9 @@ def _vm_rows(config: Config, repos: list[kopia_repo.PeerRepo], vm_uuid: str | No
         else:
             latest_bytes = max((values[0] for values in by_run.values()), default=0)
         backup_bytes = sum(values[1] for values in by_run.values())
-        rows.append(VmUsage(host, uuid, names.get((host, uuid), ""), len(by_run), latest_bytes, backup_bytes))
+        latest_consistency = latest[2] if latest is not None else UNKNOWN
+        name = names.get((host, uuid), "")
+        rows.append(VmUsage(host, uuid, name, len(by_run), latest_bytes, backup_bytes, latest_consistency))
     rows.sort(key=lambda row: (row.host_id, row.vm_name, row.vm_uuid))
     return rows, ok
 
@@ -213,8 +215,7 @@ def _print_host_usage(rows: list[HostUsage], *, json_output: bool) -> None:
 
 
 def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
-    total_disk = sum(row.latest_logical_bytes for row in rows)
-    total_backup = sum(row.backup_bytes for row in rows)
+    total_disk, total_backup = sum(row.latest_logical_bytes for row in rows), sum(row.backup_bytes for row in rows)
     if json_output:
         print(
             json.dumps(
@@ -227,6 +228,7 @@ def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
                             "backup_bytes": row.backup_bytes,
                             "host_id": row.host_id,
                             "latest_logical_bytes": row.latest_logical_bytes,
+                            "latest_consistency": row.latest_consistency,
                             "restore_point_count": row.restore_points,
                             "vm_name": row.vm_name,
                             "vm_uuid": row.vm_uuid,
@@ -244,6 +246,7 @@ def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
             row.vm_uuid,
             row.vm_name or "-",
             str(row.restore_points),
+            row.latest_consistency,
             str(row.latest_logical_bytes),
             _human_bytes(row.latest_logical_bytes),
             _human_bytes(row.backup_bytes),
@@ -256,6 +259,7 @@ def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
             "",
             "",
             str(sum(row.restore_points for row in rows)),
+            "",
             str(total_disk),
             _human_bytes(total_disk),
             _human_bytes(total_backup),
@@ -266,6 +270,7 @@ def _print_vm_usage(rows: list[VmUsage], *, json_output: bool) -> None:
         "vm-uuid",
         "vm-name",
         "restore-points",
+        "latest-consistency",
         "disk-bytes",
         "disk-size",
         "backup-size",

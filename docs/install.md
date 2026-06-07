@@ -43,6 +43,12 @@ artifact must be refreshed in the same commit.
 After installing this project, run `sudo libvirt-backup-system check` to
 confirm every required binary resolves before relying on scheduled backups.
 
+For filesystem-consistent VM snapshots, install and enable QEMU guest agent
+inside each guest and confirm the libvirt guest-agent channel exists. Backups
+still run without it, but those restore points are recorded as
+crash-consistent. See [Backup consistency](backup-consistency.md) for the
+guest setup and application freeze-hook guidance.
+
 ### Offline / air-gapped install
 
 When outbound HTTPS to `github.com` / `deb.debian.org` is not available,

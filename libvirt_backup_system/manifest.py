@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from .atomic_io import atomic_write
+from .consistency import UNKNOWN, parse_consistency
 
 MANIFEST_FILENAME = "manifest.json"
 
@@ -43,6 +44,7 @@ class Manifest:
     timestamp: str
     libvirt_uri: str
     domain_xml: str
+    consistency: str = UNKNOWN
     disks: tuple[ManifestDisk, ...] = field(default_factory=tuple)
 
     def to_json(self) -> str:
@@ -100,6 +102,7 @@ def parse_manifest(text: str) -> Manifest:
         timestamp=_require_str(data, "timestamp"),
         libvirt_uri=_require_str(data, "libvirt_uri"),
         domain_xml=_require_str(data, "domain_xml"),
+        consistency=parse_consistency(data.get("consistency")),
         disks=tuple(disks),
     )
 

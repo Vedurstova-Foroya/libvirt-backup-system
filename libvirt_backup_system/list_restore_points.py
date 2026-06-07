@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import kopia_repo, kopia_snapshots
 from .config import Config
+from .consistency import UNKNOWN, parse_consistency
 from .logging_json import event
 from .paths import runtime_backup_path_ok
 from .shell import CommandError
@@ -29,6 +30,7 @@ class BackupRow:
     run_id: str
     snapshot_id: str
     config_file: Path  # which kopia config-file points at this row's repo
+    consistency: str = UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,7 @@ def _rows_from_repo_result(config: Config, *, host_id: str, config_file: Path) -
                 run_id=run_id,
                 snapshot_id=snap.snapshot_id,
                 config_file=config_file,
+                consistency=parse_consistency(snap.tags.get("consistency")),
             )
         )
     return BackupEnumeration(rows, ok=True)
@@ -138,13 +141,13 @@ def only_local_repo_failed(config: Config, result: BackupEnumeration) -> bool:
     return bool(result.rows) and set(result.failed_host_ids) == {config.get("HOST_ID")}
 
 
-_HEADERS = ("source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name")
+_HEADERS = ("source-host-id", "vm-uuid", "timestamp", "run-id", "consistency", "vm-name")
 
 
 def format_rows(rows: list[BackupRow]) -> str:
     cells: list[tuple[str, ...]] = [_HEADERS]
     for row in rows:
-        cells.append((row.host_id, row.vm_uuid, row.timestamp, row.run_id, row.vm_name))
+        cells.append((row.host_id, row.vm_uuid, row.timestamp, row.run_id, row.consistency, row.vm_name))
     widths = [max(len(cell[i]) for cell in cells) for i in range(len(_HEADERS))]
     lines: list[str] = []
     for cell in cells:
@@ -157,6 +160,7 @@ def format_json(rows: list[BackupRow]) -> str:
     payload = [
         {
             "run_id": row.run_id,
+            "consistency": row.consistency,
             "source_host_id": row.host_id,
             "timestamp": row.timestamp,
             "vm_name": row.vm_name,

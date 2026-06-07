@@ -168,7 +168,7 @@ Use ``check`` for the pre-run preflight only; use ``doctor`` when you also
 want install/registration/last-run health."""
 
 
-RUN_HELP = "Acquire the run lock, run preflight, back up every running VM."
+RUN_HELP = "Acquire the run lock, run preflight, back up every running VM. Alias: backup."
 RUN_DESCRIPTION = """\
 Manual backup invocation. Acquires the run lock, runs ``check``, and then
 backs up every selected running VM. Offline VMs are logged as
@@ -180,7 +180,7 @@ streamed disk-by-disk into the local kopia repo via
 listing so restore can reconstruct the VM without re-asking libvirt.
 
 Manual runs require the systemd schedule to have been activated first with
-``start`` -- on a systemd host, ``run`` exits non-zero with
+``start`` -- on a systemd host, ``run``/``backup`` exits non-zero with
 ``backup service is not running`` instead of starting an ad-hoc backup if
 the unit has not been installed and activated.
 

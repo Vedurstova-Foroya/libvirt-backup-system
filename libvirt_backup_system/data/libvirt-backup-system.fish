@@ -1,7 +1,7 @@
 # Fish completion for libvirt-backup-system.
 complete -c libvirt-backup-system -f
 
-set -g __lbs_subcommands install change-password uninstall check preflight doctor run start status list-vms verify list-restore-points du restore
+set -g __lbs_subcommands install change-password uninstall check preflight doctor run backup start status list-vms verify list-restore-points du restore
 
 function __lbs_no_subcommand_seen
     for token in (commandline -opc)
@@ -18,6 +18,7 @@ complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a check -d "Run
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a preflight -d "Alias of check"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a doctor -d "Full preflight + install/registration/last-run health"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a run -d "Acquire the run lock and back up every running VM"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a backup -d "Alias of run"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a start -d "Refresh systemd units and activate schedules"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a status -d "systemctl status for installed timers and services"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a list-vms -d "List selected VMs after VM_BLACKLIST is applied"
@@ -153,7 +154,7 @@ function __lbs_du_second_args
     set -l host (__lbs_du_first_positional)
     test -n "$host"; or return
     __lbs_is_uuid "$host"; and return
-    __lbs_query_restore_points | awk -v h="$host" 'function vmname(i, n) { n=$5; for (i=6; i<=NF; i++) n=n" "$i; return n } NR > 1 && $1 == h { c[$2]++; if (!s[$2]++) n[$2]=vmname() } END { for (u in c) printf "%s\t%s (%d restore points)\n", u, n[u], c[u] }' | sort
+    __lbs_query_restore_points | awk -v h="$host" 'function vmname(i, n) { n=$6; for (i=7; i<=NF; i++) n=n" "$i; return n } NR > 1 && $1 == h { c[$2]++; if (!s[$2]++) n[$2]=vmname() } END { for (u in c) printf "%s\t%s (%d restore points)\n", u, n[u], c[u] }' | sort
 end
 
 function __lbs_restore_is_option
@@ -206,9 +207,9 @@ end
 function __lbs_restore_uuids
     # Deduplicate by UUID so a VM with many restore points appears once in the
     # menu. The Kopia-era list-restore-points table is:
-    # source-host-id vm-uuid timestamp run-id vm-name. The description shows
+    # source-host-id vm-uuid timestamp run-id consistency vm-name. The description shows
     # the VM name, first host seen, and restore point count for that UUID.
-    __lbs_query_restore_points | awk 'function vmname(i, n) { n=$5; for (i=6; i<=NF; i++) n=n" "$i; return n } NR > 1 { c[$2]++; if (!s[$2]++) { h[$2]=$1; n[$2]=vmname() } } END { for (u in c) printf "%s\t%s - %s (%d restore points)\n", u, n[u], h[u], c[u] }' | sort
+    __lbs_query_restore_points | awk 'function vmname(i, n) { n=$6; for (i=7; i<=NF; i++) n=n" "$i; return n } NR > 1 { c[$2]++; if (!s[$2]++) { h[$2]=$1; n[$2]=vmname() } } END { for (u in c) printf "%s\t%s - %s (%d restore points)\n", u, n[u], h[u], c[u] }' | sort
 end
 
 function __lbs_restore_timestamps_for_uuid
@@ -240,7 +241,7 @@ function __lbs_restore_timestamps_for_uuid
     # the operator's typical "restore to the latest point" intent lands a
     # single arrow-down away. The description shows source host and RUN_ID for
     # diagnostics without requiring the operator to keep the table visible.
-    __lbs_query_restore_points | awk -v u="$uuid" 'function vmname(i, n) { n=$5; for (i=6; i<=NF; i++) n=n" "$i; return n } NR > 1 && $2 == u {print $3"\t"$1" "$4" "vmname()}' | sort -r
+    __lbs_query_restore_points | awk -v u="$uuid" 'function vmname(i, n) { n=$6; for (i=7; i<=NF; i++) n=n" "$i; return n } NR > 1 && $2 == u {print $3"\t"$1" "$4" "vmname()}' | sort -r
 end
 
 complete -c libvirt-backup-system \

@@ -46,12 +46,15 @@ Each backup run produces two kinds of snapshots:
 | Kind | Tags | Content |
 |---|---|---|
 | `kind=disk` | `vm-uuid`, `run-id`, `disk=<target>`, `host` | One logical file `<target>.raw` |
-| `kind=meta` | `vm-uuid`, `vm-name`, `timestamp`, `run-id`, `host` | `manifest.json` |
+| `kind=meta` | `vm-uuid`, `vm-name`, `timestamp`, `run-id`, `host`, `consistency` | `manifest.json` |
 
 The `manifest.json` carries the VM name, UUID, host id, run id, timestamp,
 libvirt URI, full domain XML, and the per-disk table (target name, source
-path, virtual size, snapshot filename). `restore` joins disk + meta
-snapshots by `run-id`.
+path, virtual size, snapshot filename). New manifests also carry
+`consistency`, which is `filesystem`, `crash`, or `unknown` for older restore
+points. See [Backup consistency](backup-consistency.md) for the QEMU guest
+agent behavior behind that value. `restore` joins disk + meta snapshots by
+`run-id`.
 
 The kopia source identifier is overridden per snapshot to
 `root@<host-id>:libvirt-backup:<vm-uuid>/<target>` for disks and

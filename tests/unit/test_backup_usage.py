@@ -103,7 +103,7 @@ def test_du_vm_rows_join_names_and_report_latest_logical_bytes(
         "rows_from_repo",
         lambda _config, *, host_id, config_file: [
             BackupRow(ALPHA_UUID, "20260101T000000", host_id, "alpha", "run-1", "meta-1", config_file),
-            BackupRow(ALPHA_UUID, "20260102T000000", host_id, "alpha", "run-2", "meta-2", config_file),
+            BackupRow(ALPHA_UUID, "20260102T000000", host_id, "alpha", "run-2", "meta-2", config_file, "filesystem"),
             BackupRow(ALPHA_UUID, "20251231T000000", host_id, "alpha", "run-old", "meta-old", config_file),
             BackupRow(BETA_UUID, "20260101T000000", host_id, "beta", "run-3", "meta-3", config_file),
         ],
@@ -128,6 +128,8 @@ def test_du_vm_rows_join_names_and_report_latest_logical_bytes(
     assert BETA_UUID not in out
     assert "alpha" in out
     assert "restore-points" in out
+    assert "latest-consistency" in out
+    assert "filesystem" in out
     assert "backup-size" in out
     assert "backup-bytes" not in out
     assert "150" in out
@@ -146,7 +148,13 @@ def test_du_vm_rows_reports_connect_and_list_failures(
         "_connect_repo",
         lambda _config, host_id: None if host_id == "host-a" else tmp_path,
     )
-    monkeypatch.setattr(backup_usage, "rows_from_repo", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        backup_usage,
+        "rows_from_repo",
+        lambda _config, *, host_id, config_file: [
+            BackupRow(BETA_UUID, "20260101T000000", host_id, "beta", "run-1", "meta-1", config_file, "crash")
+        ],
+    )
 
     def fail_run_kopia(args, **_kwargs):
         raise CommandError(CommandResult(args=args, returncode=1, stdout="", stderr="denied"))
@@ -165,7 +173,13 @@ def test_du_vm_json_reports_filtered_logical_usage(
     cfg = _make_config(tmp_path)
     monkeypatch.setattr(kopia_repo, "discover_peer_repos", lambda _config: [_peer(tmp_path, "host-a")])
     monkeypatch.setattr(backup_usage, "_connect_repo", lambda _config, _host_id: tmp_path / "host-a.config")
-    monkeypatch.setattr(backup_usage, "rows_from_repo", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        backup_usage,
+        "rows_from_repo",
+        lambda _config, *, host_id, config_file: [
+            BackupRow(BETA_UUID, "20260101T000000", host_id, "beta", "run-1", "meta-1", config_file, "crash")
+        ],
+    )
     monkeypatch.setattr(
         backup_usage,
         "run_kopia",
@@ -185,6 +199,7 @@ def test_du_vm_json_reports_filtered_logical_usage(
     assert payload["total_latest_logical_bytes"] == 512
     assert payload["vms"][0]["vm_uuid"] == BETA_UUID
     assert payload["vms"][0]["backup_bytes"] == 512
+    assert payload["vms"][0]["latest_consistency"] == "crash"
     assert payload["vms"][0]["latest_logical_bytes"] == 512
     assert payload["vms"][0]["restore_point_count"] == 1
 

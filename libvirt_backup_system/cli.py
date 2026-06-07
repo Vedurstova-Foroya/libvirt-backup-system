@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         # when dispatch is not appropriate (no INVOCATION_ID, --prefix or
         # --config overrides, systemd missing, unit not installed), in which
         # case we fall through and run the subcommand in-process.
-        if args.command in {"check", "preflight", "run"}:
+        if args.command in {"check", "preflight", "run", "backup"}:
             mapped = "check" if args.command in {"check", "preflight"} else "run"
             dispatched = dispatch_via_systemd(mapped, prefix=args.prefix, config_path=args.config)
             if dispatched is not None:
@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             return check(config)
         if args.command == "doctor":
             return doctor(config)
-        if args.command == "run":
+        if args.command in {"run", "backup"}:
             return _run_command(config)
         if args.command == "list-vms":
             config_code = validate_config(config)

@@ -71,6 +71,9 @@ table, run id). Snapshots are tagged with `vm-uuid`, `run-id`, `disk`, `host`,
 and `kind`; meta snapshots also carry `vm-name` and `timestamp` so
 restore-point listings can show the domain name and exact run timestamp
 without materializing the manifest.
+New restore points also record their backup consistency level; see
+[Backup consistency](docs/backup-consistency.md) for QEMU guest agent setup
+and the crash/filesystem distinction.
 
 ## Retention
 
@@ -85,6 +88,7 @@ default `7d`) checks the local repo on its own cadence.
 ## Docs
 
 - [Install and prerequisites](docs/install.md)
+- [Backup consistency and QEMU guest agent setup](docs/backup-consistency.md)
 - [Configuration reference](docs/env-vars.md)
 - [Command reference](docs/commands.md)
 - [Kopia repo layout, manual operations](docs/kopia.md)

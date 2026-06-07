@@ -44,8 +44,9 @@ def test_format_rows_renders_aligned_table(tmp_path: Path) -> None:
     out = list_restore_points.format_rows([_row(tmp_path)])
     lines = out.splitlines()
     assert lines[0].startswith("source-host-id")
-    assert lines[0].split() == ["source-host-id", "vm-uuid", "timestamp", "run-id", "vm-name"]
+    assert lines[0].split() == ["source-host-id", "vm-uuid", "timestamp", "run-id", "consistency", "vm-name"]
     assert ALPHA_UUID in lines[1]
+    assert "unknown" in lines[1]
     assert "alpha" in lines[1]
     assert "snap-1" not in out
 
@@ -64,12 +65,14 @@ def test_format_json_preserves_spaced_vm_names(tmp_path: Path) -> None:
         run_id=row.run_id,
         snapshot_id=row.snapshot_id,
         config_file=row.config_file,
+        consistency="crash",
     )
     payload = json.loads(list_restore_points.format_json([row]))
     assert payload[0]["vm_name"] == "alpha with spaces"
     assert payload[0]["timestamp"] == "20260521T023001"
+    assert payload[0]["consistency"] == "crash"
     assert payload[0]["source_host_id"] == "host-a"
-    assert set(payload[0]) == {"run_id", "source_host_id", "timestamp", "vm_name", "vm_uuid"}
+    assert set(payload[0]) == {"consistency", "run_id", "source_host_id", "timestamp", "vm_name", "vm_uuid"}
 
 
 def test_list_restore_points_returns_one_when_backup_path_missing(

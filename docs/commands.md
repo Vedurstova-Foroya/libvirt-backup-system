@@ -129,17 +129,18 @@ and after `check` has passed.
 sudo libvirt-backup-system start
 ```
 
-## `run`
+## `run` / `backup`
 
 Runs preflight, acquires the run lock, and backs up every running VM.
 Offline VMs are logged as `skipping vm because it is offline` and skipped.
-Each VM produces one kopia disk snapshot per disk plus one meta snapshot
-carrying the run manifest (domain XML, disk table, run id). Snapshots are
-tagged with `vm-uuid`, `run-id`, `disk`, `host`, and `kind`; meta snapshots
-also carry `vm-name` and `timestamp` for restore-point listings.
+Each VM produces one kopia disk snapshot per disk plus one meta snapshot with
+the run manifest and restore-point tags (`vm-name`, `timestamp`,
+`consistency`). QEMU guest agent quiesce is attempted per VM and falls back to
+a crash-consistent snapshot if quiesce is unavailable; see
+[Backup consistency](backup-consistency.md).
 
 Manual backups require the systemd schedule to have been activated first
-with a successful `start`. On a systemd host, `run` exits nonzero with a
+with a successful `start`. On a systemd host, `run`/`backup` exits nonzero with a
 "backup service is not running" error instead of starting an ad-hoc backup
 when the service/timer has not been installed and activated.
 
@@ -148,6 +149,7 @@ a slow GC pass cannot delay backups.
 
 ```sh
 sudo libvirt-backup-system run
+sudo libvirt-backup-system backup
 ```
 
 ## `status`
@@ -203,12 +205,13 @@ sudo libvirt-backup-system list-restore-points | less -S
 Output columns:
 
 ```
-source-host-id  vm-uuid  timestamp  run-id  vm-name
+source-host-id  vm-uuid  timestamp  run-id  consistency  vm-name
 ```
 
 `source-host-id` is where the backup was taken. `run-id` joins the meta
 snapshot to its disk snapshots for diagnostics and manual operations (see
-[Kopia operations](kopia.md)).
+[Kopia operations](kopia.md)). `consistency` is `filesystem`, `crash`, or
+`unknown`; see [Backup consistency](backup-consistency.md).
 
 ## `du`
 
@@ -224,7 +227,8 @@ sudo libvirt-backup-system du host-a aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
 
 One drilldown argument can be either a host id or VM UUID; two arguments are
 host id then VM UUID. Drilldowns report restore-point count, latest logical
-VM size, and Kopia packed backup size. Top-level remains physical repo usage.
+VM size, latest consistency, and Kopia packed size; top-level remains physical
+repo usage.
 
 ## `restore`
 
@@ -274,19 +278,10 @@ same command as same-host restore unless duplicate restore points require a
 
 ### How snapshots are tagged
 
-Each backup run produces:
-
-- One **disk snapshot** per disk, tagged
-  `kind=disk vm-uuid=<uuid> run-id=<uuid> disk=<target> host=<host-id>`,
-  containing one logical file `<target>.raw`.
-- One **meta snapshot** tagged `kind=meta vm-uuid=<uuid> vm-name=<name>
-  timestamp=<YYYYMMDDTHHMMSS> run-id=<uuid> host=<host-id>`, containing
-  `manifest.json` (VM name, UUID, run id, timestamp, libvirt URI, domain XML,
-  disk table).
-
 `restore` resolves a meta snapshot by `(vm-uuid, timestamp)`, reads the
 manifest, then looks up each disk snapshot by `run-id + disk=<target>`.
-See [Kopia operations](kopia.md#tag-schema) for the full tag schema.
+See [Kopia operations](kopia.md#tag-schema) for the full tag schema,
+including consistency metadata.
 
 ## Retention
 

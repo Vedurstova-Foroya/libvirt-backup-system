@@ -51,6 +51,7 @@ def test_to_json_round_trip_preserves_fields(backup_config: Config) -> None:
     payload = json.loads(manifest.to_json())
     assert payload["vm_name"] == "alpha"
     assert payload["vm_state"] == "running"
+    assert payload["consistency"] == "unknown"
     assert isinstance(payload["disks"], list)
     assert payload["disks"][0]["target"] == "vda"
 
@@ -109,6 +110,19 @@ def test_parse_manifest_defaults_missing_vm_state_to_running() -> None:
     payload = json.loads(_make_manifest().to_json())
     del payload["vm_state"]
     assert parse_manifest(json.dumps(payload)).vm_state == "running"
+
+
+def test_parse_manifest_preserves_known_consistency() -> None:
+    payload = json.loads(_make_manifest(consistency="filesystem").to_json())
+    assert parse_manifest(json.dumps(payload)).consistency == "filesystem"
+
+
+def test_parse_manifest_defaults_missing_or_bad_consistency_to_unknown() -> None:
+    payload = json.loads(_make_manifest().to_json())
+    del payload["consistency"]
+    assert parse_manifest(json.dumps(payload)).consistency == "unknown"
+    payload["consistency"] = "application"
+    assert parse_manifest(json.dumps(payload)).consistency == "unknown"
 
 
 def test_parse_manifest_rejects_non_object_disk_row() -> None:
