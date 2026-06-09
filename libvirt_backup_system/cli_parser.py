@@ -98,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    _add_subparser(sub, "add-node", help_text=cli_help.ADD_NODE_HELP)
+    _add_subparser(sub, "show-token", help_text=cli_help.SHOW_TOKEN_HELP)
+
     change_password_parser = _add_subparser(
         sub,
         "change-password",

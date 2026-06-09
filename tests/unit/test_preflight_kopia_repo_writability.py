@@ -57,7 +57,19 @@ def test_validate_local_kopia_repo_skips_probe_when_repo_missing(
 def test_validate_local_kopia_repo_requires_existing_repo_when_locked(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     failures = preflight._validate_local_kopia_repo(cfg, require_existing=True)
-    assert failures == ["local kopia repo could not be connected with the shared password"]
+    assert failures == [preflight.LOCAL_KOPIA_REPO_MISSING_FAILURE]
+
+
+def test_validate_local_kopia_repo_reports_existing_repo_connect_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_config(tmp_path)
+    _create_repo_sentinel(cfg)
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_local_connected", lambda _cfg: None)
+
+    failures = preflight._validate_local_kopia_repo(cfg, require_existing=True)
+
+    assert failures == [preflight.LOCAL_KOPIA_REPO_CONNECT_FAILURE]
 
 
 def test_validate_local_kopia_repo_writable_reports_path_rejected(

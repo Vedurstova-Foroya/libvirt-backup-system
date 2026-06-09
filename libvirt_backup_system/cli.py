@@ -21,6 +21,8 @@ from .kopia_client import KOPIA_BINARY, build_kopia_env
 from .list_restore_points import enumerate_backups_result, format_json, list_restore_points, only_local_repo_failed
 from .lock import LockBusyError, acquire_run_lock
 from .logging_json import event
+from .node_token import add_node as _add_node_impl
+from .node_token import show_token as _show_token_impl
 from .paths import runtime_backup_path_ok
 from .preflight import check, validate_config
 from .restore import restore
@@ -206,7 +208,10 @@ def main(argv: list[str] | None = None) -> int:
             if dispatched is not None:
                 return dispatched
 
-        if args.command in {"list-vms", "list-restore-points", "du"} and args.json:
+        if (args.command in {"list-vms", "list-restore-points", "du"} and args.json) or args.command in {
+            "add-node",
+            "show-token",
+        }:
             with contextlib.redirect_stdout(sys.stderr):
                 config = Config.load(config_path=args.config, prefix=args.prefix)
         else:
@@ -220,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
             return check(config)
         if args.command == "doctor":
             return doctor(config)
+        if args.command == "add-node":
+            return _add_node_impl(config)
+        if args.command == "show-token":
+            return _show_token_impl(config)
         if args.command in {"run", "backup"}:
             return _run_command(config)
         if args.command == "list-vms":

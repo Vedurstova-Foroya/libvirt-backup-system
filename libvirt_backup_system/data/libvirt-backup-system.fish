@@ -1,7 +1,7 @@
 # Fish completion for libvirt-backup-system.
 complete -c libvirt-backup-system -f
 
-set -g __lbs_subcommands install change-password uninstall check preflight doctor run backup start status list-vms verify list-restore-points du restore
+set -g __lbs_subcommands install add-node show-token change-password uninstall check preflight doctor run backup start status list-vms verify list-restore-points du restore
 
 function __lbs_no_subcommand_seen
     for token in (commandline -opc)
@@ -12,7 +12,9 @@ end
 
 # Top-level subcommand suggestions (only before any subcommand has been chosen).
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a install -d "Install wrapper, config, package, and systemd units"
-complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a change-password -d "Rotate the shared kopia password on the local host"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a add-node -d "Print a pasteable install command for joining another host"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a show-token -d "Print the raw shared token from the secure password file"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a change-password -d "Rotate the shared kopia token on the local host"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a uninstall -d "Remove installed files (config/state/logs kept unless --purge-* is passed)"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a check -d "Run preflight: config, binaries, paths, free space"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a preflight -d "Alias of check"
@@ -33,13 +35,13 @@ complete -c libvirt-backup-system -l prefix -r -F -d "Root prefix for install/ru
 complete -c libvirt-backup-system -s h -l help -d "Show help and exit"
 
 # install flags.
-complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password -r -d "Shared kopia repo password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password -r -d "Explicit shared kopia token"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-file -r -F -d "Path to a file holding the kopia password; '-' reads stdin"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l kopia-password-env -r -d "Environment variable name holding the kopia password"
-complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l acknowledge-password-loss -d "Acknowledge that losing the shared password makes backups unrecoverable"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from install" -l acknowledge-password-loss -d "Acknowledge that losing the shared token makes backups unrecoverable"
 
 # change-password flags.
-complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password -r -d "New shared kopia repo password"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password -r -d "New shared kopia token"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-file -r -F -d "Path to a file holding the new kopia password; '-' reads stdin"
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from change-password" -l new-kopia-password-env -r -d "Environment variable name holding the new kopia password"
 

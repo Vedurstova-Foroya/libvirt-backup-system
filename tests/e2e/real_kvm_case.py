@@ -219,7 +219,7 @@ def _run_scenario(work: Path, running_name: str, offline_name: str) -> None:
 
     check = _run([str(bin_path), "check"])
     records = _json_lines(check.stdout)
-    assert any(r.get("message") == "preflight passed" for r in records), f"preflight did not pass: {records}"
+    assert any(r.get("message") == "check passed" for r in records), f"check did not pass: {records}"
 
     listed = json.loads(_run([str(bin_path), "list-vms", "--json"]).stdout)
     names = {vm["name"] for vm in listed}

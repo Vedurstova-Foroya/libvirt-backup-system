@@ -99,6 +99,12 @@ def test_resolve_password_env_form_empty_rejected(monkeypatch: pytest.MonkeyPatc
         kopia_password.resolve_password(spec)
 
 
+def test_generate_password_returns_nonempty_token() -> None:
+    token = kopia_password.generate_password()
+    assert token
+    assert "\n" not in token
+
+
 # --- read_password_file -----------------------------------------------------
 
 

@@ -4,42 +4,52 @@
 
 Installs the package copy, wrapper script, config file, fish completion, and
 systemd units when `BACKUP_PATH` is configured. Writes the shared kopia
-password to `/etc/libvirt-backup-system/kopia.pw` (mode 600 root-owned) and
+token to `/etc/libvirt-backup-system/kopia.pw` (mode 600 root-owned) and
 creates the local kopia repo at `BACKUP_PATH/<host-id>/kopia-repo/` with the
 global retention/compression policy applied.
 
 ```sh
+sudo env BACKUP_PATH=/home/admin/pro/vms/backups libvirt-backup-system install
 sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
 sudo libvirt-backup-system install --kopia-password-file=/path/to/file --acknowledge-password-loss
 echo -n "$PW" | sudo libvirt-backup-system install --kopia-password-file=- --acknowledge-password-loss
 sudo env KOPIA_PW=... libvirt-backup-system install --kopia-password-env=KOPIA_PW --acknowledge-password-loss
 ```
 
-On first install, `--acknowledge-password-loss` is required before a newly
-supplied password is written. Without it, the command exits nonzero with a
-secret-free error; store the exact value in a secrets vault before running
-install.
+With no `--kopia-password*` flag and no password file, `install` generates the
+shared token automatically. Explicit first writes still require
+`--acknowledge-password-loss`. Re-running install is idempotent with the same
+token and fails on mismatch; joining with the wrong token also fails when peer
+repos already exist.
 
-The same install command runs on every host. There is no bootstrap host.
-Idempotent if the supplied password matches the existing file; hard-fails if
-it does not (use `change-password` to rotate). The timer is not enabled
-automatically — run `check` and then `start` after editing the env file.
+## `add-node`
 
-When run via the installed wrapper the package files at
-`/opt/libvirt-backup-system` are kept as-is (refreshing them mid-execute
-would delete the source being copied). The wrapper, env file, and systemd
-units are still refreshed. To pick up new package code, run `install` from a
-source checkout instead:
+Prints a pasteable command for joining another host to the same `BACKUP_PATH`
+and shared token:
 
 ```sh
-sudo python3 -m libvirt_backup_system install --kopia-password-file=/etc/libvirt-backup-system/kopia.pw
+sudo libvirt-backup-system add-node
+```
+
+```sh
+sudo env BACKUP_PATH=... KOPIA_PW=... python3 -m libvirt_backup_system install --kopia-password-env KOPIA_PW --acknowledge-password-loss
+```
+
+Run it on the new host from a checkout; see [Joining additional hosts](joining-hosts.md).
+
+## `show-token`
+
+Prints the raw shared token from the secure password file:
+
+```sh
+sudo libvirt-backup-system show-token
 ```
 
 ## `change-password`
 
-Rotates the kopia repo password on this host. Read the current password,
-verify it decrypts the local repo, run `kopia repository change-password` to
-rewrap the master key, atomically replace the password file.
+Rotates the kopia repo token on this host. Read the current token, verify it
+decrypts the local repo, run `kopia repository change-password` to rewrap the
+master key, atomically replace the password file.
 
 ```sh
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
@@ -53,12 +63,8 @@ its own local repo independently. `doctor` flags any host still holding the
 old value. See [Kopia password handling](kopia-password.md#password-rotation)
 for the full recovery procedure.
 
-Kopia's documented noninteractive rotation flag is
-`repository change-password --new-password=...`. The wrapper can read the
-new value from stdin, a file, or an environment variable, but it must still
-pass that resolved value to Kopia in Kopia's argv for the rewrap step. Do
-not run `change-password` on hosts where other users can inspect process
-arguments during the rotation window.
+Kopia rotation receives the resolved new value in Kopia's argv; avoid
+running it where untrusted users can inspect process arguments.
 
 ## `uninstall`
 
@@ -76,9 +82,9 @@ sudo libvirt-backup-system uninstall --purge-config --purge-state --purge-logs
 
 ## `check` / `preflight`
 
-Validates config, required binaries (`virsh`, `qemu-nbd`, `nbdcopy`,
-`qemu-img`, `df`, `kopia`), root execution policy, VM discovery, backup path
-writability, the kopia password file mode/owner, and estimated free space.
+Validates config, binaries, root policy, VM discovery, backup path writability,
+the password file, local Kopia repo connectivity, and free space. Run `start`
+once after setting a new `BACKUP_PATH`; `check` expects the repo.
 
 ```sh
 sudo libvirt-backup-system check
@@ -97,7 +103,7 @@ surface that `check` covers. Specifically, `doctor` is a superset of
 - Backup, maintenance, full-maintenance, and verify timers are enabled and
   active.
 - Last `libvirt-backup-system.service` run completed cleanly.
-- Local kopia repo connects with the shared password and
+- Local kopia repo connects with the shared token and
   `kopia repository status` is clean.
 - Local `kopia maintenance info` and a lightweight
   `kopia snapshot verify --verify-files-percent=0` complete cleanly.
@@ -105,7 +111,7 @@ surface that `check` covers. Specifically, `doctor` is a superset of
   non-mutating `maintenance run --dry-run`; the scheduled timers run the
   actual maintenance commands.
 - Every peer repo under `BACKUP_PATH/*/kopia-repo/` is reachable read-only
-  with the shared password (cross-host-restore smoke test).
+  with the shared token (cross-host-restore smoke test).
 
 ```sh
 sudo libvirt-backup-system doctor
@@ -123,7 +129,7 @@ not run a backup immediately. Kopia maintenance and verify timers have
 staggered activation-relative initial delays to avoid concurrent first-run
 repo operations.
 Use after `install`, after editing `/etc/libvirt-backup-system/libvirt-backup.env`,
-and after `check` has passed.
+and to initialize an empty `BACKUP_PATH`; then run `check`.
 
 ```sh
 sudo libvirt-backup-system start
@@ -192,7 +198,7 @@ still useful.
 ## `list-restore-points`
 
 Walks every per-host repo under `BACKUP_PATH/*/kopia-repo/`, connects
-read-only with the shared password, lists `kind:meta` snapshots, and prints
+read-only with the shared token, lists `kind:meta` snapshots, and prints
 one row per (host, VM UUID, timestamp). Copy the `vm-uuid` and `timestamp`
 columns straight into `restore`.
 
@@ -272,7 +278,7 @@ the snapshot from whichever host's repo contains a matching `(uuid,
 timestamp)`. When that host does not match the local one (or no local VM
 with that UUID exists), the turnkey define path runs.
 
-The shared password decrypts every host's repo, so cross-host restore is the
+The shared token decrypts every host's repo, so cross-host restore is the
 same command as same-host restore unless duplicate restore points require a
 `--host-id` or `--run-id` disambiguator.
 

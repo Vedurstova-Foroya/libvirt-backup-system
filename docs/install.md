@@ -40,8 +40,10 @@ runs successfully, the install skips unnecessary work. Bumping the pinned
 versions is a deliberate operator action — the matching sha256 and vendored
 artifact must be refreshed in the same commit.
 
-After installing this project, run `sudo libvirt-backup-system check` to
-confirm every required binary resolves before relying on scheduled backups.
+After installing this project with `BACKUP_PATH` configured, run
+`sudo libvirt-backup-system check` to confirm every required binary resolves
+before relying on scheduled backups. If you set `BACKUP_PATH` after install,
+run `sudo libvirt-backup-system start` first so the local Kopia repo exists.
 
 For filesystem-consistent VM snapshots, install and enable QEMU guest agent
 inside each guest and confirm the libvirt guest-agent channel exists. Backups
@@ -68,24 +70,51 @@ sudo apt install -y libnbd-bin
 nbdcopy --version
 ```
 
-With both binaries present and runnable, `sudo libvirt-backup-system install
---kopia-password-file=/path/to/kopia.pw --acknowledge-password-loss`
-proceeds straight to the password + repo + systemd-unit setup.
+With both binaries present and runnable, `sudo libvirt-backup-system install`
+proceeds straight to the token + repo + systemd-unit setup.
 
 ## Install
 
-Pick a shared password once, store it in your secrets vault, and use it on
-every host. The exact same install command runs everywhere:
+On the first host, run `install` with the shared `BACKUP_PATH`. If no
+`--kopia-password*` flag is supplied and no password file exists yet, the
+installer generates a shared Kopia token, writes it to the secure password
+file, and creates this host's repo with that token:
 
 ```sh
-export KOPIA_PW='<shared-password-from-vault>'; sudo env BACKUP_PATH=/home/admin/pro/vms/backups KOPIA_PW="$KOPIA_PW" python3 -m libvirt_backup_system install --kopia-password-env KOPIA_PW --acknowledge-password-loss
+sudo env BACKUP_PATH=/home/admin/pro/vms/backups python3 -m libvirt_backup_system install
 ```
 
 Local backup directories are allowed by default. To require `BACKUP_PATH` to be
 a mounted filesystem, set `BACKUP_REQUIRE_NFS_MOUNT=true` in
 `/etc/libvirt-backup-system/libvirt-backup.env`.
 
-For operators who do not want the password in `ps`/journald, pipe it in:
+Save the generated token in a password manager:
+
+```sh
+sudo libvirt-backup-system show-token
+```
+
+To join another host later, use `add-node` on an installed host. It prints a
+pasteable install command that carries the same `BACKUP_PATH` and token to the
+new host:
+
+```sh
+sudo libvirt-backup-system add-node
+```
+
+See [Joining additional hosts](joining-hosts.md) for the full flow.
+
+Operators who need to provide their own token can still use the explicit
+password flags. These paths still require `--acknowledge-password-loss` before
+the first write:
+
+```sh
+sudo env BACKUP_PATH=/home/admin/pro/vms/backups KOPIA_PW="$PW" \
+  python3 -m libvirt_backup_system install --kopia-password-env=KOPIA_PW \
+  --acknowledge-password-loss
+```
+
+For operators who do not want the explicit token in `ps`/journald, pipe it in:
 
 ```sh
 echo -n "$PW" | sudo python3 -m libvirt_backup_system install --kopia-password-file=- \
@@ -101,28 +130,31 @@ sudo env KOPIA_PW="$PW" python3 -m libvirt_backup_system install --kopia-passwor
 
 Behavior:
 
-- First install: writes the password to
-  `/etc/libvirt-backup-system/kopia.pw` mode 600 root-owned, creates the
-  local repo at `BACKUP_PATH/<host-id>/kopia-repo/`, applies the global
-  retention/compression policy, registers systemd units. It refuses to write
-  a new password unless `--acknowledge-password-loss` is present; refusal
-  messages do not print the password, so store the exact value in your
-  secrets vault before running install.
-- Re-running with the same password: idempotent.
-- Re-running with a different password: hard fail. Use
+- First install with no password flag and no existing password file: generates
+  a shared token, writes it to `/etc/libvirt-backup-system/kopia.pw` mode 600
+  root-owned, creates the local repo at `BACKUP_PATH/<host-id>/kopia-repo/`,
+  applies the global retention/compression policy, registers systemd units.
+- First install with an explicit `--kopia-password*` value: writes the supplied
+  value only when `--acknowledge-password-loss` is present. Refusal messages do
+  not print the value, so store the exact token before running install.
+- Re-running with the same token: idempotent.
+- Re-running with a different token: hard fail. Use
   `libvirt-backup-system change-password` to rotate.
-- Re-running with no password flag and an existing password file: keep using
+- Re-running with no password flag and an existing password file: keeps using
   the existing file (useful for refreshing systemd units without re-typing).
+- Joining with the wrong token fails when peer repos already exist under
+  `BACKUP_PATH`, because the installer cannot decrypt them with the supplied
+  value.
 
-Or install first, edit the environment file, validate it, and then start the
-schedules:
+Or install with an explicit token first, edit the environment file, initialize
+the repo from that file, and then validate the schedules:
 
 ```sh
 sudo python3 -m libvirt_backup_system install --kopia-password=<value> \
   --acknowledge-password-loss
 sudoedit /etc/libvirt-backup-system/libvirt-backup.env
-sudo libvirt-backup-system check
 sudo libvirt-backup-system start
+sudo libvirt-backup-system check
 sudo libvirt-backup-system doctor
 ```
 

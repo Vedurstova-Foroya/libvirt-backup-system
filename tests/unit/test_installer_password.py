@@ -55,13 +55,11 @@ def test_install_password_first_install_requires_acknowledgement(
     assert not _password_path(cfg).exists()
 
 
-def test_install_password_no_flag_no_file_emits_usage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_install_password_no_flag_no_file_auto_generates_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _make_config(tmp_path)
-    assert installer_password.install_password(cfg, kopia_password.PasswordSpec()) == 1
-    err = capsys.readouterr().err
-    assert "kopia password missing" in err
-    assert "--kopia-password-file" in err
-    assert not _password_path(cfg).exists()
+    monkeypatch.setattr(installer_password.kopia_password, "generate_password", lambda: "generated-token")
+    assert installer_password.install_password(cfg, kopia_password.PasswordSpec()) == 0
+    assert kopia_password.read_password_file(cfg) == "generated-token"
 
 
 def test_install_password_no_flag_existing_file_keeps_file(tmp_path: Path) -> None:

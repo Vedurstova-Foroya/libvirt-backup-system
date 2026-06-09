@@ -2,15 +2,17 @@
 
 Python CLI for backing up libvirt VMs into a per-host [Kopia](https://kopia.io)
 repository. Content-addressed, deduplicated, encrypted at rest. One shared
-password protects every host's repo, so cross-host restore is a single command.
+token protects every host's repo, so cross-host restore is a single command.
 
 ## One-command install
 
-From a checkout on the KVM host, pick a shared password once, store it in your
-secrets vault, and use the same value on every host:
+From a checkout on the first KVM host, run install with the shared
+`BACKUP_PATH`. When no Kopia password flag is supplied and no password file
+exists yet, `install` generates a shared token, stores it securely, and uses it
+to create this host's repo:
 
 ```sh
-export KOPIA_PW='<shared-password-from-vault>'; sudo env BACKUP_PATH=/home/admin/pro/vms/backups KOPIA_PW="$KOPIA_PW" python3 -m libvirt_backup_system install --kopia-password-env KOPIA_PW --acknowledge-password-loss
+sudo env BACKUP_PATH=/home/admin/pro/vms/backups python3 -m libvirt_backup_system install
 ```
 
 Local backup directories are allowed by default. To require `BACKUP_PATH` to be
@@ -25,14 +27,33 @@ sudo libvirt-backup-system start
 sudo libvirt-backup-system doctor
 ```
 
-`install` writes the password to `/etc/libvirt-backup-system/kopia.pw` mode 600
+`install` writes the token to `/etc/libvirt-backup-system/kopia.pw` mode 600
 and creates this host's repo at `BACKUP_PATH/<host-id>/kopia-repo/`. `start`
 installs or refreshes the systemd units from the environment file and activates
 the backup, maintenance, full-maintenance, and verify schedules. The default
 backup schedule is `*-*-* 02:30:00`.
 
-The shared password is the only thing protecting your backups. Lose it on
-every host and the data is unrecoverable. Store a copy in your secrets vault.
+If you installed before setting `BACKUP_PATH`, edit the environment file and
+run `sudo libvirt-backup-system start` once before `check`; `check` expects the
+local Kopia repo to already exist.
+
+The shared token is the only thing protecting your backups. Save it in your
+password manager after first install:
+
+```sh
+sudo libvirt-backup-system show-token
+```
+
+To join another KVM host to the same backup set, run this on an installed host:
+
+```sh
+sudo libvirt-backup-system add-node
+```
+
+It prints a pasteable `sudo env BACKUP_PATH=... KOPIA_PW=... python3 -m
+libvirt_backup_system install --kopia-password-env KOPIA_PW
+--acknowledge-password-loss` command for the new host. See [Joining
+hosts](docs/joining-hosts.md).
 
 ## Basic use
 
@@ -88,6 +109,7 @@ default `7d`) checks the local repo on its own cadence.
 ## Docs
 
 - [Install and prerequisites](docs/install.md)
+- [Joining additional hosts](docs/joining-hosts.md)
 - [Backup consistency and QEMU guest agent setup](docs/backup-consistency.md)
 - [Configuration reference](docs/env-vars.md)
 - [Command reference](docs/commands.md)

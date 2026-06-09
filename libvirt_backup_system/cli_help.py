@@ -27,12 +27,12 @@ PROGRAM_EPILOG = """\
 Common workflows:
 
   First install and activate the schedules:
-    sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
-         --kopia-password-file=/root/kopia.pw \\
-         --acknowledge-password-loss
+    sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install
+    sudo libvirt-backup-system show-token
     sudoedit /etc/libvirt-backup-system/libvirt-backup.env
-    sudo libvirt-backup-system check
     sudo libvirt-backup-system start
+    sudo libvirt-backup-system check
+    sudo libvirt-backup-system add-node
 
   Daily operation:
     sudo libvirt-backup-system status
@@ -108,23 +108,26 @@ INSTALL_DESCRIPTION = """\
 Install libvirt-backup-system: copy the package to /opt/libvirt-backup-system,
 write the /usr/local/bin/libvirt-backup-system wrapper, drop the default
 /etc/libvirt-backup-system/libvirt-backup.env (preserving an existing one),
-render the systemd unit files, lay down the shared kopia password file at
+render the systemd unit files, lay down the shared kopia token at
 KOPIA_PASSWORD_FILE, and install the fish completion script. The timers are
-NOT enabled automatically -- run ``check`` and then ``start`` after editing
-the env file to activate them.
+NOT enabled automatically -- run ``start`` and then ``check`` after editing
+the env file to initialize the repo and validate the setup.
 
-For a one-shot first install with BACKUP_PATH and a kopia password:
+For a one-shot first install with BACKUP_PATH:
 
-  sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install \\
-       --kopia-password-file=/root/kopia.pw \\
-       --acknowledge-password-loss
+  sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install
 
-The same shared kopia password must be used on every participating host so
-each peer can read every peer's repo. Local backup directories are allowed by
-default; first install also honors BACKUP_REQUIRE_NFS_MOUNT=true for operators
-who want mount-point preflight. If the config file already exists the
-install-time environment is ignored, so re-running ``install`` never
-overwrites operator edits."""
+When no password file exists and no --kopia-password* flag is supplied,
+install generates the shared token automatically. Save it with ``show-token``;
+print a pasteable command for the next host with ``add-node``. Explicit
+--kopia-password* values are still accepted and require
+--acknowledge-password-loss on first write. If peer repos already exist,
+install validates that the token can decrypt them before creating this
+host's repo."""
+
+
+ADD_NODE_HELP = "Print a pasteable install command for joining another host."
+SHOW_TOKEN_HELP = "Print the shared kopia token from the local password file."
 
 
 UNINSTALL_HELP = "Remove installed files. Config/state/logs/backups are kept unless --purge-* is passed."

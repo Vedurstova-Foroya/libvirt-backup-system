@@ -20,11 +20,14 @@ def test_collect_check_failures_clean_path(tmp_path: Path, monkeypatch: pytest.M
     assert vm_count == 1
 
 
-def test_check_returns_zero_on_clean_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_returns_zero_on_clean_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     cfg = make_config(tmp_path)
     write_password_file(cfg)
     stub_environment(monkeypatch)
     assert preflight.check(cfg) == 0
+    assert "check passed" in capsys.readouterr().out
 
 
 def test_check_returns_one_when_failures_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,7 +43,25 @@ def test_collect_check_failures_requires_configured_local_repo(tmp_path: Path, m
     stub_environment(monkeypatch)
     monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: False)
     failures, _, _ = preflight.collect_check_failures(cfg)
-    assert "local kopia repo could not be connected with the shared password" in failures
+    assert preflight.LOCAL_KOPIA_REPO_MISSING_FAILURE in failures
+
+
+def test_collect_check_failures_guides_join_when_existing_peer_repo_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_config(tmp_path)
+    peer_repo = cfg.path_value("BACKUP_PATH") / "host-b" / preflight.kopia_repo.REPO_DIR_NAME
+    peer_repo.mkdir(parents=True)
+    (peer_repo / "kopia.repository.f").write_text("repo\n", encoding="utf-8")
+    write_password_file(cfg)
+    stub_environment(monkeypatch)
+    monkeypatch.setattr(preflight.kopia_repo, "local_repo_exists", lambda _cfg: False)
+    monkeypatch.setattr(preflight.kopia_repo, "ensure_peer_connected", lambda _cfg, _host_id: None)
+
+    failures, _, _ = preflight.collect_check_failures(cfg)
+
+    assert preflight.LOCAL_KOPIA_REPO_JOIN_FAILURE in failures
+    assert any("existing peer kopia repo host-b" in failure and "add-node" in failure for failure in failures)
 
 
 def test_collect_check_failures_rejects_remote_libvirt_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

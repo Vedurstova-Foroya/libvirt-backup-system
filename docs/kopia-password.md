@@ -1,18 +1,59 @@
 # Kopia password handling
 
-This page covers password lifecycle (install, rotation, recovery) for the
+This page covers shared token lifecycle (install, rotation, recovery) for the
 kopia engine. The day-to-day commands live in [commands.md](commands.md); the
 on-disk layout and manual operations live in [kopia.md](kopia.md).
 
-The shared password file lives at `$KOPIA_PASSWORD_FILE` (default
+The shared token is stored in the Kopia password file at `$KOPIA_PASSWORD_FILE`
+(default
 `/etc/libvirt-backup-system/kopia.pw`, mode 600 root-owned). The same value
 exists on every participating host. The wrapper reads it via
 `KOPIA_PASSWORD` env-var (not `--password-file`) so the file path never
 appears in `ps` or journald.
 
+## Default token file location
+
+By default, every joined node stores the shared Kopia token here:
+
+```text
+/etc/libvirt-backup-system/kopia.pw
+```
+
+That path is controlled by `KOPIA_PASSWORD_FILE` in
+`/etc/libvirt-backup-system/libvirt-backup.env`; if the key is left
+commented, the default above is used. The file should be mode `0600` and
+root-owned on production installs.
+
+To print the current token from the configured file:
+
+```sh
+sudo libvirt-backup-system show-token
+```
+
+To inspect the default file directly:
+
+```sh
+sudo cat /etc/libvirt-backup-system/kopia.pw
+```
+
 ## Install-time write
 
-`install --kopia-password*` resolves the value from one of:
+When no password file exists and no `--kopia-password*` flag is supplied,
+`install` generates a shared token automatically, writes it to the secure
+password file, and creates the local repo with that token:
+
+```sh
+sudo env BACKUP_PATH=/home/admin/pro/vms/backups libvirt-backup-system install
+sudo libvirt-backup-system show-token
+```
+
+Save the `show-token` output in a password manager. To add another host, run
+`sudo libvirt-backup-system add-node` on an installed host and paste the
+printed install command on the new host. See
+[Joining additional hosts](joining-hosts.md).
+
+Explicit `install --kopia-password*` values are still supported and resolve
+from one of:
 
 ```sh
 --kopia-password=VALUE              # literal (visible in ps/journald)
@@ -22,8 +63,22 @@ appears in `ps` or journald.
 --acknowledge-password-loss         # required when writing the password first time
 ```
 
-Atomic write + chmod 600 + chown root. Idempotent if the file already
-matches; hard-fails on a mismatch.
+Explicit first writes require `--acknowledge-password-loss`. Atomic write +
+chmod 600 + chown root. Idempotent if the file already matches; hard-fails on
+a mismatch. When peer repos already exist under `BACKUP_PATH`, install also
+verifies the supplied token can decrypt them, so joining with the wrong token
+fails instead of silently creating an incompatible backup set.
+
+## Showing and saving the token
+
+```sh
+sudo libvirt-backup-system show-token
+```
+
+`show-token` prints the raw shared token from the secure password file. Use it
+to save a generated token in a password manager or to recover a host that lost
+its local file. The output is the secret itself; avoid copying it into logs,
+tickets, or shell history.
 
 ## Password rotation
 
@@ -94,13 +149,13 @@ mode-600 helper above, and re-run `doctor` to confirm.
 
 ## If only one host loses its password file
 
-A surviving host carries the same value (the shared-password convention).
-Copy the value out of a healthy host's `$KOPIA_PASSWORD_FILE` (over SSH or
-via your secrets vault) and recreate the file on the bare host:
+A surviving host carries the same value (the shared-token convention).
+Copy the value out of a healthy host with `show-token` (over SSH or via your
+secrets vault) and recreate the file on the bare host:
 
 ```sh
 # on the healthy host:
-sudo cat /etc/libvirt-backup-system/kopia.pw
+sudo libvirt-backup-system show-token
 
 # on the host missing its password file, with the same value:
 sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss

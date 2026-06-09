@@ -78,13 +78,21 @@ def install(
                     resolved_password_spec.env_var,
                 )
             )
-            if password_required or password_supplied:
+            password_missing = not kopia_repo.password_file_path(cfg).exists()
+            binaries_installed = False
+            if password_required or password_supplied or password_missing:
+                if _password_validation_needs_kopia(cfg):
+                    binary_code = _install_pinned_binaries(root)
+                    if binary_code != 0:
+                        return binary_code
+                    binaries_installed = True
                 password_code = _install_password(cfg, resolved_password_spec)
                 if password_code != 0:
                     return password_code
-            binary_code = _install_pinned_binaries(root)
-            if binary_code != 0:
-                return binary_code
+            if not binaries_installed:
+                binary_code = _install_pinned_binaries(root)
+                if binary_code != 0:
+                    return binary_code
             install_code = _install_locked(root, resolved_config, cfg)
             if install_code != 0:
                 return install_code
@@ -104,16 +112,29 @@ def _install_pinned_binaries(root: Path) -> int:
     return 0
 
 
+def _password_validation_needs_kopia(cfg: Config) -> bool:
+    if not cfg.get("BACKUP_PATH").strip():
+        return False
+    if kopia_repo.local_repo_exists(cfg):
+        return True
+    try:
+        return any(peer.host_id != cfg.get("HOST_ID") for peer in kopia_repo.discover_peer_repos(cfg))
+    except kopia_repo.PeerDiscoveryError:
+        return False
+
+
 def _ensure_kopia_repo(cfg: Config) -> int:
     if not cfg.get("BACKUP_PATH").strip():
         return 0
-    if _repo_preflight(cfg) != 0:
+    if _repo_preflight(cfg, require_peer_access=True) != 0:
         return 1
     return kopia_repo.ensure_local_repo(cfg, apply_global_policy=True)
 
 
-def _repo_preflight(cfg: Config) -> int:
+def _repo_preflight(cfg: Config, *, require_peer_access: bool = False) -> int:
     failures = preflight.repo_creation_failures(cfg)
+    if require_peer_access:
+        failures.extend(preflight.peer_repo_access_failures(cfg))
     for failure in failures:
         event("error", "kopia repo preflight failed", reason=failure)
     return 1 if failures else 0

@@ -32,6 +32,17 @@ ALLOWED_LIBVIRT_URI_PREFIXES = tuple("qemu:/// qemu+unix:// test:// test:///".sp
 REMOTE_LIBVIRT_URI_PREFIXES = tuple("qemu+ssh:// qemu+tcp:// qemu+tls://".split())
 SCRATCH_DIR = Path("/var/tmp")  # noqa: S108 - filesystem scratch dir for write probes.
 HOST_ID_STATE_FILE = preflight_host_id.HOST_ID_STATE_FILE
+LOCAL_KOPIA_REPO_MISSING_FAILURE = (
+    "local kopia repo is not initialized; run start to create/connect BACKUP_PATH/<HOST_ID>/kopia-repo"
+)
+JOIN_COMMAND_RECOVERY = (
+    "on an already joined host run: sudo libvirt-backup-system add-node; "
+    "paste the printed install command on this host"
+)
+LOCAL_KOPIA_REPO_JOIN_FAILURE = "this host is not joined to the existing backup set; " + JOIN_COMMAND_RECOVERY
+LOCAL_KOPIA_REPO_CONNECT_FAILURE = "local kopia repo could not be connected with the shared password; " + (
+    JOIN_COMMAND_RECOVERY
+)
 prefixed = _prefixed
 
 
@@ -133,16 +144,47 @@ def _validate_kopia_password_file(config: Config) -> list[str]:
     return preflight_kopia_password_file.validate_kopia_password_file(config)
 
 
+def _existing_peer_repos(config: Config) -> list[kopia_repo.PeerRepo]:
+    if not config.get("BACKUP_PATH").strip():
+        return []
+    try:
+        peers = kopia_repo.discover_peer_repos(config)
+    except kopia_repo.PeerDiscoveryError:
+        return []
+    return [peer for peer in peers if peer.host_id != config.get("HOST_ID")]
+
+
 def _validate_local_kopia_repo(config: Config, *, require_existing: bool = False) -> list[str]:
     if not config.get("BACKUP_PATH").strip():
         return []
     if not kopia_repo.local_repo_exists(config):
         if require_existing:
-            return ["local kopia repo could not be connected with the shared password"]
+            if _existing_peer_repos(config):
+                return [LOCAL_KOPIA_REPO_JOIN_FAILURE]
+            return [LOCAL_KOPIA_REPO_MISSING_FAILURE]
         return []
     if kopia_repo.ensure_local_connected(config) is None:
-        return ["local kopia repo could not be connected with the shared password"]
+        return [LOCAL_KOPIA_REPO_CONNECT_FAILURE]
     return _validate_local_kopia_repo_writable(config)
+
+
+def _validate_peer_kopia_repos(config: Config) -> list[str]:
+    if not config.get("BACKUP_PATH").strip():
+        return []
+    try:
+        peers = kopia_repo.discover_peer_repos(config)
+    except kopia_repo.PeerDiscoveryError as exc:
+        return [str(exc)]
+    failures: list[str] = []
+    for peer in peers:
+        if peer.host_id == config.get("HOST_ID"):
+            continue
+        if kopia_repo.ensure_peer_connected(config, peer.host_id) is None:
+            failures.append(
+                f"existing peer kopia repo {peer.host_id} could not be opened with this host's token; "
+                f"{JOIN_COMMAND_RECOVERY}"
+            )
+    return failures
 
 
 def _validate_local_kopia_repo_writable(config: Config) -> list[str]:
@@ -192,6 +234,10 @@ def validate_config(config: Config) -> int:
     return 1 if failures else 0
 
 
+def peer_repo_access_failures(config: Config) -> list[str]:
+    return _validate_peer_kopia_repos(config)
+
+
 def repo_creation_failures(config: Config) -> list[str]:
     failures: list[str] = []
     host_failure = preflight_host_id.validation_failure(config.get("HOST_ID"))
@@ -214,6 +260,7 @@ def collect_check_failures(config: Config, *, lock_held: bool = False) -> tuple[
     failures.extend(_validate_scratch_dir())
     failures.extend(_validate_kopia_password_file(config))
     failures.extend(_validate_local_kopia_repo(config, require_existing=True))
+    failures.extend(_validate_peer_kopia_repos(config))
     if config.enabled("REQUIRE_ROOT") and hasattr(os, "geteuid") and os.geteuid() != 0:
         failures.append("must run as root")
     try:
@@ -243,5 +290,5 @@ def check(config: Config, *, lock_held: bool = False) -> int:
         event("error", "preflight failed", reason=failure)
     if failures:
         return 1
-    event("info", "preflight passed", vm_count=vm_count, required_kb=required_kb)
+    event("info", "check passed", vm_count=vm_count, required_kb=required_kb)
     return 0

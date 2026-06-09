@@ -157,9 +157,9 @@ def print_install_next_steps(config_path: Path, bin_path: Path) -> None:
         "Tune KEEP_DAILY (and the other KEEP_* keys) in the env file; expired snapshots are pruned by",
         "the kopia maintenance timer in the background.",
         "",
-        "Then validate and activate the schedules:",
-        f"  sudo {bin_path} check",
+        "Then initialize the repo from the env file and validate:",
         f"  sudo {bin_path} start",
+        f"  sudo {bin_path} check",
         f"  sudo {bin_path} doctor",
         "",
     ]

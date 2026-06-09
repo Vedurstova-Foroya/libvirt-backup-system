@@ -6,16 +6,16 @@ from pathlib import Path
 import pytest
 
 from libvirt_backup_system.config import Config
-from libvirt_backup_system.installer import _ensure_kopia_repo, install
-from tests.unit.conftest import write_kopia_password_file
+from libvirt_backup_system.installer import _ensure_kopia_repo, _password_validation_needs_kopia, install
+from libvirt_backup_system.installer_binaries import BinaryInstallError
+from libvirt_backup_system.kopia_password import PasswordSpec
+from tests.unit.conftest import stub_ensure_kopia_repo, write_kopia_password_file
 
 
 def test_install_returns_password_failure_code(tmp_path: Path, monkeypatch, capsys) -> None:
     # Pre-existing password file with a different value than the spec must
     # short-circuit ``install`` before the systemd / package work runs, so a
     # subsequent re-install never silently rotates the master key.
-    from libvirt_backup_system.kopia_password import PasswordSpec
-
     write_kopia_password_file(tmp_path, value="existing")
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
     assert install(str(tmp_path), password_spec=PasswordSpec(literal="different")) == 1
@@ -25,7 +25,7 @@ def test_install_returns_password_failure_code(tmp_path: Path, monkeypatch, caps
     assert not (tmp_path / "etc/systemd/system/libvirt-backup-system.service").exists()
 
 
-def test_install_missing_password_short_circuits_before_binary_install(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_install_missing_password_auto_generates_token(tmp_path: Path, monkeypatch) -> None:
     backup_path = tmp_path / "backups"
     backup_path.mkdir()
     machine_id = tmp_path / "etc/machine-id"
@@ -34,20 +34,108 @@ def test_install_missing_password_short_circuits_before_binary_install(tmp_path:
     monkeypatch.setenv("BACKUP_PATH", str(backup_path))
     monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
     monkeypatch.setattr("libvirt_backup_system.installer.preflight.repo_creation_failures", lambda _cfg: [])
-    monkeypatch.setattr(
-        "libvirt_backup_system.installer.install_kopia",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("binary install must not run")),
-    )
-    monkeypatch.setattr(
-        "libvirt_backup_system.installer.install_nbdcopy",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("binary install must not run")),
-    )
+    monkeypatch.setattr("libvirt_backup_system.installer_password.kopia_password.generate_password", lambda: "auto-pw")
+    stub_ensure_kopia_repo(monkeypatch)
 
-    assert install(str(tmp_path)) == 1
+    assert install(str(tmp_path)) == 0
 
-    err = capsys.readouterr().err
-    assert "kopia password missing" in err
-    assert not (tmp_path / "usr/local/bin/libvirt-backup-system").exists()
+    assert (tmp_path / "etc/libvirt-backup-system/kopia.pw").read_text(encoding="utf-8") == "auto-pw\n"
+    assert (tmp_path / "usr/local/bin/libvirt-backup-system").exists()
+
+
+def test_install_bootstraps_kopia_before_peer_password_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup_path = tmp_path / "backups"
+    peer_repo = backup_path / "host-b/kopia-repo"
+    peer_repo.mkdir(parents=True)
+    (peer_repo / "kopia.repository.f").write_text("repo\n", encoding="utf-8")
+    machine_id = tmp_path / "etc/machine-id"
+    machine_id.parent.mkdir(parents=True)
+    machine_id.write_text("11111111111111111111111111111111\n", encoding="utf-8")
+    order: list[str] = []
+
+    def fake_connect(**_kwargs: object) -> None:
+        order.append("connect-peer")
+
+    def fake_install_kopia(prefix: object = None) -> None:
+        del prefix
+        order.append("kopia")
+
+    def fake_install_nbdcopy(prefix: object = None) -> None:
+        del prefix
+        order.append("nbdcopy")
+
+    monkeypatch.setenv("BACKUP_PATH", str(backup_path))
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    monkeypatch.setattr("libvirt_backup_system.installer.install_kopia", fake_install_kopia)
+    monkeypatch.setattr("libvirt_backup_system.installer.install_nbdcopy", fake_install_nbdcopy)
+    monkeypatch.setattr(
+        "libvirt_backup_system.installer_password.kopia_client.repository_connect_filesystem",
+        fake_connect,
+    )
+    stub_ensure_kopia_repo(monkeypatch)
+
+    assert install(str(tmp_path), password_spec=PasswordSpec(literal="join-pw", acknowledge_loss=True)) == 0
+
+    assert order[:3] == ["kopia", "nbdcopy", "connect-peer"]
+    assert order.count("kopia") == 1
+
+
+def test_install_reports_binary_failure_before_peer_password_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    backup_path = tmp_path / "backups"
+    peer_repo = backup_path / "host-b/kopia-repo"
+    peer_repo.mkdir(parents=True)
+    (peer_repo / "kopia.repository.f").write_text("repo\n", encoding="utf-8")
+    machine_id = tmp_path / "etc/machine-id"
+    machine_id.parent.mkdir(parents=True)
+    machine_id.write_text("11111111111111111111111111111111\n", encoding="utf-8")
+
+    def fail_kopia(prefix: object = None) -> None:
+        del prefix
+        raise BinaryInstallError("kopia unavailable")
+
+    monkeypatch.setenv("BACKUP_PATH", str(backup_path))
+    monkeypatch.setattr("libvirt_backup_system.installer.Path.exists", Path.exists)
+    monkeypatch.setattr("libvirt_backup_system.installer.install_kopia", fail_kopia)
+
+    assert install(str(tmp_path), password_spec=PasswordSpec(literal="join-pw", acknowledge_loss=True)) == 1
+
+    assert "pinned binary install failed" in capsys.readouterr().err
+
+
+def test_password_validation_needs_kopia_for_existing_local_repo(tmp_path: Path) -> None:
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    cfg.values["BACKUP_PATH"] = str(tmp_path / "backups")
+    cfg.values["HOST_ID"] = "host-a"
+    repo = tmp_path / "backups/host-a/kopia-repo"
+    repo.mkdir(parents=True)
+    (repo / "kopia.repository.f").write_text("repo\n", encoding="utf-8")
+
+    assert _password_validation_needs_kopia(cfg) is True
+
+
+def test_password_validation_ignores_peer_discovery_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = Config.load(prefix=str(tmp_path), apply_env_overrides=False)
+    cfg.values["BACKUP_PATH"] = str(tmp_path / "backups")
+    cfg.values["HOST_ID"] = "host-a"
+
+    def fail_discovery(_cfg: Config) -> None:
+        from libvirt_backup_system.kopia_repo import PeerDiscoveryError
+
+        raise PeerDiscoveryError("scan failed")
+
+    monkeypatch.setattr("libvirt_backup_system.installer.kopia_repo.discover_peer_repos", fail_discovery)
+
+    assert _password_validation_needs_kopia(cfg) is False
 
 
 def test_install_reinstall_reports_insecure_password_file_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:

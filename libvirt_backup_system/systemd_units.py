@@ -228,6 +228,8 @@ def dispatch_via_systemd(
             check=False,
             stdout=sys.stderr,
         )
+    if subcommand == "check" and rc == 0:
+        event("info", "check passed", unit=unit)
     return rc
 
 

@@ -49,6 +49,11 @@ def resolve_password(spec: PasswordSpec, *, stdin: Iterable[str] = sys.stdin) ->
     return None
 
 
+def generate_password() -> str:
+    """Return a high-entropy shared token suitable for a Kopia password."""
+    return secrets.token_urlsafe(48)
+
+
 def _validate_value(value: str) -> str:
     if not value:
         raise ValueError("kopia password must not be empty")

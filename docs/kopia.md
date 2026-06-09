@@ -64,39 +64,41 @@ VM under each host.
 
 ## Password handling
 
-The shared password file lives at `$KOPIA_PASSWORD_FILE` (default
+The shared token lives in `$KOPIA_PASSWORD_FILE` (default
 `/etc/libvirt-backup-system/kopia.pw`, mode 600 root-owned). The same value
 exists on every participating host. The wrapper reads it via
 `KOPIA_PASSWORD` env-var (not `--password-file`) so the file path never
 appears in `ps` or journald.
 
 See [kopia-password.md](kopia-password.md) for install-time write, rotation,
-half-rotation recovery, single-host password loss, and total-loss scenarios.
+joining additional hosts, half-rotation recovery, single-host password loss,
+and total-loss scenarios.
 
 ## Multi-host cutover
 
 When migrating an existing fleet from the previous (non-kopia) install:
 
-1. Pick a shared password: `openssl rand -base64 32`. Store in your secrets
-   vault.
-2. On every host: stop the existing systemd timer.
-3. On every host: delete (or move aside) the pre-kopia chain trees under
+1. On every host: stop the existing systemd timer.
+2. On every host: delete (or move aside) the pre-kopia chain trees under
    `BACKUP_PATH/<host>/<vm-uuid>/<yyyy-mm>/...`. These are leftover artifacts
    from the previous (non-kopia) install and are not read by the new code;
    leaving them in place only wastes space on the backup share. See
    "Removing pre-kopia chain backups" below for the safe listing / delete
    commands.
-4. On every host (identical command line):
+3. On the first host, install with the shared backup path:
    ```sh
-   sudo libvirt-backup-system install --kopia-password=<value> --acknowledge-password-loss
+   sudo env BACKUP_PATH=/mnt/qnap-backups libvirt-backup-system install
    ```
-   Creates the local repo at `BACKUP_PATH/$HOST_ID/kopia-repo/`, applies
-   global policy, registers timers.
+   This generates the shared token, creates the first local repo at
+   `BACKUP_PATH/$HOST_ID/kopia-repo/`, applies global policy, and registers
+   timers. Save the token with `sudo libvirt-backup-system show-token`.
+4. On the first host, run `sudo libvirt-backup-system add-node` and paste the
+   printed command on each additional host.
 5. On every host: `sudo libvirt-backup-system check` must pass clean.
 6. On every host: `sudo libvirt-backup-system start` enables timers.
 7. On every host: `sudo libvirt-backup-system doctor` must pass clean. The
-   peer-repo connect smoke test confirms the shared password reaches every
-   host's repo.
+   peer-repo connect smoke test confirms the shared token reaches every host's
+   repo.
 8. The first scheduled run on each host is a full backup into its own
    fresh repo. Subsequent runs are deduplicated against the existing
    chunks.

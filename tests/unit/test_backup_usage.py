@@ -204,6 +204,25 @@ def test_du_vm_json_reports_filtered_logical_usage(
     assert payload["vms"][0]["restore_point_count"] == 1
 
 
+def test_du_vm_rows_falls_back_when_latest_meta_run_has_no_disk_usage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cfg = _make_config(tmp_path)
+    peer = _peer(tmp_path, "host-a")
+    monkeypatch.setattr(backup_usage, "_connect_repo", lambda _config, _host_id: peer.config_file)
+    monkeypatch.setattr(
+        backup_usage,
+        "rows_from_repo",
+        lambda _config, *, host_id, config_file: [
+            BackupRow(ALPHA_UUID, "20260102T000000", host_id, "alpha", "run-missing", "meta-2", config_file, "crash")
+        ],
+    )
+    monkeypatch.setattr(
+        backup_usage, "_disk_usage_from_repo", lambda *_args, **_kwargs: [(ALPHA_UUID, "run-1", 256, 7)]
+    )
+    rows, _ok = backup_usage._vm_rows(cfg, [peer], ALPHA_UUID)
+    assert rows[0].latest_logical_bytes == 256
+    assert rows[0].latest_consistency == "crash"
+
+
 def test_repo_bytes_and_human_sizes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

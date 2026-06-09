@@ -150,6 +150,7 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
     if rendered is None:
         return 1
     failures = preflight.repo_creation_failures(rendered.config)
+    failures.extend(preflight.peer_repo_access_failures(rendered.config))
     for failure in failures:
         event("error", "kopia repo preflight failed", reason=failure)
     if failures or kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
