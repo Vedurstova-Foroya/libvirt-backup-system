@@ -1,4 +1,15 @@
 #!/bin/sh
 set -eu
 
-uv run --locked --extra dev python -m tools.gates
+# The pre-push gate is disabled by default. The full gate targets Linux and
+# can report false negatives on other dev platforms (e.g. macOS lacks the
+# /var/lib/libvirt paths and runs as a non-root user differently), so it no
+# longer blocks local pushes. The authoritative gate runs in CI
+# (.github/workflows/gate.yml). Run it locally on demand with:
+#
+#     uv run --locked --extra dev python -m tools.gates
+#
+# To restore the blocking pre-push behaviour, export LBS_PREPUSH_GATE=1.
+if [ "${LBS_PREPUSH_GATE:-0}" = "1" ]; then
+    uv run --locked --extra dev python -m tools.gates
+fi
