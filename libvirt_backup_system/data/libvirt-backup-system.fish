@@ -1,7 +1,7 @@
 # Fish completion for libvirt-backup-system.
 complete -c libvirt-backup-system -f
 
-set -g __lbs_subcommands install add-node show-token change-password uninstall check preflight doctor run backup start status list-vms verify list-restore-points du restore
+set -g __lbs_subcommands install add-node show-token change-password uninstall check preflight doctor run backup start status log logs list-vms verify list-restore-points du restore
 
 function __lbs_no_subcommand_seen
     for token in (commandline -opc)
@@ -23,6 +23,8 @@ complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a run -d "Acqui
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a backup -d "Alias of run"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a start -d "Refresh systemd units and activate schedules"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a status -d "systemctl status for installed timers and services"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a log -d "Show backup logs from the journal (tail; -f to stream)"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a logs -d "Alias of log"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a list-vms -d "List selected VMs after VM_BLACKLIST is applied"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a verify -d "Run kopia snapshot verify against discovered repos"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a list-restore-points -d "List every restorable backup run across all hosts and VMs"
@@ -59,6 +61,11 @@ complete -c libvirt-backup-system -n "__fish_seen_subcommand_from list-restore-p
 
 # du flags.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from du" -l json -d "Emit a JSON object instead of table rows"
+
+# log flags.
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from log logs" -s f -l follow -d "Stream new log lines as they are written (like docker logs -f)"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from log logs" -s n -l lines -r -d "Recent lines to show before following (integer or 'all')"
+complete -c libvirt-backup-system -n "__fish_seen_subcommand_from log logs" -f -a "run check maintenance maintenance-full verify all" -d "Unit journal to show"
 
 # verify flag.
 complete -c libvirt-backup-system -n "__fish_seen_subcommand_from verify" -l include-hosts -r -d "Comma-separated peer host_ids to verify in addition to the local repo"

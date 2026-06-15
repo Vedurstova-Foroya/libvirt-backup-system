@@ -34,9 +34,10 @@ def _record_subprocess(monkeypatch) -> list[list[str]]:
     calls: list[list[str]] = []
 
     class _Result:
-        def __init__(self, returncode: int, stdout: str = "") -> None:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
             self.returncode = returncode
             self.stdout = stdout
+            self.stderr = stderr
 
     def fake_run(args: list[str], **kwargs: Any) -> _Result:
         calls.append(args)
@@ -50,11 +51,10 @@ def _record_subprocess(monkeypatch) -> list[list[str]]:
             "--value",
         ]:
             return _Result(0, "loaded\nactive\nenabled\n")
-        if args[:3] == ["systemctl", "start", "--wait"]:
-            return _Result(0)
-        if args == ["systemctl", "show", RUN_UNIT_NAME, "--property=InvocationID", "--value"]:
-            return _Result(0, "deadbeef\n")
-        if args[:1] == ["journalctl"]:
+        # A manual ``run`` enqueues the oneshot service detached and returns
+        # immediately; it no longer blocks on ``start --wait`` or tails the
+        # journal inline (the operator follows it with ``log -f``).
+        if args[:3] == ["systemctl", "start", "--no-block"]:
             return _Result(0)
         raise AssertionError(f"unexpected subprocess call: {args}")
 
@@ -71,7 +71,54 @@ def test_dispatch_opt_out_env_zero_does_not_skip_run_gate(tmp_path: Path, monkey
 
     assert dispatch_via_systemd("run", prefix=None, config_path=None) == 0
     assert calls[0][:3] == ["systemctl", "show", TIMER_UNIT_NAME]
-    assert calls[1] == ["systemctl", "start", "--wait", RUN_UNIT_NAME]
+    assert calls[1] == ["systemctl", "start", "--no-block", RUN_UNIT_NAME]
+
+
+def test_dispatch_run_starts_detached_and_returns_immediately(tmp_path: Path, monkeypatch, capsys) -> None:
+    # The gate passes (timer active+enabled), so dispatch enqueues the unit
+    # with ``--no-block`` and returns 0 without waiting for the backup to
+    # finish. The operator is told how to follow it.
+    systemd_dir = _fake_systemd_host(tmp_path, monkeypatch)
+    (systemd_dir / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
+    (systemd_dir / TIMER_UNIT_NAME).write_text("[Timer]\n", encoding="utf-8")
+    calls = _record_subprocess(monkeypatch)
+
+    assert dispatch_via_systemd("run", prefix=None, config_path=None) == 0
+    assert ["systemctl", "start", "--no-block", RUN_UNIT_NAME] in calls
+    # No blocking ``start --wait`` and no inline journal tail.
+    assert not any(call[:3] == ["systemctl", "start", "--wait"] for call in calls)
+    assert not any(call[:1] == ["journalctl"] for call in calls)
+    out = capsys.readouterr().out
+    assert "backup started in background" in out
+    assert "libvirt-backup-system log -f" in out
+
+
+def test_dispatch_run_reports_start_failure(tmp_path: Path, monkeypatch, capsys) -> None:
+    # If ``systemctl start --no-block`` itself fails, surface its exit code and
+    # stderr rather than pretending the backup launched.
+    systemd_dir = _fake_systemd_host(tmp_path, monkeypatch)
+    (systemd_dir / RUN_UNIT_NAME).write_text("[Unit]\n", encoding="utf-8")
+    (systemd_dir / TIMER_UNIT_NAME).write_text("[Timer]\n", encoding="utf-8")
+
+    class _Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(args: list[str], **kwargs: Any) -> _Result:
+        if args[:2] == ["systemctl", "show"]:
+            return _Result(0, "loaded\nactive\nenabled\n")
+        if args[:3] == ["systemctl", "start", "--no-block"]:
+            return _Result(5, stderr="Failed to start unit: boom")
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert dispatch_via_systemd("run", prefix=None, config_path=None) == 5
+    err = capsys.readouterr().err
+    assert "failed to start backup service" in err
+    assert "boom" in err
 
 
 def test_dispatch_run_errors_when_service_not_started(tmp_path: Path, monkeypatch, capsys) -> None:

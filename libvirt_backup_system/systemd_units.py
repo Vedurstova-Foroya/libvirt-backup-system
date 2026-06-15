@@ -34,6 +34,17 @@ STATUS_UNITS = (
     VERIFY_TIMER_NAME,
     VERIFY_UNIT_NAME,
 )
+# ``log``/``logs`` maps a friendly component name to the journal units it
+# tails. ``all`` interleaves the scheduled repo-touching units so an operator
+# can watch the whole backup subsystem at once, like ``docker compose logs``.
+LOG_COMPONENT_UNITS: dict[str, tuple[str, ...]] = {
+    "run": (RUN_UNIT_NAME,),
+    "check": (CHECK_UNIT_NAME,),
+    "maintenance": (MAINTENANCE_UNIT_NAME,),
+    "maintenance-full": (MAINTENANCE_FULL_UNIT_NAME,),
+    "verify": (VERIFY_UNIT_NAME,),
+    "all": (RUN_UNIT_NAME, MAINTENANCE_UNIT_NAME, MAINTENANCE_FULL_UNIT_NAME, VERIFY_UNIT_NAME),
+}
 UNIT_DESCRIPTIONS = systemd_render.UNIT_DESCRIPTIONS
 KOPIA_UNIT_DESCRIPTIONS = systemd_render.KOPIA_UNIT_DESCRIPTIONS
 # Quick maintenance runs on the configured daily-ish cadence; full
@@ -76,6 +87,67 @@ def _status_returncode(unit: str, status_returncode: int) -> int:
     if result.returncode == 0 and values[:2] == ["loaded", "inactive"]:
         return 0
     return status_returncode
+
+
+def journalctl_available(root: Path) -> bool:
+    return root == Path("/") and Path("/run/systemd/system").exists() and bool(shutil.which("journalctl"))
+
+
+def _resolve_log_lines(lines: str) -> str | None:
+    """Validate the ``--lines`` value, mirroring journalctl's ``-n``.
+
+    Returns the value to hand journalctl, or ``None`` when it is invalid so the
+    caller can emit a clean error instead of letting journalctl reject it with
+    a less obvious message. ``all`` is passed through verbatim because
+    journalctl understands ``-n all`` as "no limit".
+    """
+    normalized = lines.strip().lower()
+    if normalized == "all":
+        return "all"
+    if normalized.isdigit():
+        return normalized
+    return None
+
+
+def show_logs(prefix: str | None = None, *, follow: bool = False, lines: str = "50", component: str = "run") -> int:
+    """Tail the backup units' systemd journal, optionally streaming live.
+
+    Models ``docker logs``: by default it prints the most recent ``lines`` and
+    exits; ``--follow`` keeps the stream open and prints new entries as the
+    background backup writes them. Output uses ``--output=cat`` because the
+    service already emits self-describing JSON event lines (each carrying its
+    own timestamp), so the raw message is the cleanest, most docker-like view.
+
+    Following is read-only: Ctrl-C stops the journal tail, not the backup,
+    which keeps running under systemd.
+    """
+    root = root_prefix(prefix)
+    if not journalctl_available(root):
+        event("error", "journalctl unavailable; install systemd or run on a systemd host")
+        return 1
+    units = LOG_COMPONENT_UNITS.get(component)
+    if units is None:
+        event("error", "unknown log component", component=component, choices=sorted(LOG_COMPONENT_UNITS))
+        return 2
+    resolved_lines = _resolve_log_lines(lines)
+    if resolved_lines is None:
+        event("error", "invalid --lines value; expected a non-negative integer or 'all'", lines=lines)
+        return 2
+    # Only tail units that are actually installed: journalctl silently shows
+    # nothing for an unknown unit, so without this an operator running ``log``
+    # before ``start`` would get empty output with no hint why.
+    systemd_dir = prefixed("/etc/systemd/system", root)
+    installed = [unit for unit in units if (systemd_dir / unit).exists()]
+    if not installed:
+        event("error", "backup service is not installed; run start first", units=list(units))
+        return 1
+    cmd = ["journalctl", "--no-pager", "--output=cat", "--lines", resolved_lines]
+    for unit in installed:
+        cmd += ["--unit", unit]
+    if follow:
+        cmd.append("--follow")
+    # No capture: stream straight to the operator's tty so ``--follow`` is live.
+    return subprocess.run(cmd, check=False).returncode
 
 
 def run_systemctl(root: Path, commands: list[list[str]]) -> bool:
@@ -208,8 +280,17 @@ def dispatch_via_systemd(
             )
             return 1
         return None
-    if subcommand == "run" and not manual_run_ready(root, run_unit_name=RUN_UNIT_NAME, timer_unit_name=TIMER_UNIT_NAME):
-        return 1
+    if subcommand == "run":
+        if not manual_run_ready(root, run_unit_name=RUN_UNIT_NAME, timer_unit_name=TIMER_UNIT_NAME):
+            return 1
+        # A manual ``run`` no longer blocks the operator's shell. Enqueue the
+        # oneshot service with ``--no-block`` and return immediately: the
+        # backup then runs under systemd (PID 1), surviving logout, terminal
+        # close, and SSH disconnect. Progress is followed with ``log -f``; the
+        # run lock in cli.py still serializes it against the scheduled timer.
+        return _start_run_detached(unit)
+    # ``check`` stays synchronous: it is a preflight whose exit code and output
+    # the operator is waiting on, so block on the unit and tail this run.
     event("info", "dispatching to systemd unit", unit=unit, subcommand=subcommand)
     rc = _await_unit(unit)
     # ``systemctl show`` returns the most-recent invocation id even after the
@@ -228,9 +309,41 @@ def dispatch_via_systemd(
             check=False,
             stdout=sys.stderr,
         )
-    if subcommand == "check" and rc == 0:
+    if rc == 0:
         event("info", "check passed", unit=unit)
     return rc
+
+
+def _start_run_detached(unit: str) -> int:
+    """Start the backup unit in the background and return immediately.
+
+    ``systemctl start --no-block`` enqueues the start job and returns as soon
+    as systemd accepts it, instead of waiting for the oneshot service to
+    finish. The operator's shell is freed at once and the backup keeps running
+    under systemd. Follow it with ``log -f``.
+    """
+    result = subprocess.run(
+        ["systemctl", "start", "--no-block", unit],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        event(
+            "error",
+            "failed to start backup service",
+            unit=unit,
+            returncode=result.returncode,
+            stderr=result.stderr.strip(),
+        )
+        return result.returncode
+    event(
+        "info",
+        "backup started in background",
+        unit=unit,
+        follow="libvirt-backup-system log -f",
+    )
+    return 0
 
 
 def _await_unit(unit: str) -> int:

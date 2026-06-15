@@ -65,6 +65,16 @@ sudo libvirt-backup-system restore <vm-uuid> <timestamp>
 sudo libvirt-backup-system change-password --new-kopia-password=<value>
 ```
 
+Backups are normally taken by the installed systemd timer. To trigger one
+manually, `run` starts the backup in the background via systemd and returns
+immediately — it keeps running to completion even if you log out — and `log`
+shows its journal, with `-f` to stream live like `docker logs -f`:
+
+```sh
+sudo libvirt-backup-system run        # starts in the background
+sudo libvirt-backup-system log -f     # follow the running backup
+```
+
 `list-restore-points` lists every restorable snapshot across all hosts. The
 `vm-uuid` and `timestamp` columns are the values to copy into `restore`.
 `restore` either overwrites the local VM (when the snapshot came from this

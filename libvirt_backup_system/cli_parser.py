@@ -130,6 +130,30 @@ def build_parser() -> argparse.ArgumentParser:
     _add_subparser(sub, "start", help_text=cli_help.START_HELP, description=cli_help.START_DESCRIPTION)
     _add_subparser(sub, "status", help_text=cli_help.STATUS_HELP)
 
+    log_parser = _add_subparser(
+        sub, "log", help_text=cli_help.LOG_HELP, description=cli_help.LOG_DESCRIPTION, aliases=["logs"]
+    )
+    log_parser.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        help="Stream new log lines as they are written (like docker logs -f). Ctrl-C stops following, not the backup.",
+    )
+    log_parser.add_argument(
+        "-n",
+        "--lines",
+        metavar="N",
+        default="50",
+        help="Recent lines to show before following. A non-negative integer or 'all'. Default: 50.",
+    )
+    log_parser.add_argument(
+        "component",
+        nargs="?",
+        default="run",
+        choices=["run", "check", "maintenance", "maintenance-full", "verify", "all"],
+        help="Which unit's journal to show. Default: run (the backup orchestrator).",
+    )
+
     list_parser = _add_subparser(
         sub, "list-vms", help_text=cli_help.LIST_VMS_HELP, description=cli_help.LIST_VMS_DESCRIPTION
     )

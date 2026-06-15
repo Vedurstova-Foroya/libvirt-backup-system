@@ -150,13 +150,52 @@ with a successful `start`. On a systemd host, `run`/`backup` exits nonzero with 
 "backup service is not running" error instead of starting an ad-hoc backup
 when the service/timer has not been installed and activated.
 
+On a systemd host the backup runs **in the background**: `run`/`backup`
+dispatches the work to the `libvirt-backup-system.service` unit with
+`systemctl start --no-block` and returns as soon as systemd accepts the job.
+The backup then runs under systemd (PID 1), so it keeps running to completion
+even if you log out, close the terminal, or drop the SSH session. Follow it
+with `libvirt-backup-system log -f` and review past runs with
+`libvirt-backup-system log`. When systemd is unavailable (or `--config` /
+`--prefix` is set, or you are already inside the unit), the backup instead
+runs in-process in the foreground.
+
 Pruning is handled by the kopia maintenance timer, not by the backup loop —
 a slow GC pass cannot delay backups.
 
 ```sh
-sudo libvirt-backup-system run
+sudo libvirt-backup-system run            # starts in the background
 sudo libvirt-backup-system backup
+sudo libvirt-backup-system log -f         # follow the running backup
 ```
+
+## `log` / `logs`
+
+Shows the systemd journal for the backup units, modeled on `docker logs`. By
+default it prints the most recent 50 lines from `libvirt-backup-system.service`
+(the backup orchestrator) and exits. Pass `-f`/`--follow` to keep the stream
+open and print new lines as the background backup writes them — the same live
+output a foreground run would show. Following is read-only: Ctrl-C stops the
+journal tail, not the backup.
+
+```sh
+sudo libvirt-backup-system log            # last 50 lines of the backup run
+sudo libvirt-backup-system log -f         # stream live, like docker logs -f
+sudo libvirt-backup-system log -n 200     # last 200 lines
+sudo libvirt-backup-system log -n all     # entire run history
+sudo libvirt-backup-system log -f all     # follow backup + maintenance + verify
+sudo libvirt-backup-system log verify     # the kopia verify unit's journal
+```
+
+- `-f`, `--follow` — stream new lines instead of exiting.
+- `-n N`, `--lines N` — recent lines to show before following; a non-negative
+  integer or `all`. Default: `50`.
+- Trailing component (default `run`) picks which unit's journal to read:
+  `run`, `check`, `maintenance`, `maintenance-full`, `verify`, or `all` (the
+  backup, maintenance, full-maintenance, and verify units interleaved).
+
+`log` reads the system journal, so it needs the same privileges as
+`journalctl` (run under `sudo`, or as a member of `systemd-journal`/`adm`).
 
 ## `status`
 

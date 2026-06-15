@@ -28,7 +28,7 @@ from .preflight import check, validate_config
 from .restore import restore
 from .shell import configure_default_timeout
 from .systemd_start import start
-from .systemd_units import dispatch_via_systemd, status
+from .systemd_units import dispatch_via_systemd, show_logs, status
 from .verify import verify
 from .vms import list_vms
 
@@ -176,6 +176,8 @@ def _command_before_config(args: argparse.Namespace) -> int | None:
         return start(args.prefix, config_path=args.config)
     if args.command == "status":
         return status(args.prefix)
+    if args.command in {"log", "logs"}:
+        return show_logs(args.prefix, follow=args.follow, lines=args.lines, component=args.component)
     if args.command == "uninstall":
         return uninstall(
             args.prefix,

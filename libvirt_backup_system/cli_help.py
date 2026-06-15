@@ -36,6 +36,8 @@ Common workflows:
 
   Daily operation:
     sudo libvirt-backup-system status
+    sudo libvirt-backup-system run        # backs up in the background
+    sudo libvirt-backup-system log -f     # follow the running backup
     sudo libvirt-backup-system list-vms
     sudo libvirt-backup-system doctor
 
@@ -171,7 +173,7 @@ Use ``check`` for the pre-run preflight only; use ``doctor`` when you also
 want install/registration/last-run health."""
 
 
-RUN_HELP = "Acquire the run lock, run preflight, back up every running VM. Alias: backup."
+RUN_HELP = "Start a background backup of every running VM via systemd. Alias: backup."
 RUN_DESCRIPTION = """\
 Manual backup invocation. Acquires the run lock, runs ``check``, and then
 backs up every selected running VM. Offline VMs are logged as
@@ -182,15 +184,58 @@ streamed disk-by-disk into the local kopia repo via
 ``kind:meta`` snapshot carries the manifest with the domain XML and disk
 listing so restore can reconstruct the VM without re-asking libvirt.
 
+On a systemd host the backup runs in the background: ``run``/``backup``
+dispatches the work to the ``libvirt-backup-system.service`` unit with
+``systemctl start --no-block`` and returns as soon as systemd accepts the job.
+The backup then runs under systemd (PID 1), so it survives logging out,
+closing the terminal, or dropping the SSH session. Follow a running backup
+with ``libvirt-backup-system log -f`` (live stream, like ``docker logs -f``)
+and review earlier runs with ``libvirt-backup-system log``.
+
 Manual runs require the systemd schedule to have been activated first with
 ``start`` -- on a systemd host, ``run``/``backup`` exits non-zero with
 ``backup service is not running`` instead of starting an ad-hoc backup if
-the unit has not been installed and activated.
+the unit has not been installed and activated. When systemd is unavailable,
+or ``--config``/``--prefix`` is set, or you are already executing inside the
+unit, the backup instead runs in-process in the foreground.
 
 Retention is driven by the kopia global policy (KEEP_LATEST / KEEP_HOURLY /
 KEEP_DAILY / KEEP_WEEKLY / KEEP_MONTHLY / KEEP_ANNUAL) applied at install
 time and refreshed on ``start``; old snapshots are reaped by the periodic
 ``kopia maintenance`` units rather than at the tail of ``run``."""
+
+
+LOG_HELP = "Show backup logs from the journal; -f streams live like docker logs -f. Alias: logs."
+LOG_DESCRIPTION = """\
+Show the systemd journal for the backup units, modeled on ``docker logs``.
+
+By default ``log`` prints the most recent 50 lines from the
+``libvirt-backup-system.service`` unit (the backup orchestrator) and exits.
+Pass ``-f``/``--follow`` to keep the stream open and print new lines as they
+are written -- the same live output a foreground run would show. Following is
+read-only: Ctrl-C stops following, it does not stop the backup, which keeps
+running under systemd.
+
+  sudo libvirt-backup-system run         # start a backup in the background
+  sudo libvirt-backup-system log -f      # follow it live
+
+Options:
+  -n, --lines N   How many recent lines to print before following. Accepts a
+                  non-negative integer or ``all``. Default: 50.
+  -f, --follow    Stream new lines as they arrive instead of exiting.
+
+A trailing component selects which unit's journal to read (default ``run``):
+  run               the backup orchestrator (libvirt-backup-system.service)
+  check             the preflight unit
+  maintenance       kopia quick maintenance
+  maintenance-full  kopia full maintenance / GC
+  verify            kopia snapshot verify
+  all               the backup, maintenance, full-maintenance, and verify
+                    units interleaved
+
+  sudo libvirt-backup-system log verify
+  sudo libvirt-backup-system log -f all
+  sudo libvirt-backup-system log -n all run"""
 
 
 START_HELP = "Install/refresh systemd units from the env file and activate timers."
