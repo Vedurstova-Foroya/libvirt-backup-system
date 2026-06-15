@@ -13,6 +13,7 @@ from .backup import run_backups
 from .cli_parser import build_parser
 from .cli_parser import password_spec_from_args as _password_spec_from_args
 from .config import Config
+from .config_sync import update_shared_config as _update_config_impl
 from .doctor import doctor
 from .du_args import resolve_du_filters
 from .installer import install, uninstall
@@ -227,10 +228,13 @@ def main(argv: list[str] | None = None) -> int:
             return check(config)
         if args.command == "doctor":
             return doctor(config)
-        if args.command == "add-node":
-            return _add_node_impl(config)
-        if args.command == "show-token":
-            return _show_token_impl(config)
+        config_only = {
+            "add-node": _add_node_impl,
+            "show-token": _show_token_impl,
+            "update-config": _update_config_impl,
+        }
+        if args.command in config_only:
+            return config_only[args.command](config)
         if args.command in {"run", "backup"}:
             return _run_command(config)
         if args.command == "list-vms":

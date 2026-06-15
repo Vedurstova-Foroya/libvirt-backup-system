@@ -22,6 +22,12 @@ shared token automatically. Explicit first writes still require
 token and fails on mismatch; joining with the wrong token also fails when peer
 repos already exist.
 
+When `BACKUP_PATH` is set, a fresh install also syncs the shared config seed at
+`BACKUP_PATH/libvirt-backup.env`: it publishes this host's config if no seed
+exists yet (first node), or pulls the existing seed as the initial local config
+(joining node). See [`update-config`](#update-config) and
+[Joining additional hosts](joining-hosts.md#shared-configuration).
+
 ## `add-node`
 
 Prints a pasteable command for joining another host to the same `BACKUP_PATH`
@@ -44,6 +50,30 @@ Prints the raw shared token from the secure password file:
 ```sh
 sudo libvirt-backup-system show-token
 ```
+
+## `update-config`
+
+Publishes this host's env file to the backup path as the shared config seed
+(`BACKUP_PATH/libvirt-backup.env`), overwriting any previous seed:
+
+```sh
+sudoedit /etc/libvirt-backup-system/libvirt-backup.env
+sudo libvirt-backup-system start          # apply locally
+sudo libvirt-backup-system update-config  # publish for future joins
+```
+
+The shared config is a *seed*, not a live-synced file. The first node publishes
+it automatically (during `install` when `BACKUP_PATH` is set, and on `start`);
+a node joining the same `BACKUP_PATH` pulls it as its initial local config so it
+inherits retention, splitter, compression, NFS policy, and the backup schedule
+without re-typing them. After joining, the local config is independent — edit it
+and run `start` to change only that host (its own timer, mount path, etc.)
+without touching the seed.
+
+Run `update-config` whenever you want this host's current config to become the
+template that future joins inherit; the most recent `update-config` from any
+host wins. `HOST_ID` is never shared (it scopes the per-host repo, so each node
+keeps its own). See [Joining additional hosts](joining-hosts.md#shared-configuration).
 
 ## `change-password`
 
@@ -130,6 +160,11 @@ staggered activation-relative initial delays to avoid concurrent first-run
 repo operations.
 Use after `install`, after editing `/etc/libvirt-backup-system/libvirt-backup.env`,
 and to initialize an empty `BACKUP_PATH`; then run `check`.
+
+On the first node, `start` also publishes the shared config seed at
+`BACKUP_PATH/libvirt-backup.env` if none exists yet (it never overwrites an
+existing seed). Use [`update-config`](#update-config) to push later edits to
+the seed for future joins.
 
 ```sh
 sudo libvirt-backup-system start

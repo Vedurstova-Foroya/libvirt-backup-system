@@ -132,6 +132,31 @@ ADD_NODE_HELP = "Print a pasteable install command for joining another host."
 SHOW_TOKEN_HELP = "Print the shared kopia token from the local password file."
 
 
+UPDATE_CONFIG_HELP = "Publish this host's env config to the backup path as the shared seed for new joins."
+UPDATE_CONFIG_DESCRIPTION = """\
+Copy this host's /etc/libvirt-backup-system/libvirt-backup.env up to the
+backup tree as the shared config seed (BACKUP_PATH/libvirt-backup.env),
+overwriting any previous seed.
+
+The shared config is a *seed*, not a live-synced file. The first node
+publishes it automatically (during ``install`` when BACKUP_PATH is set, and on
+``start``). When a new host joins (``install`` against the same BACKUP_PATH and
+token, e.g. via ``add-node``), it pulls the seed as its initial local config so
+it inherits retention, splitter, compression, and NFS policy without re-typing
+them. After joining, the local config is independent: edit it and run
+``start`` to change only this host (its own backup schedule, mount path, etc.)
+without touching the seed.
+
+Run ``update-config`` whenever you want this host's current config to become
+the template that future joins inherit. The most recent ``update-config`` from
+any host wins. ``HOST_ID`` is never shared -- it scopes the per-host repo, so
+each node keeps its own (falling back to /etc/machine-id).
+
+  sudoedit /etc/libvirt-backup-system/libvirt-backup.env
+  sudo libvirt-backup-system start          # apply locally
+  sudo libvirt-backup-system update-config  # publish for future joins"""
+
+
 UNINSTALL_HELP = "Remove installed files. Config/state/logs/backups are kept unless --purge-* is passed."
 UNINSTALL_DESCRIPTION = """\
 Disable timers, stop services, and remove the installed wrapper, opt

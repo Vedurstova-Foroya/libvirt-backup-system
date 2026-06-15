@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import kopia_password, kopia_repo, preflight
+from . import config_sync, kopia_password, kopia_repo, preflight
 from .config import Config, default_config_path, prefixed, root_prefix
 from .fish_completion import install_fish_completion
 from .installer_binaries import BinaryInstallError, install_kopia, install_nbdcopy
@@ -59,11 +59,25 @@ def install(
     cfg = Config.load(config_path=str(resolved_config), prefix=str(root), apply_env_overrides=False)
     try:
         with acquire_run_lock(cfg):
-            if not resolved_config.exists():
+            config_existed = resolved_config.exists()
+            if not config_existed:
                 _apply_install_time_env(cfg)
+            # A fresh install pointed at a backup tree that already holds a
+            # shared config is *joining*: overlay that seed onto cfg before any
+            # password/repo work so the whole install (password file path, repo
+            # creation, units) runs against the shared settings. Install-time
+            # env (BACKUP_PATH, NFS) still wins, and HOST_ID stays this host's.
+            joining = False
+            if not config_existed and cfg.get("BACKUP_PATH").strip():
+                seed_values = config_sync.pull_shared_config_values(cfg)
+                if seed_values is not None:
+                    cfg.values.update(seed_values)
+                    _apply_install_time_env(cfg)
+                    joining = True
+                    event("info", "seeded config from shared backup", path=str(config_sync.shared_config_path(cfg)))
             password_required = _install_backup_path_configured(
                 cfg.get("BACKUP_PATH"),
-                config_exists=resolved_config.exists(),
+                config_exists=config_existed,
             )
             if password_required and _host_id_preflight(cfg) != 0:
                 return 1
@@ -93,7 +107,7 @@ def install(
                 binary_code = _install_pinned_binaries(root)
                 if binary_code != 0:
                     return binary_code
-            install_code = _install_locked(root, resolved_config, cfg)
+            install_code = _install_locked(root, resolved_config, cfg, joining=joining)
             if install_code != 0:
                 return install_code
             return _ensure_kopia_repo(cfg) if password_required else 0
@@ -157,8 +171,9 @@ def _apply_install_time_env(cfg: Config) -> None:
             cfg.values[env_key] = env_value
 
 
-def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
-    if not resolved_config.exists():
+def _install_locked(root: Path, resolved_config: Path, cfg: Config, *, joining: bool = False) -> int:
+    config_existed = resolved_config.exists()
+    if not config_existed:
         _apply_install_time_env(cfg)
     try:
         configure_default_timeout(cfg.get("COMMAND_TIMEOUT_SECONDS"))
@@ -181,8 +196,12 @@ def _install_locked(root: Path, resolved_config: Path, cfg: Config) -> int:
     install_fish_completion(root)
 
     resolved_config.parent.mkdir(parents=True, exist_ok=True)
-    if not resolved_config.exists():
+    if not config_existed:
         _write_initial_config(resolved_config, cfg.render_env())
+        # First node (no shared config found): publish ours so later joins can
+        # pull it. seed_shared_config writes only when the seed is absent.
+        if backup_path and not joining:
+            config_sync.seed_shared_config(cfg, resolved_config)
     else:
         _log_dropped_install_time_env(resolved_config)
 

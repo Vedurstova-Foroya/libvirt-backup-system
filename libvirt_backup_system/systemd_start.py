@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import kopia_repo, preflight
+from . import config_sync, kopia_repo, preflight
 from .config import Config, default_config_path, prefixed, root_prefix
 from .logging_json import event
 from .shell import configure_default_timeout
@@ -155,6 +155,11 @@ def start(prefix: str | None = None, *, config_path: str | None = None) -> int:
         event("error", "kopia repo preflight failed", reason=failure)
     if failures or kopia_repo.ensure_local_repo(rendered.config, apply_global_policy=True) != 0:
         return 1
+    # First node establishes the shared config seed (best-effort, only when no
+    # seed exists yet). This covers the common flow where BACKUP_PATH is set
+    # after the initial install, so install had nothing to publish. A node that
+    # joined later never clobbers the seed here; pushing updates is update-config.
+    config_sync.seed_shared_config(rendered.config, rendered.resolved_config)
     systemd_dir = prefixed("/etc/systemd/system", root)
     systemd_dir.mkdir(parents=True, exist_ok=True)
     (systemd_dir / RUN_UNIT_NAME).write_text(rendered.service_text, encoding="utf-8")

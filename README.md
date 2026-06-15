@@ -55,6 +55,16 @@ libvirt_backup_system install --kopia-password-env KOPIA_PW
 --acknowledge-password-loss` command for the new host. See [Joining
 hosts](docs/joining-hosts.md).
 
+The first node publishes its env config to `BACKUP_PATH/libvirt-backup.env` as
+a shared seed; joining nodes pull it as their initial config (retention,
+splitter, schedule, NFS policy) instead of starting from defaults. After
+joining, each host's config is independent. Run `update-config` to make a
+host's current config the template that future joins inherit:
+
+```sh
+sudo libvirt-backup-system update-config
+```
+
 ## Basic use
 
 ```sh

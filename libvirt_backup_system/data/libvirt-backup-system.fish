@@ -1,7 +1,7 @@
 # Fish completion for libvirt-backup-system.
 complete -c libvirt-backup-system -f
 
-set -g __lbs_subcommands install add-node show-token change-password uninstall check preflight doctor run backup start status log logs list-vms verify list-restore-points du restore
+set -g __lbs_subcommands install add-node show-token update-config change-password uninstall check preflight doctor run backup start status log logs list-vms verify list-restore-points du restore
 
 function __lbs_no_subcommand_seen
     for token in (commandline -opc)
@@ -14,6 +14,7 @@ end
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a install -d "Install wrapper, config, package, and systemd units"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a add-node -d "Print a pasteable install command for joining another host"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a show-token -d "Print the raw shared token from the secure password file"
+complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a update-config -d "Publish this host's env config to the backup path as the shared seed"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a change-password -d "Rotate the shared kopia token on the local host"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a uninstall -d "Remove installed files (config/state/logs kept unless --purge-* is passed)"
 complete -c libvirt-backup-system -n "__lbs_no_subcommand_seen" -a check -d "Run preflight: config, binaries, paths, free space"

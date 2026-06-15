@@ -62,6 +62,51 @@ If `check` or `start` says the host is not joined or cannot open an existing
 peer repo, run `sudo libvirt-backup-system add-node` on an already joined host
 and paste the printed install command on this host.
 
+## Shared configuration
+
+The env file is shared across hosts through the backup tree so a new host
+inherits the cluster's settings instead of starting from defaults. A single
+seed file lives next to the per-host repos:
+
+```text
+BACKUP_PATH/
+  libvirt-backup.env          # shared config seed
+  <existing-host-id>/kopia-repo/
+  <new-host-id>/kopia-repo/
+```
+
+The seed is a **template, not a live-synced file**:
+
+- The first host publishes it automatically — during `install` when
+  `BACKUP_PATH` is set, and on `start`. It is written only when no seed exists
+  yet, so it is never silently overwritten.
+- A joining host pulls the seed as its initial local config, inheriting
+  retention, splitter, compression, NFS policy, and the backup schedule
+  without re-typing them. The host's own install-time `BACKUP_PATH` still wins
+  over the seed's recorded value.
+- After joining, the local config is **independent**. Edit
+  `/etc/libvirt-backup-system/libvirt-backup.env` and run `start` to change
+  only that host (its own backup timer, mount path, etc.) — the seed is not
+  touched.
+
+`HOST_ID` is never shared: it scopes the per-host repo
+(`BACKUP_PATH/<HOST_ID>/kopia-repo/`), so each node keeps its own (falling
+back to `/etc/machine-id`).
+
+### Updating the shared config
+
+To make a host's current config the template that **future** joins inherit,
+publish it explicitly:
+
+```sh
+sudoedit /etc/libvirt-backup-system/libvirt-backup.env
+sudo libvirt-backup-system start          # apply locally
+sudo libvirt-backup-system update-config  # publish for future joins
+```
+
+`update-config` overwrites the seed (last writer wins). It only affects hosts
+that join *after* it runs; already-joined hosts keep their independent config.
+
 ## Wrong token behavior
 
 If peer repos already exist under `BACKUP_PATH` and the new host is installed
