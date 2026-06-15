@@ -11,7 +11,7 @@ below); you only need the libvirt + qemu tooling on the host beforehand.
 
 ```sh
 sudo apt update
-sudo apt install -y libvirt-clients qemu-utils
+sudo apt install -y libvirt-clients qemu-utils libnbd-bin
 ```
 
 `qemu-utils` provides `qemu-img` and `qemu-nbd`.
@@ -20,7 +20,7 @@ sudo apt install -y libvirt-clients qemu-utils
 
 ```sh
 sudo apt update
-sudo apt install -y libvirt-clients qemu-utils
+sudo apt install -y libvirt-clients qemu-utils libnbd-bin
 ```
 
 ## Install
