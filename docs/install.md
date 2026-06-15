@@ -23,56 +23,6 @@ sudo apt update
 sudo apt install -y libvirt-clients qemu-utils
 ```
 
-### Bundled binary install
-
-On first install the orchestrator uses the vendored pinned `kopia` tarball
-under `libvirt_backup_system/vendor/kopia/`, sha256-verifies it against the
-constant in `libvirt_backup_system/kopia_vendor.py`, and installs it via an
-atomic move to `/usr/local/bin/kopia`. If the vendored tarball is absent, it
-falls back to downloading the same pinned upstream release asset.
-
-The installer also fetches pinned `libnbd-bin` and `libnbd0` `.deb` artifacts
-from the Debian archive, sha256-verifies them against constants baked into
-`libvirt_backup_system/installer_binaries.py`, and installs them with
-`dpkg -i` (with `apt-get install -f` fallback). The step is idempotent: if
-`kopia --version` already reports the pinned version and `nbdcopy --version`
-runs successfully, the install skips unnecessary work. Bumping the pinned
-versions is a deliberate operator action — the matching sha256 and vendored
-artifact must be refreshed in the same commit.
-
-After installing this project with `BACKUP_PATH` configured, run
-`sudo libvirt-backup-system check` to confirm every required binary resolves
-before relying on scheduled backups. If you set `BACKUP_PATH` after install,
-run `sudo libvirt-backup-system start` first so the local Kopia repo exists.
-
-For filesystem-consistent VM snapshots, install and enable QEMU guest agent
-inside each guest and confirm the libvirt guest-agent channel exists. Backups
-still run without it, but those restore points are recorded as
-crash-consistent. See [Backup consistency](backup-consistency.md) for the
-guest setup and application freeze-hook guidance.
-
-### Offline / air-gapped install
-
-When outbound HTTPS to `github.com` / `deb.debian.org` is not available,
-pre-place the binaries by hand and the installer will detect them and
-skip the bundled-install step:
-
-```sh
-# kopia: download elsewhere, verify the upstream sha256, then copy to
-# /usr/local/bin/kopia (mode 0755 root-owned) at the version the
-# installer pins.
-sudo install -m 0755 -o root -g root /path/to/kopia /usr/local/bin/kopia
-kopia --version
-
-# nbdcopy: install via the host's package manager once a mirror is
-# available, or copy + dpkg -i the pinned .debs you mirrored ahead of time.
-sudo apt install -y libnbd-bin
-nbdcopy --version
-```
-
-With both binaries present and runnable, `sudo libvirt-backup-system install`
-proceeds straight to the token + repo + systemd-unit setup.
-
 ## Install
 
 On the first host, run `install` with the shared `BACKUP_PATH`. If no
@@ -267,6 +217,56 @@ runs in-process instead) when any of these hold:
 
 When deploying to a fleet from a previous (non-kopia) install, see the
 [Kopia repo doc](kopia.md#multi-host-cutover) for the per-host checklist.
+
+### Bundled binary install
+
+On first install the orchestrator uses the vendored pinned `kopia` tarball
+under `libvirt_backup_system/vendor/kopia/`, sha256-verifies it against the
+constant in `libvirt_backup_system/kopia_vendor.py`, and installs it via an
+atomic move to `/usr/local/bin/kopia`. If the vendored tarball is absent, it
+falls back to downloading the same pinned upstream release asset.
+
+The installer also fetches pinned `libnbd-bin` and `libnbd0` `.deb` artifacts
+from the Debian archive, sha256-verifies them against constants baked into
+`libvirt_backup_system/installer_binaries.py`, and installs them with
+`dpkg -i` (with `apt-get install -f` fallback). The step is idempotent: if
+`kopia --version` already reports the pinned version and `nbdcopy --version`
+runs successfully, the install skips unnecessary work. Bumping the pinned
+versions is a deliberate operator action — the matching sha256 and vendored
+artifact must be refreshed in the same commit.
+
+After installing this project with `BACKUP_PATH` configured, run
+`sudo libvirt-backup-system check` to confirm every required binary resolves
+before relying on scheduled backups. If you set `BACKUP_PATH` after install,
+run `sudo libvirt-backup-system start` first so the local Kopia repo exists.
+
+For filesystem-consistent VM snapshots, install and enable QEMU guest agent
+inside each guest and confirm the libvirt guest-agent channel exists. Backups
+still run without it, but those restore points are recorded as
+crash-consistent. See [Backup consistency](backup-consistency.md) for the
+guest setup and application freeze-hook guidance.
+
+### Offline / air-gapped install
+
+When outbound HTTPS to `github.com` / `deb.debian.org` is not available,
+pre-place the binaries by hand and the installer will detect them and
+skip the bundled-install step:
+
+```sh
+# kopia: download elsewhere, verify the upstream sha256, then copy to
+# /usr/local/bin/kopia (mode 0755 root-owned) at the version the
+# installer pins.
+sudo install -m 0755 -o root -g root /path/to/kopia /usr/local/bin/kopia
+kopia --version
+
+# nbdcopy: install via the host's package manager once a mirror is
+# available, or copy + dpkg -i the pinned .debs you mirrored ahead of time.
+sudo apt install -y libnbd-bin
+nbdcopy --version
+```
+
+With both binaries present and runnable, `sudo libvirt-backup-system install`
+proceeds straight to the token + repo + systemd-unit setup.
 
 ## Uninstall
 
